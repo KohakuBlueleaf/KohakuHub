@@ -15,6 +15,7 @@ from kohakuhub.db import (
     Organization,
     Repository,
     Session,
+    SSHKey,
     StagingUpload,
     Token,
     User,
@@ -585,6 +586,65 @@ async def get_email_verification(token: str) -> EmailVerification | None:
 async def delete_email_verification(verification: EmailVerification) -> None:
     """Delete email verification."""
     await run_in_db_executor(verification.delete_instance)
+
+
+# SSH Key operations
+async def get_ssh_key_by_id(key_id: int) -> SSHKey | None:
+    """Get SSH key by ID."""
+    return await run_in_db_executor(lambda: SSHKey.get_or_none(SSHKey.id == key_id))
+
+
+async def get_ssh_key_by_fingerprint(fingerprint: str) -> SSHKey | None:
+    """Get SSH key by fingerprint."""
+    return await run_in_db_executor(
+        lambda: SSHKey.get_or_none(SSHKey.fingerprint == fingerprint)
+    )
+
+
+async def list_user_ssh_keys(user_id: int) -> list[SSHKey]:
+    """List all SSH keys for a user."""
+
+    def _list():
+        return list(
+            SSHKey.select()
+            .where(SSHKey.user_id == user_id)
+            .order_by(SSHKey.created_at.desc())
+        )
+
+    return await run_in_db_executor(_list)
+
+
+async def create_ssh_key(
+    user_id: int, key_type: str, public_key: str, fingerprint: str, title: str
+) -> SSHKey:
+    """Create a new SSH key."""
+
+    def _create():
+        return SSHKey.create(
+            user_id=user_id,
+            key_type=key_type,
+            public_key=public_key,
+            fingerprint=fingerprint,
+            title=title,
+        )
+
+    return await run_in_db_executor(_create)
+
+
+async def update_ssh_key(key: SSHKey, **fields) -> None:
+    """Update SSH key fields."""
+
+    def _update():
+        for field_name, value in fields.items():
+            setattr(key, field_name, value)
+        key.save()
+
+    await run_in_db_executor(_update)
+
+
+async def delete_ssh_key(key: SSHKey) -> None:
+    """Delete an SSH key."""
+    await run_in_db_executor(key.delete_instance)
 
 
 # Generic query helper

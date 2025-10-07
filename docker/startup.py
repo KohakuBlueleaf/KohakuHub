@@ -81,6 +81,18 @@ def load_credentials():
     print(f"[startup] Loaded credentials from {CRED_FILE}")
 
 
+def init_database():
+    """Initialize database and run migrations."""
+    print("[startup] Initializing database...")
+    try:
+        from kohakuhub.db import init_db
+        init_db()
+        print("[startup] Database initialized successfully")
+    except Exception as e:
+        print(f"[startup] Database initialization failed: {e}")
+        # Don't exit - let the app try to continue
+
+
 def main():
     wait_for_lakefs()
 
@@ -105,6 +117,9 @@ def main():
                 pass
             os.environ["KOHAKU_HUB_LAKEFS_ACCESS_KEY"] = access_key
             os.environ["KOHAKU_HUB_LAKEFS_SECRET_KEY"] = secret_key
+
+    # Initialize database tables (will create missing tables/columns)
+    init_database()
 
     print("[startup] Starting API server...")
     subprocess.run(

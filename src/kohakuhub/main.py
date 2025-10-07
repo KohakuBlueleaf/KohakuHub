@@ -11,6 +11,7 @@ from kohakuhub.api.routers import (
     commit_history,
     commits,
     files,
+    git_http,
     lfs,
     misc,
     quota,
@@ -18,6 +19,7 @@ from kohakuhub.api.routers import (
     repo_info,
     repo_tree,
     settings,
+    ssh_keys,
 )
 from kohakuhub.api.routers.files import resolve_file_get, resolve_file_head
 from kohakuhub.api.utils.s3 import init_storage
@@ -81,6 +83,8 @@ app.include_router(quota.router, tags=["quota"])
 app.include_router(admin.router, prefix="/admin/api", tags=["admin"])
 app.include_router(misc.router, prefix=cfg.app.api_base, tags=["utils"])
 app.include_router(org_router, prefix="/org", tags=["organizations"])
+app.include_router(git_http.router, tags=["git"])
+app.include_router(ssh_keys.router, tags=["ssh-keys"])
 
 
 @app.head("/{namespace}/{name}/resolve/{revision}/{path:path}")

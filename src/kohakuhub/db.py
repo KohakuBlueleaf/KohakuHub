@@ -212,8 +212,119 @@ class LFSObjectHistory(BaseModel):
         )
 
 
+class SSHKey(BaseModel):
+    """User SSH public keys for Git operations."""
+
+    id = AutoField()
+    user_id = IntegerField(index=True)
+    key_type = CharField()  # "ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256", etc.
+    public_key = TextField()  # Full public key content
+    fingerprint = CharField(unique=True, index=True)  # SHA256 fingerprint for lookup
+    title = CharField()  # User-friendly title/name for the key
+    last_used = DateTimeField(null=True)
+    created_at = DateTimeField(default=partial(datetime.now, tz=timezone.utc))
+
+    class Meta:
+        indexes = ((("user_id", "fingerprint"), True),)  # Unique per user
+
+
+def migrate_schema():
+    """Run schema migrations for existing tables."""
+    logger.info("Running schema migrations...")
+
+    if isinstance(db, PostgresqlDatabase):
+        logger.info("Detected PostgreSQL - running migrations")
+
+        # Add quota columns to User table
+        try:
+            db.execute_sql(
+                'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS private_quota_bytes BIGINT DEFAULT NULL'
+            )
+            db.execute_sql(
+                'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS public_quota_bytes BIGINT DEFAULT NULL'
+            )
+            db.execute_sql(
+                'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS private_used_bytes BIGINT DEFAULT 0'
+            )
+            db.execute_sql(
+                'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS public_used_bytes BIGINT DEFAULT 0'
+            )
+            logger.info("Migrated User table quota columns")
+        except Exception as e:
+            logger.warning(f"User table migration: {e}")
+
+        # Add quota columns to Organization table
+        try:
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN IF NOT EXISTS private_quota_bytes BIGINT DEFAULT NULL"
+            )
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN IF NOT EXISTS public_quota_bytes BIGINT DEFAULT NULL"
+            )
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN IF NOT EXISTS private_used_bytes BIGINT DEFAULT 0"
+            )
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN IF NOT EXISTS public_used_bytes BIGINT DEFAULT 0"
+            )
+            logger.info("Migrated Organization table quota columns")
+        except Exception as e:
+            logger.warning(f"Organization table migration: {e}")
+
+    elif isinstance(db, SqliteDatabase):
+        logger.info("Detected SQLite - running migrations")
+
+        # Check User table
+        cursor = db.execute_sql("PRAGMA table_info(user)")
+        user_columns = {row[1] for row in cursor.fetchall()}
+
+        if "private_quota_bytes" not in user_columns:
+            db.execute_sql(
+                "ALTER TABLE user ADD COLUMN private_quota_bytes INTEGER DEFAULT NULL"
+            )
+        if "public_quota_bytes" not in user_columns:
+            db.execute_sql(
+                "ALTER TABLE user ADD COLUMN public_quota_bytes INTEGER DEFAULT NULL"
+            )
+        if "private_used_bytes" not in user_columns:
+            db.execute_sql(
+                "ALTER TABLE user ADD COLUMN private_used_bytes INTEGER DEFAULT 0"
+            )
+        if "public_used_bytes" not in user_columns:
+            db.execute_sql(
+                "ALTER TABLE user ADD COLUMN public_used_bytes INTEGER DEFAULT 0"
+            )
+        logger.info("Migrated User table")
+
+        # Check Organization table
+        cursor = db.execute_sql("PRAGMA table_info(organization)")
+        org_columns = {row[1] for row in cursor.fetchall()}
+
+        if "private_quota_bytes" not in org_columns:
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN private_quota_bytes INTEGER DEFAULT NULL"
+            )
+        if "public_quota_bytes" not in org_columns:
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN public_quota_bytes INTEGER DEFAULT NULL"
+            )
+        if "private_used_bytes" not in org_columns:
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN private_used_bytes INTEGER DEFAULT 0"
+            )
+        if "public_used_bytes" not in org_columns:
+            db.execute_sql(
+                "ALTER TABLE organization ADD COLUMN public_used_bytes INTEGER DEFAULT 0"
+            )
+        logger.info("Migrated Organization table")
+
+    logger.success("Schema migrations completed")
+
+
 def init_db():
     db.connect(reuse_if_open=True)
+
+    # Create all tables (safe=True means it won't fail if they exist)
     db.create_tables(
         [
             User,
@@ -227,6 +338,10 @@ def init_db():
             UserOrganization,
             Commit,
             LFSObjectHistory,
+            SSHKey,
         ],
         safe=True,
     )
+
+    # Run schema migrations for existing tables
+    migrate_schema()
