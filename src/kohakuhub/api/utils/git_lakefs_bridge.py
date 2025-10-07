@@ -1,7 +1,17 @@
 """Git-LakeFS bridge for translating Git operations to LakeFS REST API.
 
 This module provides a bridge between Git protocol operations and LakeFS REST API,
-allowing Git clients to interact with repositories stored in LakeFS.
+allowing Git clients to inte                    commit_info = await self.lakefs_client.get_commit(
+                        repository=self.lakefs_repo, commit_id=commit_id
+                    )
+
+                    # Create commit
+                    author_name = commit_info.get("committer", "KohakuHub")
+                    message = commit_info.get("message", "Initial commit")
+                    timestamp = commit_info.get("creation_date", 0)
+
+                # Handle both integer timestamps and ISO date strings
+                if isinstance(timestamp, str):epositories stored in LakeFS.
 """
 
 import hashlib
@@ -179,9 +189,15 @@ class GitLakeFSBridge:
 
             # Get commit details
             try:
-                commit_info = await self.lakefs_client.get_commit(
-                    repository=self.lakefs_repo, commit_id=commit_id
-                )
+                if not commit_id:
+                    logger.warning("No commit_id found, using default commit info")
+                    author_name = "KohakuHub"
+                    message = "Initial commit"
+                    timestamp = 0
+                else:
+                    commit_info = await self.lakefs_client.get_commit(
+                        repository=self.lakefs_repo, commit_id=commit_id
+                    )
 
                 # Create commit
                 author_name = commit_info.get("committer", "KohakuHub")
@@ -312,8 +328,15 @@ class GitLakeFSBridge:
             tree_oid = tree_builder.write()
             dir_oids[dir_path] = tree_oid
 
-        # Return root tree
-        return dir_oids.get("", dir_oids[sorted_dirs[-1]] if sorted_dirs else None)
+        # Return root tree - fallback to last directory if root is empty
+        if "" in dir_oids:
+            return dir_oids[""]
+        elif sorted_dirs:
+            return dir_oids[sorted_dirs[-1]]
+        else:
+            # Create an empty tree if no directories
+            tree_builder = repo.TreeBuilder()
+            return tree_builder.write()
 
     def _create_pack_file(
         self, repo: pygit2.Repository, wants: List[str], haves: List[str]
@@ -342,7 +365,8 @@ class GitLakeFSBridge:
                     return self._create_empty_pack()
 
             # Walk through all objects reachable from wanted commits
-            walker = repo.walk(head_commit_oid, pygit2.GIT_SORT_TOPOLOGICAL)
+            # Use pygit2.SortMode.TOPOLOGICAL instead of the integer constant
+            walker = repo.walk(head_commit_oid, pygit2.enums.SortMode.TOPOLOGICAL)
 
             # Collect all objects to pack
             oids_to_pack = set()
@@ -409,6 +433,10 @@ class GitLakeFSBridge:
 
         oids.add(tree_oid)
         tree = repo[tree_oid]
+
+        # Type assertion to help type checker - tree should be a Tree object
+        if not isinstance(tree, pygit2.Tree):
+            return
 
         for entry in tree:
             oids.add(entry.id)
