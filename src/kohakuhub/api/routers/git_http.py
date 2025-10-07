@@ -82,7 +82,6 @@ async def git_info_refs(
     name: str,
     service: str,
     authorization: str | None = Header(None),
-    repo_type: str = "model",  # Default to model
 ):
     """Git info/refs endpoint for service advertisement.
 
@@ -93,7 +92,6 @@ async def git_info_refs(
         name: Repository name
         service: Git service (git-upload-pack or git-receive-pack)
         authorization: Optional Basic Auth header
-        repo_type: Repository type
 
     Returns:
         Service advertisement in pkt-line format
@@ -101,13 +99,17 @@ async def git_info_refs(
     repo_id = f"{namespace}/{name}"
     logger.info(f"Git info/refs: {service} for {repo_id}")
 
-    # Get repository
+    # Get repository - try all repo types since we don't know from URL
     def _get_repo():
-        return Repository.get_or_none(
-            Repository.namespace == namespace,
-            Repository.name == name,
-            Repository.repo_type == repo_type,
-        )
+        for repo_type in ["model", "dataset", "space"]:
+            repo = Repository.get_or_none(
+                Repository.namespace == namespace,
+                Repository.name == name,
+                Repository.repo_type == repo_type,
+            )
+            if repo:
+                return repo
+        return None
 
     repo = await execute_db_query(_get_repo)
     if not repo:
@@ -128,8 +130,8 @@ async def git_info_refs(
     else:
         raise HTTPException(400, detail=f"Unknown service: {service}")
 
-    # Get refs from LakeFS
-    bridge = GitLakeFSBridge(repo_type, namespace, name)
+    # Get refs from LakeFS using the repository's actual type
+    bridge = GitLakeFSBridge(repo.repo_type, namespace, name)
     refs = await bridge.get_refs(branch="main")
 
     # Generate service advertisement
@@ -155,7 +157,6 @@ async def git_upload_pack(
     name: str,
     request: Request,
     authorization: str | None = Header(None),
-    repo_type: str = "model",
 ):
     """Git upload-pack endpoint for clone/fetch/pull.
 
@@ -166,7 +167,6 @@ async def git_upload_pack(
         name: Repository name
         request: FastAPI request
         authorization: Optional Basic Auth header
-        repo_type: Repository type
 
     Returns:
         Pack file with requested objects
@@ -174,13 +174,17 @@ async def git_upload_pack(
     repo_id = f"{namespace}/{name}"
     logger.info(f"Git upload-pack for {repo_id}")
 
-    # Get repository
+    # Get repository - try all repo types since we don't know from URL
     def _get_repo():
-        return Repository.get_or_none(
-            Repository.namespace == namespace,
-            Repository.name == name,
-            Repository.repo_type == repo_type,
-        )
+        for repo_type in ["model", "dataset", "space"]:
+            repo = Repository.get_or_none(
+                Repository.namespace == namespace,
+                Repository.name == name,
+                Repository.repo_type == repo_type,
+            )
+            if repo:
+                return repo
+        return None
 
     repo = await execute_db_query(_get_repo)
     if not repo:
@@ -193,8 +197,8 @@ async def git_upload_pack(
     # Read request body
     request_body = await request.body()
 
-    # Create bridge for LakeFS integration
-    bridge = GitLakeFSBridge(repo_type, namespace, name)
+    # Create bridge for LakeFS integration using the repository's actual type
+    bridge = GitLakeFSBridge(repo.repo_type, namespace, name)
 
     # Handle upload-pack
     handler = GitUploadPackHandler(repo_id, bridge=bridge)
@@ -213,7 +217,6 @@ async def git_receive_pack(
     name: str,
     request: Request,
     authorization: str | None = Header(None),
-    repo_type: str = "model",
 ):
     """Git receive-pack endpoint for push.
 
@@ -224,7 +227,6 @@ async def git_receive_pack(
         name: Repository name
         request: FastAPI request
         authorization: Basic Auth header (required)
-        repo_type: Repository type
 
     Returns:
         Status report
@@ -232,13 +234,17 @@ async def git_receive_pack(
     repo_id = f"{namespace}/{name}"
     logger.info(f"Git receive-pack for {repo_id}")
 
-    # Get repository
+    # Get repository - try all repo types since we don't know from URL
     def _get_repo():
-        return Repository.get_or_none(
-            Repository.namespace == namespace,
-            Repository.name == name,
-            Repository.repo_type == repo_type,
-        )
+        for repo_type in ["model", "dataset", "space"]:
+            repo = Repository.get_or_none(
+                Repository.namespace == namespace,
+                Repository.name == name,
+                Repository.repo_type == repo_type,
+            )
+            if repo:
+                return repo
+        return None
 
     repo = await execute_db_query(_get_repo)
     if not repo:
@@ -270,7 +276,6 @@ async def git_head(
     namespace: str,
     name: str,
     authorization: str | None = Header(None),
-    repo_type: str = "model",
 ):
     """Git HEAD endpoint.
 
@@ -280,20 +285,23 @@ async def git_head(
         namespace: Repository namespace
         name: Repository name
         authorization: Optional Basic Auth header
-        repo_type: Repository type
 
     Returns:
         HEAD reference
     """
     repo_id = f"{namespace}/{name}"
 
-    # Get repository
+    # Get repository - try all repo types since we don't know from URL
     def _get_repo():
-        return Repository.get_or_none(
-            Repository.namespace == namespace,
-            Repository.name == name,
-            Repository.repo_type == repo_type,
-        )
+        for repo_type in ["model", "dataset", "space"]:
+            repo = Repository.get_or_none(
+                Repository.namespace == namespace,
+                Repository.name == name,
+                Repository.repo_type == repo_type,
+            )
+            if repo:
+                return repo
+        return None
 
     repo = await execute_db_query(_get_repo)
     if not repo:
