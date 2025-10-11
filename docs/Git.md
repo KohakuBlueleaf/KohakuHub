@@ -251,20 +251,12 @@ In KohakuHub, we need to:
 
 ### Architecture Overview
 
-```
-Git Client (git clone/push)
-    ↓
-HTTPS Request
-    ↓
-Nginx (Proxy)
-    ↓
-FastAPI (Git HTTP Endpoints)
-    ↓
-GitLakeFSBridge (Translation Layer)
-    ↓
-LakeFS REST API
-    ↓
-S3/MinIO Storage
+```mermaid
+graph TD
+    A[Git Client] --> B[FastAPI]
+    B --> C[GitLakeFSBridge]
+    C --> D[LakeFS REST API]
+    D --> E[S3/MinIO Storage]
 ```
 
 ---

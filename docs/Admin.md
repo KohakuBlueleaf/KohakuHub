@@ -10,20 +10,12 @@
 ## Admin Portal Architecture
 
 ```mermaid
-graph LR
-    subgraph "Admin Access"
-        Browser[Browser] -->|X-Admin-Token| Portal[Admin Portal UI]
-    end
-
-    subgraph "Admin API"
-        Portal -->|REST API| AdminAPI[Admin Endpoints]
-    end
-
-    subgraph "Data Sources"
-        AdminAPI -->|Queries| DB[PostgreSQL/SQLite]
-        AdminAPI -->|List Objects| S3[MinIO/S3]
-        AdminAPI -->|Repository Info| LakeFS[LakeFS]
-    end
+graph TD
+    A[Admin] -- "X-Admin-Token" --> B[Admin Portal]
+    B -- "REST API" --> C[Admin Endpoints]
+    C -- "Queries" --> D[Database]
+    C -- "S3 API" --> E[MinIO]
+    C -- "REST" --> F[LakeFS]
 ```
 
 ---

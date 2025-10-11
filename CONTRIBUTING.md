@@ -502,6 +502,10 @@ onMounted(() => {
 </template>
 ```
 
+## Code of Conduct
+
+We have a [Code of Conduct](./CODE_OF_CONDUCT.md) that all contributors are expected to follow. Please make sure you are familiar with its contents.
+
 ## Community
 
 - **Discord:** https://discord.gg/xWYrkyvJ2s

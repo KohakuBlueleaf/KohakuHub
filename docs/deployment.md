@@ -66,24 +66,18 @@ docker-compose up -d --build
 **Configuration:** `docker/nginx/default.conf`
 
 ```mermaid
-graph LR
-    subgraph "Nginx (Port 28080)"
-        direction TB
-        Router[Request Router]
-        Static[Static Files Handler]
-        Proxy[API Proxy]
-    end
-
-    Client[Client] -->|Request| Router
-    Router -->|"/", "/*.html", "/*.js"| Static
-    Router -->|"/api/*"| Proxy
-    Router -->|"/org/*"| Proxy
-    Router -->|"/{ns}/{repo}.git/*"| Proxy
-    Router -->|"/resolve/*"| Proxy
-
-    Static -->|Serve| Vue[Vue 3 Frontend]
-    Proxy -->|Forward| FastAPI["FastAPI:48888"]
-
+graph TD
+    A[Client] --> B{Request}
+    B --> C{/api/*}
+    B --> D{/org/*}
+    B --> E{/{ns}/{repo}.git/*}
+    B --> F{/resolve/*}
+    B --> G[Static Files]
+    C --> H[FastAPI]
+    D --> H
+    E --> H
+    F --> H
+    G --> I[Vue 3 Frontend]
 ```
 
 **Nginx routing rules:**
@@ -132,33 +126,13 @@ os.environ["HF_ENDPOINT"] = "http://localhost:48888"  # Don't use backend port d
 ## Architecture Diagram
 
 ```mermaid
-graph TB
-    subgraph "External Access"
-        Client["Client<br/>(Browser, Git, Python SDK, CLI)"]
-    end
-
-    subgraph "Nginx Container (hub-ui)<br/>Port 28080"
-        Nginx["Nginx Reverse Proxy<br/>- Static files: Vue 3 frontend<br/>- Proxy: /api, /org, resolve"]
-    end
-
-    subgraph "FastAPI Container (hub-api)<br/>Port 48888 (internal)"
-        FastAPI["FastAPI Application<br/>- HF-compatible REST API<br/>- Git Smart HTTP<br/>- LFS protocol<br/>- Authentication"]
-    end
-
-    subgraph "Storage Layer"
-        LakeFS["LakeFS Container<br/>Port 28000 (admin)<br/>- Git-like versioning<br/>- Branch management<br/>- Commit history"]
-        MinIO["MinIO Container<br/>Port 29000 (console)<br/>Port 29001 (S3 API)<br/>- S3-compatible storage<br/>- Object storage"]
-        Postgres["PostgreSQL Container<br/>Port 25432 (optional)<br/>- User data<br/>- Metadata<br/>- Quotas"]
-    end
-
-    Client -->|HTTPS/HTTP| Nginx
-    Nginx -->|Static| Client
-    Nginx -->|Proxy API| FastAPI
-    FastAPI -->|REST API| LakeFS
-    FastAPI -->|SQL| Postgres
-    FastAPI -->|S3 API| MinIO
-    LakeFS -->|Store objects| MinIO
-
+graph TD
+    A[Client] --> B[Nginx]
+    B --> C[FastAPI]
+    C --> D[LakeFS]
+    C --> E[PostgreSQL]
+    C --> F[MinIO]
+    D --> F
 ```
 
 **Port Mapping:**
@@ -325,49 +299,50 @@ os.environ["HF_ENDPOINT"] = "http://localhost:28080"
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Nginx
-    participant FastAPI
-    participant LakeFS
-    participant MinIO
+    participant C as Client
+    participant N as Nginx
+    participant S as FastAPI
+    participant L as LakeFS
+    participant M as MinIO
 
-    User->>Nginx: POST /api/models/org/model/commit/main
-    Nginx->>FastAPI: Forward request
-    FastAPI->>FastAPI: Parse NDJSON (header + files + lfsFiles)
-
-    alt Small File (<5MB)
-        FastAPI->>LakeFS: Upload object (base64 decoded)
-        LakeFS->>MinIO: Store object
-    else Large File (>5MB)
-        Note over FastAPI,MinIO: File already uploaded via presigned URL
-        FastAPI->>LakeFS: Link physical address
-    end
-
-    FastAPI->>LakeFS: Commit with message
-    LakeFS-->>FastAPI: Commit ID
-    FastAPI-->>Nginx: 200 OK + commit URL
-    Nginx-->>User: Commit successful
+    C->>N: 1. Upload request
+    N->>S: 2. Forward request
+    S->>L: 3. Get presigned URL
+    L->>M: 4. Generate URL
+    M-->>L: 5. Presigned URL
+    L-->>S: 6. Presigned URL
+    S-->>N: 7. Presigned URL
+    N-->>C: 8. Presigned URL
+    C->>M: 9. Upload file
+    M-->>C: 10. Upload complete
+    C->>N: 11. Commit file
+    N->>S: 12. Forward request
+    S->>L: 13. Commit file
+    L-->>S: 14. Commit complete
+    S-->>N: 15. Commit complete
+    N-->>C: 16. Commit complete
 ```
 
 ### Download Flow (Direct S3)
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Nginx
-    participant FastAPI
-    participant LakeFS
-    participant MinIO
+    participant C as Client
+    participant N as Nginx
+    participant S as FastAPI
+    participant L as LakeFS
+    participant M as MinIO
 
-    User->>Nginx: GET /org/model/resolve/main/model.safetensors
-    Nginx->>FastAPI: Forward request
-    FastAPI->>LakeFS: Stat object (get metadata)
-    LakeFS-->>FastAPI: Physical address + SHA256
-    FastAPI->>MinIO: Generate presigned URL (1 hour)
-    FastAPI-->>Nginx: 302 Redirect
-    Nginx-->>User: Redirect to presigned URL
-    User->>MinIO: Direct download
-    MinIO-->>User: File content
+    C->>N: 1. Download request
+    N->>S: 2. Forward request
+    S->>L: 3. Get presigned URL
+    L->>M: 4. Generate URL
+    M-->>L: 5. Presigned URL
+    L-->>S: 6. Presigned URL
+    S-->>N: 7. Presigned URL
+    N-->>C: 8. Presigned URL
+    C->>M: 9. Download file
+    M-->>C: 10. Download complete
 ```
 
 ## Why This Architecture?

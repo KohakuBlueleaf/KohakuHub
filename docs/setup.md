@@ -5,15 +5,12 @@
 ## Quick Start
 
 ```mermaid
-graph LR
-    Start[Start] --> Clone[Clone Repository]
-    Clone --> Config[Configure<br/>docker-compose.yml]
-    Config --> Build[Build Frontend]
-    Build --> Deploy[Start Docker]
-    Deploy --> Verify[Verify Installation]
-    Verify --> CreateUser[Create First User]
-    CreateUser --> Done[Ready!]
-
+graph TD
+    A[Clone Repository] --> B[Configure]
+    B --> C[Build Frontend]
+    C --> D[Start Docker]
+    D --> E[Verify Installation]
+    E --> F[Create First User]
 ```
 
 ### 1. Clone Repository
@@ -110,25 +107,8 @@ docker-compose logs -f hub-api
 
 ```mermaid
 graph TD
-    subgraph "Security Settings (MUST CHANGE)"
-        MinIO["MinIO Credentials<br/>MINIO_ROOT_USER<br/>MINIO_ROOT_PASSWORD"]
-        Postgres["PostgreSQL Password<br/>POSTGRES_PASSWORD"]
-        LakeFS["LakeFS Encryption Key<br/>LAKEFS_AUTH_ENCRYPT_SECRET_KEY"]
-        Session["Session Secret<br/>KOHAKU_HUB_SESSION_SECRET"]
-        Admin["Admin Token<br/>KOHAKU_HUB_ADMIN_SECRET_TOKEN"]
-    end
-
-    subgraph "Optional Settings"
-        BaseURL["Base URL<br/>KOHAKU_HUB_BASE_URL"]
-        S3Public["S3 Public Endpoint<br/>KOHAKU_HUB_S3_PUBLIC_ENDPOINT"]
-        LFSThreshold["LFS Threshold<br/>KOHAKU_HUB_LFS_THRESHOLD_BYTES"]
-        Email["Email Verification<br/>KOHAKU_HUB_REQUIRE_EMAIL_VERIFICATION"]
-    end
-
-    Deploy[Deploy] --> Security
-    Security --> Optional
-    Optional --> Production[Production Ready]
-
+    A[Security Settings] --> B[Optional Settings]
+    B --> C[Production Ready]
 ```
 
 ### Required Changes

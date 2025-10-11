@@ -64,10 +64,15 @@ hub-api:
 
 ## Port Mapping
 
-```
-Client Request → Port 28080 (Nginx)
-                    ├→ / (static files) → Frontend
-                    ├→ /api/* → backend:48888
-                    ├→ /org/* → backend:48888
-                    └→ /{type}s/{ns}/{name}/resolve/* → backend:48888
+```mermaid
+graph TD
+    A[Client] --> B(Port 28080 - Nginx)
+    B --> C{/api/*}
+    B --> D{/org/*}
+    B --> E{/resolve/*}
+    B --> F[Static Files]
+    C --> G[Backend:48888]
+    D --> G
+    E --> G
+    F --> H[Frontend]
 ```

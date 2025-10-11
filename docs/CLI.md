@@ -49,27 +49,11 @@ The KohakuHub CLI (`kohub-cli`) provides both a **Python API** for programmatic 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│         CLI Interface (Click)               │
-│  - kohub-cli [command] [options]            │
-│  - Interactive TUI mode                     │
-└──────────────────┬──────────────────────────┘
-                   |
-                   v
-┌─────────────────────────────────────────────┐
-│       Python API (KohubClient)              │
-│  - User operations                          │
-│  - Organization operations                  │
-│  - Repository operations                    │
-│  - Token management                         │
-└──────────────────┬──────────────────────────┘
-                   |
-                   v
-┌─────────────────────────────────────────────┐
-│      HTTP Client (requests.Session)         │
-│  - KohakuHub REST API                       │
-└─────────────────────────────────────────────┘
+```mermaid
+graph TD
+    A[CLI Interface] --> B[Python API]
+    B --> C[HTTP Client]
+    C --> D[KohakuHub REST API]
 ```
 
 ## Python API Design

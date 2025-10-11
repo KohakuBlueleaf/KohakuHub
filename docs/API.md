@@ -4,36 +4,43 @@
 
 This document explains how Kohaku Hub's API works, the data flow, and key endpoints.
 
+## Table of Contents
+
+- [System Architecture](#system-architecture)
+- [Core Concepts](#core-concepts)
+- [Git Clone Support](#git-clone-support)
+- [Upload Workflow](#upload-workflow)
+- [Download Workflow](#download-workflow)
+- [Repository Privacy & Filtering](#repository-privacy--filtering)
+- [Repository Management](#repository-management)
+- [Database Schema](#database-schema)
+- [LakeFS Integration](#lakefs-integration)
+- [API Endpoint Summary](#api-endpoint-summary)
+- [Detailed Endpoint Documentation](#detailed-endpoint-documentation)
+- [Content Deduplication](#content-deduplication)
+- [Error Handling](#error-handling)
+- [Performance Considerations](#performance-considerations)
+
 ## System Architecture
 
 ```mermaid
-graph TB
+graph TD
     subgraph "Client Layer"
-        Client["Client<br/>(huggingface_hub, git, browser)"]
+        A[Client]
     end
-
-    subgraph "Entry Point"
-        Nginx["Nginx (Port 28080)<br/>- Serves static files<br/>- Reverse proxy"]
-    end
-
     subgraph "Application Layer"
-        FastAPI["FastAPI (Port 48888)<br/>- Auth & Permissions<br/>- HF-compatible API<br/>- Git Smart HTTP"]
+        B[FastAPI]
     end
-
-    subgraph "Storage Backend"
-        LakeFS["LakeFS<br/>- Git-like versioning<br/>- Branch management<br/>- Commit history"]
-        DB["PostgreSQL/SQLite<br/>- User data<br/>- Metadata<br/>- Deduplication<br/>- Synchronous with db.atomic()"]
-        S3["MinIO/S3<br/>- Object storage<br/>- LFS files<br/>- Presigned URLs"]
+    subgraph "Data Layer"
+        C[LakeFS]
+        D[PostgreSQL]
+        E[MinIO]
     end
-
-    Client -->|HTTP/Git/LFS| Nginx
-    Nginx -->|Static files| Client
-    Nginx -->|/api, /org, resolve| FastAPI
-    FastAPI -->|REST API (async)| LakeFS
-    FastAPI -->|Sync queries with db.atomic()| DB
-    FastAPI -->|Async wrappers| S3
-    LakeFS -->|Stores objects| S3
-
+    A -- "HTTP/HTTPS" --> B
+    B -- "REST" --> C
+    B -- "DB Driver" --> D
+    B -- "S3 API" --> E
+    C -- "S3 API" --> E
 ```
 
 ## Core Concepts
@@ -42,17 +49,11 @@ graph TB
 
 ```mermaid
 graph TD
-    Start[File Upload] --> Check{File size > 5MB?}
-    Check -->|No| Regular[Regular Mode]
-    Check -->|Yes| LFS[LFS Mode]
-    Regular --> Base64[Base64 in commit payload]
-    LFS --> Presigned[S3 presigned URL]
-    Base64 --> FastAPI[FastAPI processes]
-    Presigned --> Direct[Direct S3 upload]
-    FastAPI --> LakeFS1[LakeFS stores object]
-    Direct --> Link[FastAPI links S3 object]
-    Link --> LakeFS2[LakeFS commit with physical address]
-
+    A[Start] --> B{File > 5MB?};
+    B -- Yes --> C[Get S3 presigned URL];
+    C --> D[Upload to S3];
+    D --> E[Commit with file pointer];
+    B -- No --> F[Commit with file content];
 ```
 
 **Note:** The LFS threshold is configurable via `KOHAKU_HUB_LFS_THRESHOLD_BYTES` (default: 5MB = 5,242,880 bytes).
@@ -132,35 +133,23 @@ See [Git.md](./Git.md) for complete Git clone documentation and implementation d
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant API as FastAPI
-    participant LakeFS
-    participant S3
+    participant C as Client
+    participant S as FastAPI
+    participant L as LakeFS
+    participant M as MinIO
 
-    Note over Client,S3: Phase 1: Preupload Check
-    Client->>API: POST /preupload (file hashes & sizes)
-    API->>API: Check DB for existing SHA256
-    API-->>Client: Upload mode (regular/lfs) & dedup info
-
-    alt Small Files (<5MB)
-        Note over Client,S3: Phase 2a: Regular Upload
-        Client->>API: POST /commit (base64 content)
-        API->>LakeFS: Upload object
-        LakeFS->>S3: Store object
-    else Large Files (>=5MB)
-        Note over Client,S3: Phase 2b: LFS Upload
-        Client->>API: POST /info/lfs/objects/batch
-        API->>S3: Generate presigned URL
-        API-->>Client: Presigned URL
-        Client->>S3: PUT file (direct upload)
-        Client->>API: POST /commit (lfsFile entry)
-        API->>LakeFS: Link physical address
-    end
-
-    Note over Client,S3: Phase 3: Commit
-    API->>LakeFS: Commit with message
-    LakeFS-->>API: Commit ID
-    API-->>Client: Commit URL & OID
+    C->>S: 1. Upload request
+    S->>L: 2. Get presigned URL
+    L->>M: 3. Generate URL
+    M-->>L: 4. Presigned URL
+    L-->>S: 5. Presigned URL
+    S-->>C: 6. Presigned URL
+    C->>M: 7. Upload file
+    M-->>C: 8. Upload complete
+    C->>S: 9. Commit file
+    S->>L: 10. Commit file
+    L-->>S: 11. Commit complete
+    S-->>C: 12. Commit complete
 ```
 
 ### Step 1: Preupload Check
@@ -368,26 +357,19 @@ Files are sent inline in the commit payload as base64.
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant API as FastAPI
-    participant LakeFS
-    participant S3
+    participant C as Client
+    participant S as FastAPI
+    participant L as LakeFS
+    participant M as MinIO
 
-    Note over Client,S3: Optional: HEAD request for metadata
-    Client->>API: HEAD /resolve/{revision}/{filename}
-    API->>LakeFS: Stat object
-    LakeFS-->>API: Object metadata (SHA256, size)
-    API-->>Client: Headers (ETag, Content-Length, X-Repo-Commit)
-
-    Note over Client,S3: Download: GET request
-    Client->>API: GET /resolve/{revision}/{filename}
-    API->>LakeFS: Get object metadata
-    API->>S3: Generate presigned URL
-    API-->>Client: 302 Redirect (presigned URL)
-    Client->>S3: Direct download
-    S3-->>Client: File content
-
-    Note over Client: No proxy - direct S3 download
+    C->>S: 1. Download request
+    S->>L: 2. Get presigned URL
+    L->>M: 3. Generate URL
+    M-->>L: 4. Presigned URL
+    L-->>S: 5. Presigned URL
+    S-->>C: 6. Presigned URL
+    C->>M: 7. Download file
+    M-->>C: 8. Download complete
 ```
 
 ### Step 1: Get Metadata (HEAD)
@@ -604,127 +586,64 @@ Returns all repositories for a user/organization, grouped by type.
 
 ```mermaid
 erDiagram
-    USER ||--o{ REPOSITORY : owns
-    USER ||--o{ SESSION : has
-    USER ||--o{ TOKEN : has
-    USER ||--o{ SSHKEY : has
-    USER }o--o{ ORGANIZATION : member_of
-    ORGANIZATION ||--o{ REPOSITORY : owns
-    REPOSITORY ||--o{ FILE : contains
-    REPOSITORY ||--o{ COMMIT : has
-    REPOSITORY ||--o{ STAGINGUPLOAD : has
-    COMMIT ||--o{ LFSOBJECTHISTORY : references
+    users ||--o{ repositories : "owns"
+    users ||--o{ tokens : "has"
+    users ||--o{ ssh_keys : "has"
+    users }o--o{ organizations : "is member of"
+    organizations ||--o{ repositories : "owns"
+    repositories ||--o{ files : "contains"
+    repositories ||--o{ commits : "has"
 
-    USER {
+    users {
         int id PK
-        string username UK
-        string email UK
-        string password_hash
-        boolean email_verified
-        boolean is_active
-        bigint private_quota_bytes
-        bigint public_quota_bytes
-        bigint private_used_bytes
-        bigint public_used_bytes
+        string username
+        string email
+        string password
         datetime created_at
     }
 
-    REPOSITORY {
+    repositories {
         int id PK
-        string repo_type
-        string namespace
         string name
-        string full_id
-        boolean private
+        string description
         int owner_id FK
         datetime created_at
     }
 
-    FILE {
+    files {
         int id PK
-        string repo_full_id
-        string path_in_repo
-        int size
-        string sha256
-        boolean lfs
-        datetime created_at
-        datetime updated_at
-    }
-
-    COMMIT {
-        int id PK
-        string commit_id
-        string repo_full_id
-        string repo_type
-        string branch
-        int user_id FK
-        string username
-        text message
-        text description
-        datetime created_at
-    }
-
-    ORGANIZATION {
-        int id PK
-        string name UK
-        text description
-        bigint private_quota_bytes
-        bigint public_quota_bytes
-        bigint private_used_bytes
-        bigint public_used_bytes
-        datetime created_at
-    }
-
-    TOKEN {
-        int id PK
-        int user_id FK
-        string token_hash UK
         string name
-        datetime last_used
+        string path
+        int repository_id FK
         datetime created_at
     }
 
-    SESSION {
+    commits {
         int id PK
-        string session_id UK
+        string message
+        string author
+        int repository_id FK
+        datetime created_at
+    }
+
+    organizations {
+        int id PK
+        string name
+        string description
+        datetime created_at
+    }
+
+    tokens {
+        int id PK
+        string token
         int user_id FK
-        string secret
-        datetime expires_at
         datetime created_at
     }
 
-    SSHKEY {
+    ssh_keys {
         int id PK
+        string key
         int user_id FK
-        string key_type
-        text public_key
-        string fingerprint UK
-        string title
-        datetime last_used
-        datetime created_at
-    }
-
-    STAGINGUPLOAD {
-        int id PK
-        string repo_full_id
-        string repo_type
-        string revision
-        string path_in_repo
-        string sha256
-        int size
-        string upload_id
-        string storage_key
-        boolean lfs
-        datetime created_at
-    }
-
-    LFSOBJECTHISTORY {
-        int id PK
-        string repo_full_id
-        string path_in_repo
-        string sha256
-        int size
-        string commit_id
         datetime created_at
     }
 ```
