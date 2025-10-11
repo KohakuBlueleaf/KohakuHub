@@ -23,6 +23,8 @@ This document explains how Kohaku Hub's API works, the data flow, and key endpoi
 
 ## System Architecture
 
+The Kohaku Hub system is composed of three main layers: the Client Layer, the Application Layer, and the Data Layer.
+
 ```mermaid
 graph TD
     subgraph "Client Layer"
@@ -43,9 +45,20 @@ graph TD
     C -- "S3 API" --> E
 ```
 
+The **Client Layer** consists of any client that interacts with the Kohaku Hub, such as the `huggingface_hub` Python client, a Git client, or a web browser.
+
+The **Application Layer** is a FastAPI application that provides the HuggingFace-compatible API, authentication and permissions, and the Git Smart HTTP server.
+
+The **Data Layer** is composed of three main components:
+- **LakeFS:** Provides Git-like versioning for data, including branches, commits, and tags.
+- **PostgreSQL:** Stores metadata for users, repositories, and files.
+- **MinIO:** An S3-compatible object storage for large files and LFS objects.
+
 ## Core Concepts
 
 ### File Size Thresholds
+
+Kohaku Hub handles file uploads differently based on their size. The threshold is configurable via the `KOHAKU_HUB_LFS_THRESHOLD_BYTES` environment variable (default: 5MB).
 
 ```mermaid
 graph TD
@@ -55,6 +68,9 @@ graph TD
     D --> E[Commit with file pointer];
     B -- No --> F[Commit with file content];
 ```
+
+- **Small Files (<= 5MB):** Files smaller than or equal to the threshold are uploaded directly to the FastAPI server, encoded in Base64 within the commit payload.
+- **Large Files (> 5MB):** For files larger than the threshold, the client requests a presigned S3 URL from the server. The client then uploads the file directly to S3, and the commit contains a pointer to the file in S3. This avoids proxying large files through the application server, improving performance and scalability.
 
 **Note:** The LFS threshold is configurable via `KOHAKU_HUB_LFS_THRESHOLD_BYTES` (default: 5MB = 5,242,880 bytes).
 
@@ -129,6 +145,8 @@ See [Git.md](./Git.md) for complete Git clone documentation and implementation d
 
 ## Upload Workflow
 
+The upload workflow is designed to be efficient and scalable, especially for large files. It consists of three main phases: pre-upload check, file upload, and commit.
+
 ### Overview
 
 ```mermaid
@@ -138,18 +156,14 @@ sequenceDiagram
     participant L as LakeFS
     participant M as MinIO
 
-    C->>S: 1. Upload request
-    S->>L: 2. Get presigned URL
-    L->>M: 3. Generate URL
-    M-->>L: 4. Presigned URL
-    L-->>S: 5. Presigned URL
-    S-->>C: 6. Presigned URL
-    C->>M: 7. Upload file
-    M-->>C: 8. Upload complete
-    C->>S: 9. Commit file
-    S->>L: 10. Commit file
-    L-->>S: 11. Commit complete
-    S-->>C: 12. Commit complete
+    C->>S: 1. Pre-upload check
+    S-->>C: 2. Upload mode & presigned URLs
+    C->>M: 3. Upload large files to S3
+    M-->>C: 4. Upload complete
+    C->>S: 5. Commit with file content/pointers
+    S->>L: 6. Commit to LakeFS
+    L-->>S: 7. Commit complete
+    S-->>C: 8. Commit complete
 ```
 
 ### Step 1: Preupload Check
@@ -355,6 +369,8 @@ Files are sent inline in the commit payload as base64.
 
 ## Download Workflow
 
+The download workflow is designed to be fast and efficient, with clients downloading files directly from S3.
+
 ```mermaid
 sequenceDiagram
     participant C as Client
@@ -363,11 +379,11 @@ sequenceDiagram
     participant M as MinIO
 
     C->>S: 1. Download request
-    S->>L: 2. Get presigned URL
-    L->>M: 3. Generate URL
-    M-->>L: 4. Presigned URL
-    L-->>S: 5. Presigned URL
-    S-->>C: 6. Presigned URL
+    S->>L: 2. Get object metadata
+    L-->>S: 3. Physical address
+    S->>M: 4. Generate presigned URL
+    M-->>S: 5. Presigned URL
+    S-->>C: 6. 302 Redirect to presigned URL
     C->>M: 7. Download file
     M-->>C: 8. Download complete
 ```
@@ -584,68 +600,134 @@ Returns all repositories for a user/organization, grouped by type.
 
 ## Database Schema
 
+The following ER diagram illustrates the relationships between the main tables in the Kohaku Hub database.
+
 ```mermaid
 erDiagram
-    users ||--o{ repositories : "owns"
-    users ||--o{ tokens : "has"
-    users ||--o{ ssh_keys : "has"
-    users }o--o{ organizations : "is member of"
-    organizations ||--o{ repositories : "owns"
-    repositories ||--o{ files : "contains"
-    repositories ||--o{ commits : "has"
+    USER ||--o{ REPOSITORY : "owns"
+    USER ||--o{ SESSION : "has"
+    USER ||--o{ TOKEN : "has"
+    USER ||--o{ SSHKEY : "has"
+    USER }o--o{ ORGANIZATION : "is member of"
+    ORGANIZATION ||--o{ REPOSITORY : "owns"
+    REPOSITORY ||--o{ FILE : "contains"
+    REPOSITORY ||--o{ COMMIT : "has"
+    REPOSITORY ||--o{ STAGINGUPLOAD : "has"
+    COMMIT ||--o{ LFSOBJECTHISTORY : "references"
 
-    users {
+    USER {
         int id PK
-        string username
-        string email
-        string password
+        string username UK
+        string email UK
+        string password_hash
+        boolean email_verified
+        boolean is_active
+        bigint private_quota_bytes
+        bigint public_quota_bytes
+        bigint private_used_bytes
+        bigint public_used_bytes
         datetime created_at
     }
 
-    repositories {
+    REPOSITORY {
         int id PK
+        string repo_type
+        string namespace
         string name
-        string description
+        string full_id
+        boolean private
         int owner_id FK
         datetime created_at
     }
 
-    files {
+    FILE {
         int id PK
-        string name
-        string path
-        int repository_id FK
+        string repo_full_id
+        string path_in_repo
+        int size
+        string sha256
+        boolean lfs
         datetime created_at
+        datetime updated_at
     }
 
-    commits {
+    COMMIT {
         int id PK
-        string message
-        string author
-        int repository_id FK
-        datetime created_at
-    }
-
-    organizations {
-        int id PK
-        string name
-        string description
-        datetime created_at
-    }
-
-    tokens {
-        int id PK
-        string token
+        string commit_id
+        string repo_full_id
+        string repo_type
+        string branch
         int user_id FK
+        string username
+        text message
+        text description
         datetime created_at
     }
 
-    ssh_keys {
+    ORGANIZATION {
         int id PK
-        string key
-        int user_id FK
+        string name UK
+        text description
+        bigint private_quota_bytes
+        bigint public_quota_bytes
+        bigint private_used_bytes
+        bigint public_used_bytes
         datetime created_at
     }
+
+    TOKEN {
+        int id PK
+        int user_id FK
+        string token_hash UK
+        string name
+        datetime last_used
+        datetime created_at
+    }
+
+    SESSION {
+        int id PK
+        string session_id UK
+        int user_id FK
+        string secret
+        datetime expires_at
+        datetime created_at
+    }
+
+    SSHKEY {
+        int id PK
+        int user_id FK
+        string key_type
+        text public_key
+        string fingerprint UK
+        string title
+        datetime last_used
+        datetime created_at
+    }
+
+    STAGINGUPLOAD {
+        int id PK
+        string repo_full_id
+        string repo_type
+        string revision
+        string path_in_repo
+        string sha256
+        int size
+        string upload_id
+        string storage_key
+        boolean lfs
+        datetime created_at
+    }
+
+    LFSOBJECTHISTORY {
+        int id PK
+        string repo_full_id
+        string path_in_repo
+        string sha256
+        int size
+        string commit_id
+        datetime created_at
+    }
+}
 ```
 
 ### Key Tables

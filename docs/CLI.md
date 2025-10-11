@@ -49,6 +49,8 @@ The KohakuHub CLI (`kohub-cli`) provides both a **Python API** for programmatic 
 
 ## Architecture
 
+The KohakuHub CLI is built with a layered architecture, with the CLI commands acting as a wrapper around a Python API.
+
 ```mermaid
 graph TD
     A[CLI Interface] --> B[Python API]

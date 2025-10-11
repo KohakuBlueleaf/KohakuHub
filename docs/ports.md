@@ -64,6 +64,8 @@ hub-api:
 
 ## Port Mapping
 
+The following diagram illustrates how requests are routed through the Nginx reverse proxy.
+
 ```mermaid
 graph TD
     A[Client] --> B(Port 28080 - Nginx)

@@ -4,6 +4,8 @@
 
 ## Quick Start
 
+The following diagram illustrates the setup process for Kohaku Hub.
+
 ```mermaid
 graph TD
     A[Clone Repository] --> B[Configure]
@@ -104,6 +106,8 @@ docker-compose logs -f hub-api
 - **API Docs:** http://localhost:48888/docs (optional, for development)
 
 ## Configuration Reference
+
+The following diagram illustrates the different configuration settings for Kohaku Hub.
 
 ```mermaid
 graph TD

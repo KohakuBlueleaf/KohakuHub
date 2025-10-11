@@ -9,6 +9,8 @@
 
 ## Admin Portal Architecture
 
+The Admin Portal is a separate interface for managing the Kohaku Hub instance. It has its own authentication and provides access to administrative functions.
+
 ```mermaid
 graph TD
     A[Admin] -- "X-Admin-Token" --> B[Admin Portal]

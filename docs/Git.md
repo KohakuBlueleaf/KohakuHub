@@ -251,6 +251,8 @@ In KohakuHub, we need to:
 
 ### Architecture Overview
 
+The Git server is implemented as a set of FastAPI endpoints that handle Git's Smart HTTP protocol. The server uses a translation layer to convert Git operations into LakeFS REST API calls.
+
 ```mermaid
 graph TD
     A[Git Client] --> B[FastAPI]

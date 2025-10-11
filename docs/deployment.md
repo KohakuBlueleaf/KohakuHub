@@ -65,6 +65,8 @@ docker-compose up -d --build
 
 **Configuration:** `docker/nginx/default.conf`
 
+The Nginx reverse proxy is the single entry point for all traffic to the Kohaku Hub. It serves the frontend application and proxies all API requests to the backend.
+
 ```mermaid
 graph TD
     A[Client] --> B{Request}
@@ -124,6 +126,8 @@ os.environ["HF_ENDPOINT"] = "http://localhost:48888"  # Don't use backend port d
 ```
 
 ## Architecture Diagram
+
+The following diagram illustrates the overall architecture of the Kohaku Hub.
 
 ```mermaid
 graph TD
@@ -297,6 +301,8 @@ os.environ["HF_ENDPOINT"] = "http://localhost:28080"
 
 ### Upload Flow (with LFS)
 
+The upload flow for LFS files is designed to be efficient by avoiding proxying the file through the application server.
+
 ```mermaid
 sequenceDiagram
     participant C as Client
@@ -324,6 +330,8 @@ sequenceDiagram
 ```
 
 ### Download Flow (Direct S3)
+
+The download flow is designed for performance by redirecting the client to download directly from S3.
 
 ```mermaid
 sequenceDiagram
