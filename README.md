@@ -1,10 +1,26 @@
 # Kohaku Hub - Self-hosted HuggingFace Alternative
 
-![](images/logo-banner-dark.svg)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner.svg">
+    <img alt="kohub library logo" src="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner.svg" width="600" height="80" style="max-width: 100%; padding-left: 100px">
+  </picture>
+  <br/>
+  <br/>
+</p> 
+
+
+
+<p align="center">
+    <a href="https://github.com/KohakuBlueleaf/KohakuHub"><img alt="GitHub" src="https://img.shields.io/github/stars/KohakuBlueleaf/KohakuHub?style=social"></a>
+    <!-- <a href="https://github.com/KohakuBlueleaf/KohakuHub/releases"><img alt="GitHub release" src="https://img.shields.io/github/release/KohakuBlueleaf/KohakuHub.svg"></a>
+    <a href="https://pypi.org/project/kohub-cli"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/kohub-cli.svg"></a> -->
+    <a href="https://github.com/KohakuBlueleaf/KohakuHub/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/KohakuBlueleaf/KohakuHub"></a>
+    <a href="https://deepwiki.com/KohakuBlueleaf/KohakuHub"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg"></a>
+</p>
 
 ---
-
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuHub)
 
 **🚀 Active Development - Alpha Release Ready**
 
