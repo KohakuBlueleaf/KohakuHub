@@ -2,9 +2,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner.svg">
-    <img alt="kohub library logo" src="https://raw.githubusercontent.com/theblackcat102/KohakuHub/4a32355364b40c751735d59c651dab023f6c6d68/images/logo-banner.svg" width="600" height="80" style="max-width: 100%; padding-left: 100px">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KohakuBlueleaf/KohakuHub/refs/heads/main/images/logo-banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/KohakuBlueleaf/KohakuHub/refs/heads/main/images/logo-banner.svg">
+    <img alt="kohub library logo" src="https://raw.githubusercontent.com/theblackcat102/KohakuHub/refs/heads/main/images/logo-banner.svg" width="600" height="80" style="max-width: 100%; padding-left: 100px">
   </picture>
   <br/>
   <br/>
