@@ -9,7 +9,7 @@ description = "A self-hosted HuggingFace alternative"
 authors = [
     { name = "Shih-Ying Yeh(KohakuBlueLeaf)", email = "apolloyeh0123@gmail.com" },
 ]
-license = { text = "Apache-2.0" }
+license = { text = "AGPL-3" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -54,10 +54,6 @@ dev = [
     "pytest-timeout>=2.1.0",
     "pytest-mock>=3.12.0",
 ]
-
-
-[project.scripts]
-kohub-cli = "kohub_cli.cli:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
