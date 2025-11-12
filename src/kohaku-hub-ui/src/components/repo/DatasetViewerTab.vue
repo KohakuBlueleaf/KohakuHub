@@ -207,6 +207,16 @@ async function loadFolder(folder) {
       .filter((file) => {
         const format = detectFormat(file.path);
         return format && format !== "tar";
+      })
+      .map((file) => {
+        // `folder.path` usually ends with a slash (e.g. "images/").
+        // Guard against double‑slashes just in case.
+        const cleanFolder = folder.path.replace(/\/$/, "");
+        const cleanFile   = file.path.replace(/^\/?/, ""); // remove leading slash if any
+        return {
+          ...file,
+          path: `${cleanFolder}/${cleanFile}`,
+        };
       });
   } catch (err) {
     ElMessage.error({
