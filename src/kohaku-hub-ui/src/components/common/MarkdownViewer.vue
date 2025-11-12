@@ -411,6 +411,7 @@ onMounted(() => {
 .markdown-body :deep(ol) {
   padding-left: 2em;
   margin-bottom: 16px;
+  list-style: revert;
 }
 
 .markdown-body :deep(li) {
