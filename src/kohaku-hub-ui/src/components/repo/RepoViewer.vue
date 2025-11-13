@@ -1184,7 +1184,7 @@ async function loadReadme() {
       // Parse YAML frontmatter
       const { metadata, content } = parseYAMLFrontmatter(rawContent);
       readmeMetadata.value = normalizeMetadata(metadata);
-      readmeContent.value = content; // Content without frontmatter for display
+      readmeContent.value = content ? content : " "; // Content without frontmatter for display, single space if remainder empty
     }
   } catch (err) {
     console.error("Failed to load README:", err);
