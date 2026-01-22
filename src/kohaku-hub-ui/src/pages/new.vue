@@ -93,7 +93,7 @@
             </el-input>
             <div class="text-xs text-gray-500 mt-1">
               <div class="i-carbon-information inline-block mr-1" />
-              Use lowercase letters, numbers, hyphens, and underscores only
+              Use letters, numbers, hyphens, underscores, and dots only
             </div>
           </el-form-item>
 
@@ -192,8 +192,8 @@ const rules = {
       trigger: "blur",
     },
     {
-      pattern: /^[a-zA-Z0-9_-]+$/,
-      message: "Only letters, numbers, hyphens and underscores allowed",
+      pattern: /^[a-zA-Z0-9_.-]+$/,
+      message: "Only letters, numbers, hyphens, underscores, and dots allowed",
       trigger: "blur",
     },
     {
