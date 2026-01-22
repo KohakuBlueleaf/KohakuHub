@@ -78,9 +78,9 @@ def generate_postgres_service(config: dict) -> str:
     container_name: postgres
     restart: always
     environment:
-      - POSTGRES_USER={config['postgres_user']}
-      - POSTGRES_PASSWORD={config['postgres_password']}
-      - POSTGRES_DB={config['postgres_db']}
+      - POSTGRES_USER={config["postgres_user"]}
+      - POSTGRES_PASSWORD={config["postgres_password"]}
+      - POSTGRES_DB={config["postgres_db"]}
     ports:
       - "25432:5432" # Optional: for external access
     volumes:
@@ -97,8 +97,8 @@ def generate_minio_service(config: dict) -> str:
     container_name: minio
     command: server /data --console-address ":29000"
     environment:
-      - MINIO_ROOT_USER={config['s3_access_key']}
-      - MINIO_ROOT_PASSWORD={config['s3_secret_key']}
+      - MINIO_ROOT_USER={config["s3_access_key"]}
+      - MINIO_ROOT_PASSWORD={config["s3_secret_key"]}
     ports:
       - "29001:9000"    # S3 API
       - "29000:29000"   # Web Console
@@ -162,24 +162,24 @@ def generate_lakefs_service(config: dict) -> str:
     if config["lakefs_use_postgres"]:
         if config["postgres_builtin"]:
             lakefs_db_config = f"""      - LAKEFS_DATABASE_TYPE=postgres
-      - LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://{config['postgres_user']}:{config['postgres_password']}@postgres:5432/{config['lakefs_db']}?sslmode=disable"""
+      - LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://{config["postgres_user"]}:{config["postgres_password"]}@postgres:5432/{config["lakefs_db"]}?sslmode=disable"""
             # Add environment variables for init script
             init_env_vars = f"""      - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_USER={config['postgres_user']}
-      - POSTGRES_PASSWORD={config['postgres_password']}
-      - POSTGRES_DB={config['postgres_db']}
-      - LAKEFS_DB={config['lakefs_db']}"""
+      - POSTGRES_USER={config["postgres_user"]}
+      - POSTGRES_PASSWORD={config["postgres_password"]}
+      - POSTGRES_DB={config["postgres_db"]}
+      - LAKEFS_DB={config["lakefs_db"]}"""
         else:
             lakefs_db_config = f"""      - LAKEFS_DATABASE_TYPE=postgres
-      - LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://{config['postgres_user']}:{config['postgres_password']}@{config['postgres_host']}:{config['postgres_port']}/{config['lakefs_db']}?sslmode=disable"""
+      - LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://{config["postgres_user"]}:{config["postgres_password"]}@{config["postgres_host"]}:{config["postgres_port"]}/{config["lakefs_db"]}?sslmode=disable"""
             # Add environment variables for init script
-            init_env_vars = f"""      - POSTGRES_HOST={config['postgres_host']}
-      - POSTGRES_PORT={config['postgres_port']}
-      - POSTGRES_USER={config['postgres_user']}
-      - POSTGRES_PASSWORD={config['postgres_password']}
-      - POSTGRES_DB={config['postgres_db']}
-      - LAKEFS_DB={config['lakefs_db']}"""
+            init_env_vars = f"""      - POSTGRES_HOST={config["postgres_host"]}
+      - POSTGRES_PORT={config["postgres_port"]}
+      - POSTGRES_USER={config["postgres_user"]}
+      - POSTGRES_PASSWORD={config["postgres_password"]}
+      - POSTGRES_DB={config["postgres_db"]}
+      - LAKEFS_DB={config["lakefs_db"]}"""
     else:
         lakefs_db_config = """      - LAKEFS_DATABASE_TYPE=local
       - LAKEFS_DATABASE_LOCAL_PATH=/var/lakefs/data/metadata.db"""
@@ -195,12 +195,14 @@ def generate_lakefs_service(config: dict) -> str:
             s3_endpoint = "http://minio:9000"
             force_path_style = "true"
             s3_region = "us-east-1"  # MinIO works with us-east-1
+        s3_bucket = "hub-storage"
     else:
         s3_endpoint = config["s3_endpoint"]
         # Use path-style for all non-AWS endpoints (MinIO, CloudFlare R2, custom S3)
         # Only AWS S3 (*.amazonaws.com) should use virtual-hosted style
         force_path_style = "false" if "amazonaws.com" in s3_endpoint.lower() else "true"
         s3_region = config.get("s3_region", "us-east-1")
+        s3_bucket = config.get("s3_bucket") or "hub-storage"
 
     # Add entrypoint and volumes for database initialization
     entrypoint_config = ""
@@ -221,11 +223,12 @@ def generate_lakefs_service(config: dict) -> str:
     ):
         lakefs_networks_str = f"""    networks:
       - default
-      - {config['external_network']}
+      - {config["external_network"]}
 """
 
     return f"""  lakefs:
-    image: treeverse/lakefs:latest
+    build:
+      context: ./docker/lakefs
     container_name: lakefs
 {entrypoint_config}
     environment:
@@ -233,11 +236,12 @@ def generate_lakefs_service(config: dict) -> str:
 {init_env_vars}
       - LAKEFS_BLOCKSTORE_TYPE=s3
       - LAKEFS_BLOCKSTORE_S3_ENDPOINT={s3_endpoint}
+      - LAKEFS_BLOCKSTORE_S3_BUCKET={s3_bucket}
       - LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE={force_path_style}
-      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID={config['s3_access_key']}
-      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY={config['s3_secret_key']}
+      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID={config["s3_access_key"]}
+      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY={config["s3_secret_key"]}
       - LAKEFS_BLOCKSTORE_S3_REGION={s3_region}
-      - LAKEFS_AUTH_ENCRYPT_SECRET_KEY={config['lakefs_encrypt_key']}
+      - LAKEFS_AUTH_ENCRYPT_SECRET_KEY={config["lakefs_encrypt_key"]}
       - LAKEFS_LOGGING_FORMAT=text
       - LAKEFS_LISTEN_ADDRESS=0.0.0.0:28000
     ports:
@@ -272,7 +276,7 @@ def generate_hub_api_service(config: dict) -> str:
     ):
         networks_str = f"""    networks:
       - default
-      - {config['external_network']}
+      - {config["external_network"]}
 """
 
     # Database configuration
@@ -328,9 +332,9 @@ def generate_hub_api_service(config: dict) -> str:
       - KOHAKU_HUB_S3_PUBLIC_ENDPOINT={s3_endpoint_public} # Change to your S3 public URL
 
       ## ===== CRITICAL: Security Configuration (MUST CHANGE) =====
-      - KOHAKU_HUB_SESSION_SECRET={config['session_secret']}
-      - KOHAKU_HUB_ADMIN_SECRET_TOKEN={config['admin_secret']}
-      - KOHAKU_HUB_DATABASE_KEY={config['database_key']}
+      - KOHAKU_HUB_SESSION_SECRET={config["session_secret"]}
+      - KOHAKU_HUB_ADMIN_SECRET_TOKEN={config["admin_secret"]}
+      - KOHAKU_HUB_DATABASE_KEY={config["database_key"]}
 
       ## ===== Performance Configuration =====
       - KOHAKU_HUB_WORKERS=4 # Number of worker processes (1-8, recommend: CPU cores)
@@ -341,9 +345,9 @@ def generate_hub_api_service(config: dict) -> str:
 
       ## ===== S3 Storage Configuration =====
       - KOHAKU_HUB_S3_ENDPOINT={s3_endpoint_internal}
-      - KOHAKU_HUB_S3_ACCESS_KEY={config['s3_access_key']}
-      - KOHAKU_HUB_S3_SECRET_KEY={config['s3_secret_key']}
-      - KOHAKU_HUB_S3_BUCKET=hub-storage
+      - KOHAKU_HUB_S3_ACCESS_KEY={config["s3_access_key"]}
+      - KOHAKU_HUB_S3_SECRET_KEY={config["s3_secret_key"]}
+      - KOHAKU_HUB_S3_BUCKET={config["s3_bucket"]}
       - KOHAKU_HUB_S3_REGION={s3_region}  # auto (recommended), us-east-1, or your AWS region
 {s3_sig_version_line}
 
@@ -438,7 +442,7 @@ services:
 
     # Add external network if specified
     if config.get("external_network"):
-        content += f"""  {config['external_network']}:
+        content += f"""  {config["external_network"]}:
     external: true
 """
 
@@ -479,7 +483,8 @@ def load_config_file(config_path: Path) -> dict:
         config["lakefs_use_postgres"] = lakefs.getboolean("use_postgres", fallback=True)
         config["lakefs_db"] = lakefs.get("database", fallback="lakefs")
         config["lakefs_encrypt_key"] = lakefs.get(
-            "encrypt_key", fallback=generate_secret(32)  # 43 chars
+            "encrypt_key",
+            fallback=generate_secret(32),  # 43 chars
         )
     else:
         config["lakefs_use_postgres"] = True
@@ -600,10 +605,11 @@ builtin = true
 # S3 Provider: minio (default, auto-setup) or garage (manual setup, no CVEs)
 provider = minio
 
-# If builtin = false, specify S3 endpoint and credentials:
+    # If builtin = false, specify S3 endpoint and credentials:
 # endpoint = https://your-s3-endpoint.com
 # access_key = your-access-key
 # secret_key = your-secret-key
+# bucket = hub-storage
 # region = us-east-1  # us-east-1 (default), auto for R2, garage for Garage, or specific AWS region
 # signature_version = s3v4  # s3v4 for Garage/R2/AWS S3, leave empty for MinIO
 
@@ -689,7 +695,7 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
     print()
 
     # Helper to get value from env or toml
-    def get_existing(env_key: str, toml_path: str = None):
+    def get_existing(env_key: str, toml_path: str | None = None):
         if env_key in existing_env:
             return existing_env[env_key]
         if toml_path:
@@ -711,7 +717,7 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
     if config["postgres_builtin"]:
         # Parse DATABASE_URL
         db_url = get_existing("KOHAKU_HUB_DATABASE_URL", "app.database_url")
-        if db_url and db_url.startswith("postgresql://"):
+        if isinstance(db_url, str) and db_url.startswith("postgresql://"):
             # Parse: postgresql://user:pass@host:port/db
             match = re.match(r"postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", db_url)
             if match:
@@ -750,6 +756,8 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
     # S3 Configuration
     print("\n--- S3 Configuration ---")
     s3_endpoint = get_existing("KOHAKU_HUB_S3_ENDPOINT", "s3.endpoint")
+    if isinstance(s3_endpoint, dict):
+        s3_endpoint = None
 
     # Detect provider from endpoint
     if s3_endpoint:
@@ -771,12 +779,19 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
         f"Using: {'Built-in ' + config['s3_provider'].title() if config['s3_builtin'] else 'External S3'}"
     )
 
-    config["s3_access_key"] = get_existing(
-        "KOHAKU_HUB_S3_ACCESS_KEY", "s3.access_key"
-    ) or generate_secret(24)
-    config["s3_secret_key"] = get_existing(
-        "KOHAKU_HUB_S3_SECRET_KEY", "s3.secret_key"
-    ) or generate_secret(48)
+    config["s3_access_key"] = get_existing("KOHAKU_HUB_S3_ACCESS_KEY", "s3.access_key")
+    if isinstance(config["s3_access_key"], dict):
+        config["s3_access_key"] = None
+    config["s3_access_key"] = config["s3_access_key"] or generate_secret(24)
+
+    config["s3_secret_key"] = get_existing("KOHAKU_HUB_S3_SECRET_KEY", "s3.secret_key")
+    if isinstance(config["s3_secret_key"], dict):
+        config["s3_secret_key"] = None
+    config["s3_secret_key"] = config["s3_secret_key"] or generate_secret(48)
+    config["s3_bucket"] = get_existing("KOHAKU_HUB_S3_BUCKET", "s3.bucket")
+    if isinstance(config["s3_bucket"], dict):
+        config["s3_bucket"] = None
+    config["s3_bucket"] = config["s3_bucket"] or "hub-storage"
 
     # Set endpoint based on provider
     if not s3_endpoint:
@@ -789,6 +804,8 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
 
     # Set region based on provider
     existing_region = get_existing("KOHAKU_HUB_S3_REGION", "s3.region")
+    if isinstance(existing_region, dict):
+        existing_region = None
     if existing_region:
         config["s3_region"] = existing_region
     else:
@@ -800,6 +817,8 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
     existing_sig = get_existing(
         "KOHAKU_HUB_S3_SIGNATURE_VERSION", "s3.signature_version"
     )
+    if isinstance(existing_sig, dict):
+        existing_sig = None
     if existing_sig:
         config["s3_signature_version"] = existing_sig
     else:
@@ -812,12 +831,19 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
     config["session_secret"] = get_existing(
         "KOHAKU_HUB_SESSION_SECRET", "auth.session_secret"
     )
+    if isinstance(config["session_secret"], dict):
+        config["session_secret"] = None
+
     config["admin_secret"] = get_existing(
         "KOHAKU_HUB_ADMIN_SECRET_TOKEN", "admin.secret_token"
     )
+    if isinstance(config["admin_secret"], dict):
+        config["admin_secret"] = None
 
     # NEW FIELD: database_key
     config["database_key"] = get_existing("KOHAKU_HUB_DATABASE_KEY", "app.database_key")
+    if isinstance(config["database_key"], dict):
+        config["database_key"] = None
     if not config["database_key"]:
         print("\n🆕 New field: DATABASE_KEY (for encrypting external fallback tokens)")
         default_db_key = generate_secret(32)
@@ -844,6 +870,8 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
 
     # LakeFS encryption key - MUST preserve existing value or generate only if missing
     config["lakefs_encrypt_key"] = get_existing("LAKEFS_ENCRYPT_SECRET_KEY")
+    if isinstance(config["lakefs_encrypt_key"], dict):
+        config["lakefs_encrypt_key"] = None
     if not config["lakefs_encrypt_key"]:
         print("\n⚠ LakeFS encryption key missing - generating new one")
         print("   WARNING: This will make existing LakeFS data inaccessible!")
@@ -853,6 +881,8 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
 
     # Garage secrets - MUST preserve existing values or generate only if missing
     config["garage_rpc_secret"] = get_existing("GARAGE_RPC_SECRET")
+    if isinstance(config["garage_rpc_secret"], dict):
+        config["garage_rpc_secret"] = None
     if not config["garage_rpc_secret"]:
         print("\n⚠ Garage RPC secret missing - generating new one")
         config["garage_rpc_secret"] = secrets.token_hex(32)
@@ -860,10 +890,14 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
         print(f"   Garage RPC secret: (exists - PRESERVED)")
 
     config["garage_admin_token"] = get_existing("GARAGE_ADMIN_TOKEN")
+    if isinstance(config["garage_admin_token"], dict):
+        config["garage_admin_token"] = None
     if not config["garage_admin_token"]:
         config["garage_admin_token"] = generate_secret(32)
 
     config["garage_metrics_token"] = get_existing("GARAGE_METRICS_TOKEN")
+    if isinstance(config["garage_metrics_token"], dict):
+        config["garage_metrics_token"] = None
     if not config["garage_metrics_token"]:
         config["garage_metrics_token"] = generate_secret(32)
 
@@ -880,6 +914,7 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
             {
                 "KOHAKU_HUB_DATABASE_KEY": config["database_key"],
                 "LAKEFS_ENCRYPT_SECRET_KEY": config["lakefs_encrypt_key"],
+                "LAKEFS_BLOCKSTORE_S3_BUCKET": config["s3_bucket"],
             },
         )
 
@@ -889,6 +924,7 @@ def migrate_existing_config(docker_compose_path: Path, config_toml_path: Path) -
             config_toml_path,
             {
                 "app.database_key": config["database_key"],
+                "s3.bucket": config["s3_bucket"],
                 "fallback.require_auth": False,
             },
         )
@@ -943,12 +979,18 @@ def update_docker_compose_inplace(filepath: Path, new_vars: dict):
                 output_lines.append(line)
 
             # If we're at the last env var and haven't added new vars, add them
-            if i + 1 < len(lines) and not lines[i + 1].strip().startswith("- "):
-                for var_name, var_value in new_vars.items():
-                    if var_name not in added_vars:
-                        indent = len(line) - len(line.lstrip())
-                        output_lines.append(f"{' ' * indent}- {var_name}={var_value}\n")
-                        added_vars.add(var_name)
+            if i + 1 < len(lines):
+                next_line = lines[i + 1]
+                if not isinstance(next_line, str):
+                    next_line = ""
+                if not next_line.strip().startswith("- "):
+                    for var_name, var_value in new_vars.items():
+                        if var_name not in added_vars:
+                            indent = len(line) - len(line.lstrip())
+                            output_lines.append(
+                                f"{' ' * indent}- {var_name}={var_value}\n"
+                            )
+                            added_vars.add(var_name)
         else:
             output_lines.append(line)
 
@@ -1013,8 +1055,6 @@ def update_config_toml_inplace(filepath: Path, new_fields: dict):
         f.write("\n".join(lines))
 
     print(f"✓ Updated {filepath}")
-
-    return config
 
 
 def main():
@@ -1331,8 +1371,8 @@ def generate_config_toml(config: dict) -> str:
 [s3]
 endpoint = "{s3_endpoint_internal}"
 public_endpoint = "{s3_endpoint_public}"
-access_key = "{config['s3_access_key']}"
-secret_key = "{config['s3_secret_key']}"
+access_key = "{config["s3_access_key"]}"
+secret_key = "{config["s3_secret_key"]}"
 bucket = "hub-storage"
 region = "{s3_region}"
 force_path_style = true
@@ -1363,13 +1403,13 @@ use_tls = true
 [auth]
 require_email_verification = false
 invitation_only = false
-session_secret = "{config['session_secret']}"
+session_secret = "{config["session_secret"]}"
 session_expire_hours = 168  # 7 days
 token_expire_days = 365
 
 [admin]
 enabled = true
-secret_token = "{config['admin_secret']}"
+secret_token = "{config["admin_secret"]}"
 
 [quota]
 default_user_private_quota_bytes = 10_000_000      # 10MB
@@ -1389,7 +1429,7 @@ base_url = "http://localhost:48888"  # Dev server URL
 api_base = "/api"
 db_backend = "postgres"
 database_url = "{db_url}"
-database_key = "{config['database_key']}"  # For encrypting external fallback tokens
+database_key = "{config["database_key"]}"  # For encrypting external fallback tokens
 # LFS Configuration (sizes in decimal: 1MB = 1,000,000 bytes)
 lfs_threshold_bytes = 5_000_000  # 5MB - files larger use LFS
 lfs_multipart_threshold_bytes = 100_000_000  # 100MB - files larger use multipart upload

@@ -108,13 +108,15 @@ services:
       - ./hub-meta/minio-data:/root/.minio
 
   lakefs:
-    image: treeverse/lakefs:latest
+    build:
+      context: ./docker/lakefs
     container_name: lakefs
     environment:
       - LAKEFS_DATABASE_TYPE=local
       - LAKEFS_DATABASE_LOCAL_PATH=/var/lakefs/data/metadata.db
       - LAKEFS_BLOCKSTORE_TYPE=s3
       - LAKEFS_BLOCKSTORE_S3_ENDPOINT=http://minio:9000
+      - LAKEFS_BLOCKSTORE_S3_BUCKET=hub-storage
       - LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE=true
       - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID=minioadmin
       - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY=minioadmin
