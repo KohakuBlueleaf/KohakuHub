@@ -27,7 +27,7 @@ def generate_secret(length: int = 32) -> str:
     return secrets.token_urlsafe(length)
 
 
-def backup_file(filepath: Path) -> Path:
+def backup_file(filepath: Path) -> Path | None:
     """Create a timestamped backup of a file.
 
     Args:
@@ -207,6 +207,11 @@ def migrate_docker_compose(existing_env: dict, auto_mode: bool = False) -> dict:
             "default": generate_secret(32),  # 43 chars
             "comment": "For encrypting external fallback tokens (generate with: openssl rand -hex 32)",
         },
+        "LAKEFS_BLOCKSTORE_S3_BUCKET": {
+            "prompt": "LakeFS S3 bucket name",
+            "default": "hub-storage",
+            "comment": "S3 bucket for LakeFS blockstore",
+        },
         "KOHAKU_HUB_FALLBACK_REQUIRE_AUTH": {
             "prompt": "Require authentication for fallback access? (true/false)",
             "default": "false",
@@ -258,6 +263,11 @@ def migrate_config_toml(existing_config: dict, auto_mode: bool = False) -> dict:
             "default": generate_secret(32),
             "comment": "For encrypting external fallback tokens",
         },
+        "lakefs.s3_bucket": {
+            "prompt": "LakeFS S3 bucket name",
+            "default": "hub-storage",
+            "comment": "S3 bucket for LakeFS blockstore",
+        },
         "fallback.require_auth": {
             "prompt": "Require authentication for fallback access? (true/false)",
             "default": False,
@@ -288,7 +298,9 @@ def migrate_config_toml(existing_config: dict, auto_mode: bool = False) -> dict:
     return migrated
 
 
-def write_docker_compose(filepath: Path, env_vars: dict, base_content: str = None):
+def write_docker_compose(
+    filepath: Path, env_vars: dict, base_content: str | None = None
+):
     """Write updated docker-compose.yml with new environment variables.
 
     Args:
@@ -315,8 +327,13 @@ def write_docker_compose(filepath: Path, env_vars: dict, base_content: str = Non
         stripped = line.strip()
 
         # Replace known variables
-        if stripped.startswith("- KOHAKU_HUB_"):
-            match = re.match(r"(\s*)- (KOHAKU_HUB_\w+)=(.+?)(?:\s+#.*)?$", line)
+        if stripped.startswith("- KOHAKU_HUB_") or stripped.startswith(
+            "- LAKEFS_BLOCKSTORE_"
+        ):
+            match = re.match(
+                r"(\s*)- ((?:KOHAKU_HUB|LAKEFS_BLOCKSTORE)_\w+)=(.+?)(?:\s+#.*)?$",
+                line,
+            )
             if match:
                 indent, key, old_value = match.groups()
                 if key in env_vars:
