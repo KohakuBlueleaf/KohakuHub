@@ -4,18 +4,10 @@
 
 set -e
 
-# Install PostgreSQL client if not available (for database initialization)
+# PostgreSQL client must be installed in the image (for database initialization)
 if ! command -v psql >/dev/null 2>&1; then
-    echo "Installing PostgreSQL client..."
-    if apk --version >/dev/null 2>&1; then
-        # Alpine Linux
-        apk add --no-cache postgresql-client >/dev/null 2>&1 || echo "⚠ Failed to install psql via apk"
-    elif apt-get --version >/dev/null 2>&1; then
-        # Debian/Ubuntu
-        apt-get update >/dev/null 2>&1 && apt-get install -y postgresql-client >/dev/null 2>&1 || echo "⚠ Failed to install psql via apt"
-    else
-        echo "⚠ Unknown package manager, cannot install psql"
-    fi
+    echo "⚠ psql not available. Build the lakefs image once before running."
+    echo "  Example: docker-compose build lakefs"
 fi
 
 # Run database initialization if PostgreSQL is configured and script exists
