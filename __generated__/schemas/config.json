@@ -1,0 +1,477 @@
+{
+  "properties": {
+    "s3": {
+      "$ref": "#/$defs/S3Config"
+    },
+    "lakefs": {
+      "$ref": "#/$defs/LakeFSConfig"
+    },
+    "smtp": {
+      "$ref": "#/$defs/SMTPConfig",
+      "default": {
+        "enabled": false,
+        "host": "localhost",
+        "port": 587,
+        "username": "",
+        "password": "",
+        "from_email": "noreply@localhost",
+        "use_tls": true
+      }
+    },
+    "auth": {
+      "$ref": "#/$defs/AuthConfig",
+      "default": {
+        "require_email_verification": false,
+        "invitation_only": false,
+        "session_secret": "change-me-in-production",
+        "session_expire_hours": 168,
+        "token_expire_days": 365
+      }
+    },
+    "admin": {
+      "$ref": "#/$defs/AdminConfig",
+      "default": {
+        "enabled": true,
+        "secret_token": "change-me-in-production"
+      }
+    },
+    "quota": {
+      "$ref": "#/$defs/QuotaConfig",
+      "default": {
+        "default_user_private_quota_bytes": null,
+        "default_user_public_quota_bytes": null,
+        "default_org_private_quota_bytes": null,
+        "default_org_public_quota_bytes": null
+      }
+    },
+    "fallback": {
+      "$ref": "#/$defs/FallbackConfig",
+      "default": {
+        "enabled": true,
+        "cache_ttl_seconds": 300,
+        "timeout_seconds": 10,
+        "max_concurrent_requests": 5,
+        "require_auth": false,
+        "sources": []
+      }
+    },
+    "app": {
+      "$ref": "#/$defs/AppConfig"
+    }
+  },
+  "required": [
+    "s3",
+    "lakefs",
+    "app"
+  ],
+  "title": "Config",
+  "type": "object",
+  "$defs": {
+    "AdminConfig": {
+      "description": "Admin API configuration.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "secret_token": {
+          "default": "change-me-in-production",
+          "title": "Secret Token",
+          "type": "string"
+        }
+      },
+      "title": "AdminConfig",
+      "type": "object"
+    },
+    "AppConfig": {
+      "properties": {
+        "base_url": {
+          "default": "http://localhost:48888",
+          "title": "Base Url",
+          "type": "string"
+        },
+        "api_base": {
+          "default": "/api",
+          "title": "Api Base",
+          "type": "string"
+        },
+        "db_backend": {
+          "default": "sqlite",
+          "title": "Db Backend",
+          "type": "string"
+        },
+        "disable_dataset_viewer": {
+          "default": false,
+          "title": "Disable Dataset Viewer",
+          "type": "boolean"
+        },
+        "database_url": {
+          "default": "sqlite:///./hub.db",
+          "title": "Database Url",
+          "type": "string"
+        },
+        "database_key": {
+          "default": "",
+          "title": "Database Key",
+          "type": "string"
+        },
+        "lfs_threshold_bytes": {
+          "default": 5000000,
+          "title": "Lfs Threshold Bytes",
+          "type": "integer"
+        },
+        "debug_log_payloads": {
+          "default": false,
+          "title": "Debug Log Payloads",
+          "type": "boolean"
+        },
+        "lfs_multipart_threshold_bytes": {
+          "default": 100000000,
+          "title": "Lfs Multipart Threshold Bytes",
+          "type": "integer"
+        },
+        "lfs_multipart_chunk_size_bytes": {
+          "default": 50000000,
+          "title": "Lfs Multipart Chunk Size Bytes",
+          "type": "integer"
+        },
+        "lfs_keep_versions": {
+          "default": 5,
+          "title": "Lfs Keep Versions",
+          "type": "integer"
+        },
+        "lfs_auto_gc": {
+          "default": false,
+          "title": "Lfs Auto Gc",
+          "type": "boolean"
+        },
+        "download_time_bucket_seconds": {
+          "default": 900,
+          "title": "Download Time Bucket Seconds",
+          "type": "integer"
+        },
+        "download_session_cleanup_threshold": {
+          "default": 100,
+          "title": "Download Session Cleanup Threshold",
+          "type": "integer"
+        },
+        "download_keep_sessions_days": {
+          "default": 30,
+          "title": "Download Keep Sessions Days",
+          "type": "integer"
+        },
+        "lfs_suffix_rules_default": {
+          "default": [
+            ".safetensors",
+            ".bin",
+            ".pt",
+            ".pth",
+            ".ckpt",
+            ".onnx",
+            ".pb",
+            ".h5",
+            ".tflite",
+            ".gguf",
+            ".ggml",
+            ".msgpack",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".xz",
+            ".7z",
+            ".rar",
+            ".npy",
+            ".npz",
+            ".arrow",
+            ".parquet",
+            ".mp4",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".wav",
+            ".mp3",
+            ".flac",
+            ".tiff",
+            ".tif"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Lfs Suffix Rules Default",
+          "type": "array"
+        },
+        "site_name": {
+          "default": "KohakuHub",
+          "title": "Site Name",
+          "type": "string"
+        },
+        "log_level": {
+          "default": "INFO",
+          "title": "Log Level",
+          "type": "string"
+        },
+        "log_format": {
+          "default": "file",
+          "title": "Log Format",
+          "type": "string"
+        },
+        "log_dir": {
+          "default": "logs/",
+          "title": "Log Dir",
+          "type": "string"
+        }
+      },
+      "title": "AppConfig",
+      "type": "object"
+    },
+    "AuthConfig": {
+      "properties": {
+        "require_email_verification": {
+          "default": false,
+          "title": "Require Email Verification",
+          "type": "boolean"
+        },
+        "invitation_only": {
+          "default": false,
+          "title": "Invitation Only",
+          "type": "boolean"
+        },
+        "session_secret": {
+          "default": "change-me-in-production",
+          "title": "Session Secret",
+          "type": "string"
+        },
+        "session_expire_hours": {
+          "default": 168,
+          "title": "Session Expire Hours",
+          "type": "integer"
+        },
+        "token_expire_days": {
+          "default": 365,
+          "title": "Token Expire Days",
+          "type": "integer"
+        }
+      },
+      "title": "AuthConfig",
+      "type": "object"
+    },
+    "FallbackConfig": {
+      "description": "Fallback source configuration.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "cache_ttl_seconds": {
+          "default": 300,
+          "title": "Cache Ttl Seconds",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 10,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "max_concurrent_requests": {
+          "default": 5,
+          "title": "Max Concurrent Requests",
+          "type": "integer"
+        },
+        "require_auth": {
+          "default": false,
+          "title": "Require Auth",
+          "type": "boolean"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "title": "FallbackConfig",
+      "type": "object"
+    },
+    "LakeFSConfig": {
+      "properties": {
+        "endpoint": {
+          "default": "http://localhost:8000",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "access_key": {
+          "default": "test-access-key",
+          "title": "Access Key",
+          "type": "string"
+        },
+        "secret_key": {
+          "default": "test-secret-key",
+          "title": "Secret Key",
+          "type": "string"
+        },
+        "repo_namespace": {
+          "default": "hf",
+          "title": "Repo Namespace",
+          "type": "string"
+        }
+      },
+      "title": "LakeFSConfig",
+      "type": "object"
+    },
+    "QuotaConfig": {
+      "description": "Storage quota configuration.",
+      "properties": {
+        "default_user_private_quota_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default User Private Quota Bytes"
+        },
+        "default_user_public_quota_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default User Public Quota Bytes"
+        },
+        "default_org_private_quota_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Org Private Quota Bytes"
+        },
+        "default_org_public_quota_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Org Public Quota Bytes"
+        }
+      },
+      "title": "QuotaConfig",
+      "type": "object"
+    },
+    "S3Config": {
+      "properties": {
+        "public_endpoint": {
+          "default": "http://localhost:9000",
+          "title": "Public Endpoint",
+          "type": "string"
+        },
+        "endpoint": {
+          "default": "http://localhost:9000",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "access_key": {
+          "default": "test-access-key",
+          "title": "Access Key",
+          "type": "string"
+        },
+        "secret_key": {
+          "default": "test-secret-key",
+          "title": "Secret Key",
+          "type": "string"
+        },
+        "bucket": {
+          "default": "test-bucket",
+          "title": "Bucket",
+          "type": "string"
+        },
+        "region": {
+          "default": "us-east-1",
+          "title": "Region",
+          "type": "string"
+        },
+        "force_path_style": {
+          "default": true,
+          "title": "Force Path Style",
+          "type": "boolean"
+        },
+        "signature_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signature Version"
+        }
+      },
+      "title": "S3Config",
+      "type": "object"
+    },
+    "SMTPConfig": {
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "host": {
+          "default": "localhost",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 587,
+          "title": "Port",
+          "type": "integer"
+        },
+        "username": {
+          "default": "",
+          "title": "Username",
+          "type": "string"
+        },
+        "password": {
+          "default": "",
+          "title": "Password",
+          "type": "string"
+        },
+        "from_email": {
+          "default": "noreply@localhost",
+          "title": "From Email",
+          "type": "string"
+        },
+        "use_tls": {
+          "default": true,
+          "title": "Use Tls",
+          "type": "boolean"
+        }
+      },
+      "title": "SMTPConfig",
+      "type": "object"
+    }
+  }
+}
