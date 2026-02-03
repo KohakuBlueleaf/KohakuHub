@@ -403,7 +403,7 @@ npm install --prefix ./src/kohaku-hub-admin
 # Start with Docker
 cp docker-compose.example.yml docker-compose.yml
 # IMPORTANT: Edit docker-compose.yml to change default passwords and secrets
-./deploy.sh
+python ./scripts/deploy.py
 ```
 
 **Access:** http://localhost:28080
