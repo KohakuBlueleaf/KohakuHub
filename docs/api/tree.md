@@ -65,7 +65,7 @@ Returns a flat list of file and folder objects in HuggingFace-compatible format.
 **Field Descriptions:**
 
 - `type`: Object type (`file` or `directory`)
-- `path`: Relative path from the specified prefix
+- `path`: Relative path from the repository root
 - `size`: File size in bytes (for directories, sum of all contents)
 - `oid`: Object identifier (SHA256 for LFS files, SHA1 for regular files, tree hash for directories)
 - `lastModified`: ISO 8601 timestamp of last modification

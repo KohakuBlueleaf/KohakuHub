@@ -130,13 +130,12 @@ async def calculate_folder_stats(
     return folder_size, folder_latest_mtime
 
 
-async def convert_file_object(obj, repository: Repository, prefix_len: int) -> dict:
+async def convert_file_object(obj, repository: Repository) -> dict:
     """Convert LakeFS file object to HuggingFace format.
 
     Args:
         obj: LakeFS object dict
         repository: Repository object (FK)
-        prefix_len: Length of path prefix to remove
 
     Returns:
         HuggingFace formatted file object
@@ -144,8 +143,8 @@ async def convert_file_object(obj, repository: Repository, prefix_len: int) -> d
     # Use repo-specific LFS settings
     is_lfs = should_use_lfs(repository, obj["path"], obj["size_bytes"])
 
-    # Remove prefix from path to get relative path
-    relative_path = obj["path"][prefix_len:] if prefix_len else obj["path"]
+    # Use full path relative to repository root (HuggingFace spec)
+    file_path = obj["path"]
 
     # Get correct checksum from database using repository FK
     file_record = get_file(repository, obj["path"])
@@ -158,7 +157,7 @@ async def convert_file_object(obj, repository: Repository, prefix_len: int) -> d
         "type": "file",
         "oid": checksum,  # Git blob SHA1 for non-LFS, SHA256 for LFS
         "size": obj["size_bytes"],
-        "path": relative_path,
+        "path": file_path,
     }
 
     # Add last modified info if available
@@ -179,7 +178,7 @@ async def convert_file_object(obj, repository: Repository, prefix_len: int) -> d
 
 
 async def convert_directory_object(
-    obj, lakefs_repo: str, revision: str, prefix_len: int
+    obj, lakefs_repo: str, revision: str
 ) -> dict:
     """Convert LakeFS directory object to HuggingFace format.
 
@@ -187,13 +186,12 @@ async def convert_directory_object(
         obj: LakeFS common_prefix object dict
         lakefs_repo: LakeFS repository name
         revision: Branch or commit
-        prefix_len: Length of path prefix to remove
 
     Returns:
         HuggingFace formatted directory object
     """
-    # Remove prefix from path to get relative path
-    relative_path = obj["path"][prefix_len:] if prefix_len else obj["path"]
+    # Use full path relative to repository root (HuggingFace spec)
+    dir_path = obj["path"]
 
     # Calculate folder stats
     folder_size, folder_latest_mtime = await calculate_folder_stats(
@@ -204,7 +202,7 @@ async def convert_directory_object(
         "type": "directory",
         "oid": obj.get("checksum", ""),
         "size": folder_size,
-        "path": relative_path.rstrip("/"),  # Remove trailing slash
+        "path": dir_path.rstrip("/"),  # Remove trailing slash
     }
 
     # Add last modified info
@@ -290,19 +288,18 @@ async def list_repo_tree(
 
     # Convert LakeFS objects to HuggingFace format
     result_list = []
-    prefix_len = len(prefix)
 
     for obj in all_results:
         match obj["path_type"]:
             case "object":
                 # File object - pass Repository FK instead of repo_id
-                file_obj = await convert_file_object(obj, repo_row, prefix_len)
+                file_obj = await convert_file_object(obj, repo_row)
                 result_list.append(file_obj)
 
             case "common_prefix":
                 # Directory object
                 dir_obj = await convert_directory_object(
-                    obj, lakefs_repo, revision, prefix_len
+                    obj, lakefs_repo, revision
                 )
                 result_list.append(dir_obj)
 

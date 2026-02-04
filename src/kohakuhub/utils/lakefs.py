@@ -17,6 +17,58 @@ def get_lakefs_client() -> LakeFSRestClient:
     return get_lakefs_rest_client()
 
 
+async def resolve_revision(
+    client: LakeFSRestClient, lakefs_repo: str, revision: str
+) -> tuple[str, dict | None]:
+    """Resolve a revision (branch name or commit hash) to commit ID and info.
+
+    HuggingFace datasets library and other clients may use either branch names
+    (e.g., "main") or commit hashes as revision identifiers. This function
+    handles both cases by first trying to resolve as a branch, then as a commit.
+
+    Args:
+        client: LakeFS REST client instance
+        lakefs_repo: LakeFS repository name
+        revision: Branch name or commit hash
+
+    Returns:
+        Tuple of (commit_id, commit_info dict or None)
+
+    Raises:
+        ValueError: If revision cannot be resolved as either branch or commit
+    """
+    # Try resolving as a branch first
+    try:
+        branch = await client.get_branch(repository=lakefs_repo, branch=revision)
+        commit_id = branch["commit_id"]
+        # Get commit details
+        try:
+            commit_info = await client.get_commit(
+                repository=lakefs_repo, commit_id=commit_id
+            )
+        except Exception:
+            commit_info = None
+        return commit_id, commit_info
+    except Exception as branch_error:
+        # Check if it's a "not found" error (branch doesn't exist)
+        error_str = str(branch_error).lower()
+        if "404" not in error_str and "not found" not in error_str:
+            # Some other error, re-raise
+            raise branch_error
+
+    # Branch not found, try resolving as a commit hash
+    try:
+        commit_info = await client.get_commit(
+            repository=lakefs_repo, commit_id=revision
+        )
+        return commit_info["id"], commit_info
+    except Exception as commit_error:
+        # Neither branch nor commit found
+        raise ValueError(
+            f"Revision '{revision}' not found as branch or commit"
+        ) from commit_error
+
+
 def _base36_encode(num: int) -> str:
     """Encode integer to base36 using numpy (C-optimized).
 
