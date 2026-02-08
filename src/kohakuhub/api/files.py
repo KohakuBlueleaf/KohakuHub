@@ -28,7 +28,7 @@ from kohakuhub.auth.permissions import (
     check_repo_read_permission,
     check_repo_write_permission,
 )
-from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
+from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name, resolve_revision
 from kohakuhub.utils.s3 import generate_download_presigned_url, parse_s3_uri
 from kohakuhub.api.fallback import with_repo_fallback
 from kohakuhub.api.xet import XET_ENABLE
@@ -41,7 +41,6 @@ from kohakuhub.api.repo.utils.hf import (
     hf_repo_not_found,
     hf_revision_not_found,
     hf_server_error,
-    is_lakefs_not_found_error,
 )
 
 logger = get_logger("FILE")
@@ -308,26 +307,13 @@ async def get_revision(
     lakefs_repo = lakefs_repo_name(repo_type.value, repo_id)
     client = get_lakefs_client()
 
-    # Get branch information
+    # Resolve revision (supports both branch names and commit hashes)
     try:
-        branch = await client.get_branch(repository=lakefs_repo, branch=revision)
+        commit_id, commit_info = await resolve_revision(client, lakefs_repo, revision)
+    except ValueError:
+        return hf_revision_not_found(repo_id, revision)
     except Exception as e:
-        if is_lakefs_not_found_error(e):
-            return hf_revision_not_found(repo_id, revision)
-        return hf_server_error(f"Failed to get branch: {str(e)}")
-
-    commit_id = branch["commit_id"]
-    commit_info = None
-
-    # Get commit details if available
-    if commit_id:
-        try:
-            commit_info = await client.get_commit(
-                repository=lakefs_repo, commit_id=commit_id
-            )
-        except Exception as e:
-            # Log but don't fail if commit info unavailable
-            logger.warning(f"Could not get commit info: {e}")
+        return hf_server_error(f"Failed to resolve revision: {str(e)}")
 
     # Format last modified date
     last_modified = None
