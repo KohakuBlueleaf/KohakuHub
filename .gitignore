@@ -22,6 +22,7 @@ lint-reports/
 /logs
 data/
 **/public/docs
+__generated__
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
