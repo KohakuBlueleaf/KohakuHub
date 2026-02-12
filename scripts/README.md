@@ -539,6 +539,21 @@ export KOHAKU_HUB_BASE_URL=http://localhost:28080
 
 ---
 
+## JSON Schema Generator
+
+### Generate JSON Schema
+
+```bash
+python scripts/generate_json_schema.py
+```
+
+This script will generate a JSON schema for the KohakuHub types in `__generated__/schemas/<filename>.json`.
+
+Currently supported files:
+- `config.json`
+
+---
+
 ## Tips for Demo Deployments
 
 ### CloudFlare R2 Free Tier
