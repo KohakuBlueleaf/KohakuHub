@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -18,6 +19,19 @@ from kohakuhub.api.repo.utils.hf import hf_repo_not_found, hf_server_error
 
 logger = get_logger("COMMITS")
 router = APIRouter()
+
+
+def _format_commit_date(value) -> str | None:
+    """Format LakeFS commit timestamps for huggingface_hub compatibility."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+    return None
 
 
 @router.get("/{repo_type}s/{namespace}/{name}/commits/{branch}")
@@ -112,10 +126,12 @@ async def list_commits(
                         "oid": commit["id"],
                         "title": commit.get("message", ""),
                         "message": commit.get("message", ""),
-                        "date": commit.get("creation_date"),
+                        "date": _format_commit_date(commit.get("creation_date")),
+                        "authors": [{"user": author}],
                         "author": author,
                         "email": commit.get("metadata", {}).get("email", ""),
                         "parents": commit.get("parents", []),
+                        "formatted": None,
                     }
                 )
             except Exception as ex:
