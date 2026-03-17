@@ -131,7 +131,6 @@ async def list_commits(
                         "author": author,
                         "email": commit.get("metadata", {}).get("email", ""),
                         "parents": commit.get("parents", []),
-                        "formatted": None,
                     }
                 )
             except Exception as ex:
