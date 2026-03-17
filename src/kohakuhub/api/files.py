@@ -270,6 +270,74 @@ async def preupload(
 # ========== Revision Info Endpoint ==========
 
 
+async def build_revision_siblings(
+    repo: Repository, lakefs_repo: str, revision: str
+) -> list[dict]:
+    """Build HuggingFace-compatible siblings metadata for a revision."""
+    client = get_lakefs_client()
+    siblings = []
+    all_results = []
+    after = ""
+    has_more = True
+
+    while has_more:
+        result = await client.list_objects(
+            repository=lakefs_repo,
+            ref=revision,
+            prefix="",
+            delimiter="",
+            amount=1000,
+            after=after,
+        )
+
+        all_results.extend(result["results"])
+
+        if result.get("pagination") and result["pagination"].get("has_more"):
+            after = result["pagination"]["next_offset"]
+            has_more = True
+        else:
+            has_more = False
+
+    file_objects = [obj for obj in all_results if obj["path_type"] == "object"]
+    lfs_files = [
+        obj
+        for obj in file_objects
+        if should_use_lfs(repo, obj["path"], obj.get("size_bytes", 0))
+    ]
+
+    file_records = {}
+    for obj in lfs_files:
+        try:
+            record = get_file(repo, obj["path"])
+            if record:
+                file_records[obj["path"]] = record
+        except Exception:
+            continue
+
+    for obj in file_objects:
+        sibling = {
+            "rfilename": obj["path"],
+            "size": obj.get("size_bytes", 0),
+        }
+
+        if should_use_lfs(repo, obj["path"], obj.get("size_bytes", 0)):
+            file_record = file_records.get(obj["path"])
+            checksum = (
+                file_record.sha256
+                if file_record and file_record.sha256
+                else obj.get("checksum", "")
+            )
+            sibling["lfs"] = {
+                "sha256": checksum,
+                "size": obj.get("size_bytes", 0),
+                "pointerSize": 134,
+            }
+
+        siblings.append(sibling)
+
+    return siblings
+
+
 @router.get("/{repo_type}s/{namespace}/{name}/revision/{revision}")
 @with_repo_fallback("revision")
 async def get_revision(
@@ -325,8 +393,15 @@ async def get_revision(
     # Format created_at
     created_at = safe_strftime(repo_row.created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
 
+    try:
+        siblings = await build_revision_siblings(repo_row, lakefs_repo, commit_id)
+    except Exception as e:
+        logger.warning(f"Failed to build siblings for {repo_id}@{commit_id[:8]}: {e}")
+        siblings = []
+
     return {
         "id": repo_id,
+        "modelId": repo_id if repo_type.value == "model" else None,
         "author": repo_row.namespace,
         "sha": commit_id,
         "lastModified": last_modified,
@@ -335,7 +410,8 @@ async def get_revision(
         "downloads": repo_row.downloads,
         "likes": repo_row.likes_count,
         "gated": False,
-        "files": [],  # Client will call /tree for file list
+        "siblings": siblings,
+        "files": siblings,
         "type": repo_type.value,
         "revision": revision,
         "commit": {

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 
 from kohakuhub.config import cfg
 from kohakuhub.constants import DATETIME_FORMAT_ISO
@@ -16,6 +16,7 @@ from kohakuhub.auth.permissions import check_repo_read_permission
 from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
 from kohakuhub.api.fallback import with_repo_fallback
 from kohakuhub.api.repo.utils.hf import (
+    hf_entry_not_found,
     hf_repo_not_found,
     hf_revision_not_found,
     hf_server_error,
@@ -218,6 +219,133 @@ async def convert_directory_object(
     return dir_obj
 
 
+def normalize_repo_path(path: str) -> str:
+    """Normalize a repository-relative path."""
+    return path.lstrip("/") if path and path != "/" else ""
+
+
+async def path_exists_in_revision(lakefs_repo: str, revision: str, path: str) -> bool:
+    """Check whether a file or virtual directory exists at a revision."""
+    clean_path = normalize_repo_path(path)
+    if not clean_path:
+        return True
+
+    client = get_lakefs_client()
+
+    try:
+        await client.stat_object(
+            repository=lakefs_repo,
+            ref=revision,
+            path=clean_path,
+        )
+        return True
+    except Exception as ex:
+        if not is_lakefs_not_found_error(ex):
+            raise
+
+    prefix = clean_path if clean_path.endswith("/") else clean_path + "/"
+    result = await client.list_objects(
+        repository=lakefs_repo,
+        ref=revision,
+        prefix=prefix,
+        amount=1,
+    )
+    return bool(result["results"])
+
+
+async def get_paths_info_impl(
+    repo_type: str,
+    namespace: str,
+    repo_name: str,
+    revision: str,
+    paths: list[str],
+    user: User | None,
+):
+    """Shared implementation for POST and GET paths-info endpoints."""
+    repo_id = f"{namespace}/{repo_name}"
+
+    repo_row = get_repository(repo_type, namespace, repo_name)
+    if not repo_row:
+        return hf_repo_not_found(repo_id, repo_type)
+
+    check_repo_read_permission(repo_row, user)
+    lakefs_repo = lakefs_repo_name(repo_type, repo_id)
+    client = get_lakefs_client()
+
+    async def process_path(path: str) -> dict | None:
+        clean_path = normalize_repo_path(path)
+
+        if not clean_path:
+            return {
+                "type": "directory",
+                "path": "",
+                "oid": "",
+                "tree_id": "",
+                "last_commit": None,
+            }
+
+        try:
+            obj_stats = await client.stat_object(
+                repository=lakefs_repo,
+                ref=revision,
+                path=clean_path,
+            )
+
+            is_lfs = should_use_lfs(repo_row, clean_path, obj_stats["size_bytes"])
+            file_record = get_file(repo_row, clean_path)
+            checksum = (
+                file_record.sha256
+                if file_record and file_record.sha256
+                else obj_stats["checksum"]
+            )
+
+            file_info = {
+                "type": "file",
+                "path": clean_path,
+                "size": obj_stats["size_bytes"],
+                "oid": checksum,
+                "lfs": None,
+                "last_commit": None,
+                "security": None,
+            }
+
+            if is_lfs:
+                file_info["lfs"] = {
+                    "oid": checksum,
+                    "size": obj_stats["size_bytes"],
+                    "pointerSize": 134,
+                }
+
+            return file_info
+        except Exception as ex:
+            if is_lakefs_not_found_error(ex):
+                try:
+                    prefix = clean_path if clean_path.endswith("/") else clean_path + "/"
+                    list_result = await client.list_objects(
+                        repository=lakefs_repo,
+                        ref=revision,
+                        prefix=prefix,
+                        amount=1,
+                    )
+                    if list_result["results"]:
+                        oid = list_result["results"][0].get("checksum", "")
+                        return {
+                            "type": "directory",
+                            "path": clean_path,
+                            "oid": oid,
+                            "tree_id": oid,
+                            "last_commit": None,
+                        }
+                    return None
+                except Exception:
+                    logger.debug(f"Path {clean_path} doesn't exist or is invalid")
+                    return None
+            return None
+
+    results = await asyncio.gather(*[process_path(path) for path in paths])
+    return [result for result in results if result is not None]
+
+
 @router.get("/{repo_type}s/{namespace}/{repo_name}/tree/{revision}{path:path}")
 @with_repo_fallback("tree")
 async def list_repo_tree(
@@ -264,7 +392,7 @@ async def list_repo_tree(
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
 
     # Clean path - ensure it ends with / if not empty
-    prefix = path.lstrip("/") if path and path != "/" else ""
+    prefix = normalize_repo_path(path)
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
@@ -279,12 +407,24 @@ async def list_repo_tree(
             if is_lakefs_revision_error(e):
                 return hf_revision_not_found(repo_id, revision)
             else:
-                # Return empty list for non-existent paths
-                return []
+                return hf_entry_not_found(repo_id, normalize_repo_path(path), revision)
 
         # Other errors are server errors
         logger.exception(f"Failed to list objects for {repo_id}", e)
         return hf_server_error(f"Failed to list objects: {str(e)}")
+
+    normalized_path = normalize_repo_path(path)
+    if normalized_path and not all_results:
+        try:
+            path_exists = await path_exists_in_revision(lakefs_repo, revision, normalized_path)
+        except Exception as e:
+            if is_lakefs_not_found_error(e) and is_lakefs_revision_error(e):
+                return hf_revision_not_found(repo_id, revision)
+            logger.exception(f"Failed to verify path existence for {repo_id}", e)
+            return hf_server_error(f"Failed to verify path: {str(e)}")
+
+        if not path_exists:
+            return hf_entry_not_found(repo_id, normalized_path, revision)
 
     # Convert LakeFS objects to HuggingFace format
     result_list = []
@@ -304,6 +444,30 @@ async def list_repo_tree(
                 result_list.append(dir_obj)
 
     return result_list
+
+
+@router.get("/{repo_type}s/{namespace}/{repo_name}/paths-info/{revision}")
+@with_repo_fallback("paths_info")
+async def get_paths_info_via_get(
+    repo_type: str,
+    namespace: str,
+    repo_name: str,
+    revision: str,
+    request: Request,
+    paths: list[str] = Query(...),
+    expand: bool = False,
+    fallback: bool = True,
+    user: User | None = Depends(get_optional_user),
+):
+    """Compatibility alias for clients that use query-string based paths-info."""
+    return await get_paths_info_impl(
+        repo_type=repo_type,
+        namespace=namespace,
+        repo_name=repo_name,
+        revision=revision,
+        paths=paths,
+        user=user,
+    )
 
 
 @router.post("/{repo_type}s/{namespace}/{repo_name}/paths-info/{revision}")
@@ -335,107 +499,11 @@ async def get_paths_info(
     Returns:
         List of path information objects (files and folders)
     """
-    # Construct full repo ID
-    repo_id = f"{namespace}/{repo_name}"
-
-    # Check if repository exists using get_repository
-    repo_row = get_repository(repo_type, namespace, repo_name)
-
-    if not repo_row:
-        return hf_repo_not_found(repo_id, repo_type)
-
-    # Check read permission for private repos
-    check_repo_read_permission(repo_row, user)
-
-    lakefs_repo = lakefs_repo_name(repo_type, repo_id)
-
-    # Helper function to process a single path
-    async def process_path(path: str) -> dict | None:
-        """Process single path and return its info, or None if path doesn't exist."""
-        clean_path = path.lstrip("/")
-
-        try:
-            # Try to get object stats
-            client = get_lakefs_client()
-            obj_stats = await client.stat_object(
-                repository=lakefs_repo,
-                ref=revision,
-                path=clean_path,
-            )
-
-            # It's a file - use repo-specific LFS settings
-            is_lfs = should_use_lfs(repo_row, clean_path, obj_stats["size_bytes"])
-
-            # Get correct checksum from database using repository FK
-            file_record = get_file(repo_row, clean_path)
-
-            checksum = (
-                file_record.sha256
-                if file_record and file_record.sha256
-                else obj_stats["checksum"]
-            )
-
-            file_info = {
-                "type": "file",
-                "path": clean_path,
-                "size": obj_stats["size_bytes"],
-                "oid": checksum,  # Git blob SHA1 for non-LFS, SHA256 for LFS
-                "lfs": None,
-                "last_commit": None,
-                "security": None,
-            }
-
-            # Add LFS metadata if applicable
-            if is_lfs:
-                file_info["lfs"] = {
-                    "oid": checksum,  # SHA256 for LFS files
-                    "size": obj_stats["size_bytes"],
-                    "pointerSize": 134,
-                }
-
-            return file_info
-
-        except Exception as e:
-            # Check if it might be a directory by trying to list with prefix
-            if is_lakefs_not_found_error(e):
-                try:
-                    # Try to list objects with this path as prefix
-                    client = get_lakefs_client()
-                    prefix = (
-                        clean_path if clean_path.endswith("/") else clean_path + "/"
-                    )
-                    list_result = await client.list_objects(
-                        repository=lakefs_repo,
-                        ref=revision,
-                        prefix=prefix,
-                        amount=1,  # Just check if any objects exist
-                    )
-
-                    # If we get results, it's a directory
-                    if list_result["results"]:
-                        # Try to get an oid from the first result if available
-                        oid = ""
-                        if list_result["results"]:
-                            oid = list_result["results"][0].get("checksum", "")
-
-                        return {
-                            "type": "directory",
-                            "path": clean_path,
-                            "oid": oid,
-                            "tree_id": oid,
-                            "last_commit": None,
-                        }
-                    # Path doesn't exist, return None
-                    return None
-                except Exception as ex:
-                    # Path doesn't exist, skip it (as per HF behavior)
-                    logger.debug(f"Path {clean_path} doesn't exist or is invalid")
-                    return None
-            # For other errors, also return None
-            return None
-
-    # Process all paths in parallel
-    results = await asyncio.gather(*[process_path(path) for path in paths])
-
-    # Filter out None values (paths that don't exist)
-    return [r for r in results if r is not None]
+    return await get_paths_info_impl(
+        repo_type=repo_type,
+        namespace=namespace,
+        repo_name=repo_name,
+        revision=revision,
+        paths=paths,
+        user=user,
+    )

@@ -81,11 +81,7 @@ async def list_commits(
 
         if not log_result or not log_result.get("results"):
             logger.warning(f"No commits found for {lakefs_repo}/{branch}")
-            return {
-                "commits": [],
-                "hasMore": False,
-                "nextCursor": None,
-            }
+            return []
 
         # Get all commit IDs to fetch user info from our database
         commit_ids = [c["id"] for c in log_result["results"]]
@@ -128,17 +124,8 @@ async def list_commits(
                 )
                 continue
 
-        pagination = log_result.get("pagination", {})
-        response = {
-            "commits": commits,
-            "hasMore": pagination.get("has_more", False),
-            "nextCursor": (
-                pagination.get("next_offset") if pagination.get("has_more") else None
-            ),
-        }
-
         logger.success(f"Returned {len(commits)} commits for {repo_id}/{branch}")
-        return response
+        return commits
 
     except Exception as e:
         logger.exception(f"Failed to list commits for {repo_id}/{branch}", e)
