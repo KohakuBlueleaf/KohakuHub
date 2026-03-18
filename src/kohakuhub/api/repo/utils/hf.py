@@ -3,6 +3,7 @@
 This module provides utilities for making Kohaku Hub compatible with HuggingFace Hub client.
 """
 
+import re
 from typing import Optional
 
 from fastapi.responses import Response
@@ -247,6 +248,35 @@ def format_hf_datetime(dt) -> Optional[str]:
 
     # HuggingFace format: "2025-01-15T10:30:45.123456Z"
     return safe_strftime(dt, "%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+_HF_COMMIT_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def format_hf_commit_hash(commit_id: Optional[str]) -> Optional[str]:
+    """Normalize commit IDs for HuggingFace-compatible responses.
+
+    HuggingFace clients and downstream libraries like transformers expect
+    40-character hexadecimal commit hashes on response surfaces such as
+    `/revision` and `X-Repo-Commit`.
+
+    Args:
+        commit_id: Raw commit ID from the backing store.
+
+    Returns:
+        A 40-character hexadecimal hash when the input is a longer hex string,
+        otherwise the original value.
+    """
+    if commit_id is None:
+        return None
+
+    if len(commit_id) <= 40:
+        return commit_id
+
+    if _HF_COMMIT_HEX_RE.fullmatch(commit_id):
+        return commit_id[:40]
+
+    return commit_id
 
 
 def is_lakefs_not_found_error(error: Exception) -> bool:

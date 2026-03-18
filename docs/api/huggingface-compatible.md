@@ -72,7 +72,7 @@ KohakuHub implements HuggingFace Hub API for compatibility with `huggingface_hub
 **Notes:**
 - `siblings`: Full file list with LFS info
 - `storage`: Only included for authenticated users
-- `sha`: Latest commit hash on main branch
+- `sha`: Latest 40-character commit hash on main branch
 - Compatible with `transformers.from_pretrained()` and `diffusers`
 
 ---
@@ -154,7 +154,7 @@ KohakuHub implements HuggingFace Hub API for compatibility with `huggingface_hub
 - `404 Not Found` - File doesn't exist
 
 **Response Headers:**
-- `X-Repo-Commit`: Commit hash
+- `X-Repo-Commit`: 40-character hexadecimal commit hash
 - `X-Linked-Etag`: File SHA256
 - `X-Linked-Size`: File size in bytes
 - `ETag`: File SHA256
@@ -255,7 +255,7 @@ KohakuHub implements HuggingFace Hub API for compatibility with `huggingface_hub
 {
   "id": "username/repo",
   "author": "username",
-  "sha": "commit_hash",
+  "sha": "40_char_commit_hash",
   "lastModified": "2025-01-20T10:15:32Z",
   "createdAt": "2025-01-15T08:00:00Z",
   "private": false,
@@ -355,6 +355,10 @@ model = AutoModel.from_pretrained(
 )
 # Set HF_ENDPOINT=http://localhost:28080
 ```
+
+HF-compatible responses expose 40-character commit hashes even when the backing
+LakeFS commit IDs are longer. Internal and non-HF APIs may still use the raw
+LakeFS commit ID.
 
 ✅ **`diffusers`**
 ```python
