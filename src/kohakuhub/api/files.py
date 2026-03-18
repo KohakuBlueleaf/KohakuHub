@@ -38,6 +38,7 @@ from kohakuhub.api.utils.downloads import (
     track_download_async,
 )
 from kohakuhub.api.repo.utils.hf import (
+    format_hf_commit_hash,
     hf_repo_not_found,
     hf_revision_not_found,
     hf_server_error,
@@ -403,7 +404,7 @@ async def get_revision(
         "id": repo_id,
         "modelId": repo_id if repo_type.value == "model" else None,
         "author": repo_row.namespace,
-        "sha": commit_id,
+        "sha": format_hf_commit_hash(commit_id),
         "lastModified": last_modified,
         "createdAt": created_at,
         "private": repo_row.private,
@@ -415,7 +416,7 @@ async def get_revision(
         "type": repo_type.value,
         "revision": revision,
         "commit": {
-            "oid": commit_id,
+            "oid": format_hf_commit_hash(commit_id),
             "date": commit_info.get("creation_date") if commit_info else None,
         },
         "xetEnabled": False,
@@ -498,7 +499,7 @@ async def _get_file_metadata(
 
     response_headers = {
         # Critical headers for HuggingFace client
-        "X-Repo-Commit": commit_hash or "",
+        "X-Repo-Commit": format_hf_commit_hash(commit_hash) or "",
         "X-Linked-Etag": etag_value,  # Plain hex, not quoted
         "X-Linked-Size": str(file_size) if file_size else "0",
         "ETag": etag_value,  # Plain hex, not quoted

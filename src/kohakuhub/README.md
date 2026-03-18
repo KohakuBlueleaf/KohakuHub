@@ -254,6 +254,7 @@ KohakuHub is organized into three primary modules that work together to provide 
 - Compatible endpoint paths: `/{repo_type}s/{namespace}/{name}`
 - Matching response formats and error codes
 - Header compatibility: `X-Repo-Commit`, `X-Linked-Etag`
+- HF-compatible commit hashes are normalized to 40 hexadecimal characters on public HF response surfaces
 
 **Supported Operations:**
 - `create_repo()`, `delete_repo()`, `update_repo_visibility()`
