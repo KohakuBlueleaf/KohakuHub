@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from kohakuhub.config import cfg
+from kohakuhub.async_utils import run_in_s3_executor
 from kohakuhub.db import (
     File,
     Repository,
@@ -29,7 +30,7 @@ from kohakuhub.auth.permissions import (
     check_repo_delete_permission,
 )
 from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
-from kohakuhub.utils.s3 import copy_s3_folder, delete_objects_with_prefix
+from kohakuhub.utils.s3 import copy_s3_folder, delete_objects_with_prefix, get_s3_client
 from kohakuhub.lakefs_rest_client import StagingLocation, StagingMetadata
 from kohakuhub.api.repo.utils.hf import (
     HFErrorCode,
@@ -62,6 +63,74 @@ class CreateRepoPayload(BaseModel):
     organization: Optional[str] = None
     private: bool = False
     sdk: Optional[str] = None
+
+
+def _is_lakefs_namespace_in_use_error(error: Exception, storage_namespace: str) -> bool:
+    """Return True only for the exact LakeFS namespace-in-use error we can heal safely."""
+    error_text = str(error)
+    lowered = error_text.lower()
+    return all(
+        (
+            "storage namespace already in use" in lowered,
+            storage_namespace in error_text,
+            "_lakefs/dummy" in error_text,
+        )
+    )
+
+
+def _has_only_internal_lakefs_markers(keys: list[str], repo_prefix: str) -> bool:
+    """Allow cleanup only when all sampled objects are LakeFS internal markers."""
+    if not keys:
+        return False
+
+    normalized_prefix = repo_prefix.rstrip("/") + "/"
+    for key in keys:
+        if not key.startswith(normalized_prefix):
+            return False
+
+        relative_key = key[len(normalized_prefix):]
+        if not relative_key.startswith("_lakefs/"):
+            return False
+
+    return True
+
+
+async def _list_repo_namespace_keys(repo_prefix: str, max_keys: int = 20) -> list[str]:
+    """List a small sample of objects under the exact repo namespace for safety checks."""
+
+    def _list() -> list[str]:
+        s3 = get_s3_client()
+        response = s3.list_objects_v2(Bucket=cfg.s3.bucket, Prefix=repo_prefix, MaxKeys=max_keys)
+        return [obj["Key"] for obj in response.get("Contents", [])]
+
+    return await run_in_s3_executor(_list)
+
+
+async def _cleanup_orphan_namespace_if_safe(client, lakefs_repo: str) -> bool:
+    """Delete an orphan namespace only if it is provably the current repo's internal residue."""
+    try:
+        if await client.repository_exists(lakefs_repo):
+            logger.warning(
+                f"Skip orphan cleanup for {lakefs_repo}: LakeFS repository still exists"
+            )
+            return False
+    except Exception as e:
+        logger.warning(f"Failed to verify LakeFS repository existence for {lakefs_repo}: {e}")
+        return False
+
+    repo_prefix = f"{lakefs_repo}/"
+    sample_keys = await _list_repo_namespace_keys(repo_prefix)
+    if not _has_only_internal_lakefs_markers(sample_keys, repo_prefix):
+        logger.warning(
+            f"Skip orphan cleanup for {lakefs_repo}: namespace contains non-internal objects"
+        )
+        return False
+
+    deleted_count = await delete_objects_with_prefix(cfg.s3.bucket, repo_prefix)
+    logger.warning(
+        f"Auto-cleaned orphan namespace for {lakefs_repo}: deleted {deleted_count} object(s) under {repo_prefix}"
+    )
+    return deleted_count > 0
 
 
 @router.post("/repos/create")
@@ -121,8 +190,29 @@ async def create_repo(
             default_branch="main",
         )
     except Exception as e:
-        logger.exception(f"LakeFS repository creation failed for {full_id}", e)
-        return hf_server_error(f"LakeFS repository creation failed: {str(e)}")
+        if _is_lakefs_namespace_in_use_error(e, storage_namespace):
+            cleaned = await _cleanup_orphan_namespace_if_safe(client, lakefs_repo)
+            if cleaned:
+                try:
+                    await client.create_repository(
+                        name=lakefs_repo,
+                        storage_namespace=storage_namespace,
+                        default_branch="main",
+                    )
+                except Exception as retry_error:
+                    logger.exception(
+                        f"LakeFS repository creation retry failed for {full_id}",
+                        retry_error,
+                    )
+                    return hf_server_error(
+                        f"LakeFS repository creation failed: {str(retry_error)}"
+                    )
+            else:
+                logger.exception(f"LakeFS repository creation failed for {full_id}", e)
+                return hf_server_error(f"LakeFS repository creation failed: {str(e)}")
+        else:
+            logger.exception(f"LakeFS repository creation failed for {full_id}", e)
+            return hf_server_error(f"LakeFS repository creation failed: {str(e)}")
 
     # Store in database for listing/metadata
     Repository.get_or_create(
@@ -190,7 +280,21 @@ async def delete_repo(
     # 2. Check if user has permission to delete this repository (admin bypasses)
     check_repo_delete_permission(repo_row, user, is_admin=is_admin)
 
-    # 3. Clean up S3 storage FIRST (before deleting DB, so we can access repo FK)
+    # 3. Delete LakeFS repository metadata first to avoid leaving orphan repos behind.
+    client = get_lakefs_client()
+    try:
+        # Note: Deleting a LakeFS repo is generally fast as it only deletes metadata
+        await client.delete_repository(repository=lakefs_repo, force=True)
+        logger.success(f"Successfully deleted LakeFS repository: {lakefs_repo}")
+    except Exception as e:
+        # LakeFS returns 404 if repo doesn't exist, which is fine
+        if not is_lakefs_not_found_error(e):
+            # If LakeFS deletion fails for other reasons, fail the whole operation
+            logger.exception(f"LakeFS repository deletion failed for {lakefs_repo}", e)
+            return hf_server_error(f"LakeFS repository deletion failed: {str(e)}")
+        logger.info(f"LakeFS repository {lakefs_repo} not found/already deleted (OK)")
+
+    # 4. Clean up S3 storage after LakeFS metadata deletion.
     try:
         cleanup_stats = await cleanup_repository_storage(
             repo_type=repo_type,
@@ -205,22 +309,7 @@ async def delete_repo(
             f"{cleanup_stats['lfs_history_deleted']} history records deleted"
         )
     except Exception as e:
-        # S3 cleanup failure is non-fatal - we'll continue with deletion
         logger.warning(f"S3 cleanup failed for {full_id} (non-fatal): {e}")
-
-    # 4. Delete LakeFS repository
-    client = get_lakefs_client()
-    try:
-        # Note: Deleting a LakeFS repo is generally fast as it only deletes metadata
-        await client.delete_repository(repository=lakefs_repo)
-        logger.success(f"Successfully deleted LakeFS repository: {lakefs_repo}")
-    except Exception as e:
-        # LakeFS returns 404 if repo doesn't exist, which is fine
-        if not is_lakefs_not_found_error(e):
-            # If LakeFS deletion fails for other reasons, fail the whole operation
-            logger.exception(f"LakeFS repository deletion failed for {lakefs_repo}", e)
-            return hf_server_error(f"LakeFS repository deletion failed: {str(e)}")
-        logger.info(f"LakeFS repository {lakefs_repo} not found/already deleted (OK)")
 
     # 5. Delete related metadata from database (CASCADE will handle related records)
     try:
@@ -438,11 +527,11 @@ async def _migrate_lakefs_repository(repo_type: str, from_id: str, to_id: str) -
                 branch="main",
                 message=f"Repository moved from {from_id} to {to_id}",
             )
-            logger.success(f"Committed all objects to new repository")
+            logger.success("Committed all objects to new repository")
 
         # 5. Delete old LakeFS repository
         try:
-            await client.delete_repository(repository=from_lakefs_repo)
+            await client.delete_repository(repository=from_lakefs_repo, force=True)
             logger.info(f"Deleted old LakeFS repository: {from_lakefs_repo}")
         except Exception as e:
             if not is_lakefs_not_found_error(e):
@@ -462,7 +551,7 @@ async def _migrate_lakefs_repository(repo_type: str, from_id: str, to_id: str) -
 
         # Try to delete new LakeFS repo if it was created
         try:
-            await client.delete_repository(repository=to_lakefs_repo)
+            await client.delete_repository(repository=to_lakefs_repo, force=True)
             logger.info(f"Cleaned up new LakeFS repo: {to_lakefs_repo}")
         except Exception:
             pass
