@@ -78,10 +78,12 @@ def _is_lakefs_namespace_in_use_error(error: Exception, storage_namespace: str) 
     )
 
 
-def _has_only_internal_lakefs_markers(keys: list[str], repo_prefix: str) -> bool:
+def _has_only_internal_lakefs_markers(
+    keys: list[str], repo_prefix: str, allow_empty: bool = False
+) -> bool:
     """Allow cleanup only when all sampled objects are LakeFS internal markers."""
     if not keys:
-        return False
+        return allow_empty
 
     normalized_prefix = repo_prefix.rstrip("/") + "/"
     for key in keys:
@@ -106,7 +108,26 @@ async def _list_repo_namespace_keys(repo_prefix: str, max_keys: int = 20) -> lis
     return await run_in_s3_executor(_list)
 
 
-async def _cleanup_orphan_namespace_if_safe(client, lakefs_repo: str) -> bool:
+async def _delete_exact_repo_dummy_marker(repo_prefix: str) -> bool:
+    """Delete the exact LakeFS dummy marker for a repo namespace."""
+
+    def _delete() -> bool:
+        s3 = get_s3_client()
+        key = f"{repo_prefix}_lakefs/dummy"
+        try:
+            s3.delete_object(Bucket=cfg.s3.bucket, Key=key)
+            logger.warning(f"Deleted exact orphan dummy marker: {key}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete exact orphan dummy marker {key}: {e}")
+            return False
+
+    return await run_in_s3_executor(_delete)
+
+
+async def _cleanup_orphan_namespace_if_safe(
+    client, lakefs_repo: str, allow_empty_internal_marker: bool = False
+) -> bool:
     """Delete an orphan namespace only if it is provably the current repo's internal residue."""
     try:
         if await client.repository_exists(lakefs_repo):
@@ -120,11 +141,23 @@ async def _cleanup_orphan_namespace_if_safe(client, lakefs_repo: str) -> bool:
 
     repo_prefix = f"{lakefs_repo}/"
     sample_keys = await _list_repo_namespace_keys(repo_prefix)
-    if not _has_only_internal_lakefs_markers(sample_keys, repo_prefix):
+    if not _has_only_internal_lakefs_markers(
+        sample_keys,
+        repo_prefix,
+        allow_empty=allow_empty_internal_marker,
+    ):
         logger.warning(
-            f"Skip orphan cleanup for {lakefs_repo}: namespace contains non-internal objects"
+            f"Skip orphan cleanup for {lakefs_repo}: namespace contains non-internal objects; "
+            f"sample_keys={sample_keys[:10]}"
         )
         return False
+
+    if not sample_keys and allow_empty_internal_marker:
+        logger.warning(
+            f"Proceed orphan cleanup for {lakefs_repo}: LakeFS reported only internal marker conflict "
+            f"but S3 listing returned no visible objects; deleting exact prefix {repo_prefix}"
+        )
+        return await _delete_exact_repo_dummy_marker(repo_prefix)
 
     deleted_count = await delete_objects_with_prefix(cfg.s3.bucket, repo_prefix)
     logger.warning(
@@ -190,8 +223,21 @@ async def create_repo(
             default_branch="main",
         )
     except Exception as e:
-        if _is_lakefs_namespace_in_use_error(e, storage_namespace):
-            cleaned = await _cleanup_orphan_namespace_if_safe(client, lakefs_repo)
+        namespace_in_use = _is_lakefs_namespace_in_use_error(e, storage_namespace)
+        logger.warning(
+            f"LakeFS create_repository failed for {full_id}; "
+            f"namespace_in_use_recoverable={namespace_in_use}; error={e}"
+        )
+
+        if namespace_in_use:
+            cleaned = await _cleanup_orphan_namespace_if_safe(
+                client,
+                lakefs_repo,
+                allow_empty_internal_marker=True,
+            )
+            logger.warning(
+                f"Orphan namespace cleanup result for {lakefs_repo}: cleaned={cleaned}"
+            )
             if cleaned:
                 try:
                     await client.create_repository(
