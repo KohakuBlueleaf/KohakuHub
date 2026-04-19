@@ -451,20 +451,21 @@
             <template v-else>
               <!-- Header Row (desktop only) -->
               <div
-                class="hidden md:grid md:grid-cols-[auto_1fr_120px_150px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
+                class="hidden md:grid md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
               >
                 <div></div>
                 <!-- Icon column -->
                 <div>Name</div>
+                <div>Last Commit</div>
+                <div class="text-right">Updated</div>
                 <div class="text-right">Size</div>
-                <div class="text-right">Last Modified</div>
               </div>
 
               <!-- File Rows -->
               <div
                 v-for="file in filteredFiles"
                 :key="file.path"
-                class="py-3 grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_120px_150px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
+                class="py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
                 @click="handleFileClick(file)"
               >
                 <div
@@ -479,16 +480,34 @@
                   <div class="font-medium truncate">
                     {{ getFileName(file.path) }}
                   </div>
+                  <div
+                    class="mt-1 text-sm text-gray-500 dark:text-gray-400 truncate md:hidden"
+                  >
+                    {{ getEntryCommitTitle(file) }}
+                  </div>
+                  <div
+                    class="mt-1 text-xs text-gray-400 dark:text-gray-500 md:hidden"
+                  >
+                    {{ getEntryUpdatedAt(file) }}
+                    <span v-if="formatEntrySize(file) !== '-'">
+                      · {{ formatEntrySize(file) }}
+                    </span>
+                  </div>
                 </div>
                 <div
-                  class="text-sm text-gray-500 dark:text-gray-400 text-right"
+                  class="hidden md:block min-w-0 text-sm text-gray-500 dark:text-gray-400 truncate"
                 >
-                  {{ formatSize(file.size) }}
+                  {{ getEntryCommitTitle(file) }}
                 </div>
                 <div
                   class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
                 >
-                  {{ formatLastModified(file.lastModified) }}
+                  {{ getEntryUpdatedAt(file) }}
+                </div>
+                <div
+                  class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
+                >
+                  {{ formatEntrySize(file) }}
                 </div>
               </div>
 
@@ -866,8 +885,10 @@ const isLiked = ref(false);
 const likesCount = ref(0);
 const likingInProgress = ref(false);
 const deletingFolder = ref(false);
+const fileTreeRequestId = ref(0);
 
 const baseUrl = window.location.origin;
+const PATHS_INFO_BATCH_SIZE = 1000;
 
 // Computed
 const activeTab = computed(() => props.tab);
@@ -903,7 +924,6 @@ const pathSegments = computed(() => {
 });
 
 const filteredFiles = computed(() => {
-  // Backend now provides folder stats, so just filter
   if (!fileSearchQuery.value) return fileTree.value;
 
   const query = fileSearchQuery.value.toLowerCase();
@@ -1006,13 +1026,38 @@ function formatSize(bytes) {
   return (bytes / (1000 * 1000 * 1000)).toFixed(1) + " GB";
 }
 
-function formatLastModified(dateString) {
-  return formatRelativeTime(dateString, "-");
+function formatEntrySize(file) {
+  if (file.type === "directory") return "-";
+  return formatSize(file.size);
+}
+
+function getEntryCommitTitle(file) {
+  return file.lastCommit?.title || "-";
+}
+
+function getEntryUpdatedAt(file) {
+  return formatRelativeTime(file.lastCommit?.date || file.lastModified, "-");
 }
 
 function getFileName(path) {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
+}
+
+function sortFileEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type === "directory" && b.type !== "directory") return -1;
+    if (a.type !== "directory" && b.type === "directory") return 1;
+    return a.path.localeCompare(b.path);
+  });
+}
+
+function chunkPaths(paths, size) {
+  const chunks = [];
+  for (let index = 0; index < paths.length; index += size) {
+    chunks.push(paths.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function navigateToTab(tab) {
@@ -1164,8 +1209,13 @@ async function toggleLike() {
 
 async function loadFileTree() {
   filesLoading.value = true;
+  const requestId = fileTreeRequestId.value + 1;
+  fileTreeRequestId.value = requestId;
+
+  let sortedEntries = [];
+
   try {
-    const { data } = await repoAPI.listTree(
+    const data = await repoAPI.listTreeAll(
       props.repoType,
       props.namespace,
       props.name,
@@ -1174,16 +1224,60 @@ async function loadFileTree() {
       { recursive: false },
     );
 
-    fileTree.value = data.sort((a, b) => {
-      if (a.type === "directory" && b.type !== "directory") return -1;
-      if (a.type !== "directory" && b.type === "directory") return 1;
-      return a.path.localeCompare(b.path);
-    });
+    if (requestId !== fileTreeRequestId.value) return;
+
+    sortedEntries = sortFileEntries(data || []);
+    fileTree.value = sortedEntries;
+
+    if (sortedEntries.length === 0) {
+      return;
+    }
+
   } catch (err) {
     console.error("Failed to load file tree:", err);
-    fileTree.value = [];
+    if (requestId === fileTreeRequestId.value) {
+      fileTree.value = [];
+    }
   } finally {
-    filesLoading.value = false;
+    if (requestId === fileTreeRequestId.value) {
+      filesLoading.value = false;
+    }
+  }
+
+  if (sortedEntries.length === 0 || requestId !== fileTreeRequestId.value) {
+    return;
+  }
+
+  try {
+    const pathInfoByPath = new Map();
+    const pathBatches = chunkPaths(
+      sortedEntries.map((file) => file.path),
+      PATHS_INFO_BATCH_SIZE,
+    );
+
+    for (const pathBatch of pathBatches) {
+      const { data: expandedEntries } = await repoAPI.getPathsInfo(
+        props.repoType,
+        props.namespace,
+        props.name,
+        currentBranch.value,
+        pathBatch,
+        true,
+      );
+
+      if (requestId !== fileTreeRequestId.value) return;
+
+      for (const entry of expandedEntries || []) {
+        pathInfoByPath.set(entry.path, entry);
+      }
+    }
+
+    fileTree.value = sortedEntries.map((file) => ({
+      ...file,
+      ...(pathInfoByPath.get(file.path) || {}),
+    }));
+  } catch (err) {
+    console.error("Failed to load expanded path info:", err);
   }
 }
 

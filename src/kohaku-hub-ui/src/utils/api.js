@@ -39,6 +39,12 @@ api.interceptors.response.use(
 
 export default api;
 
+function getNextLinkFromHeader(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/i);
+  return match ? match[1] : null;
+}
+
 /**
  * Auth API
  */
@@ -139,6 +145,65 @@ export const repoAPI = {
     api.get(`/api/${type}s/${namespace}/${name}/tree/${revision}${path}`, {
       params,
     }),
+
+  /**
+   * List all repository file tree entries by following Link pagination
+   * @param {string} type - Repository type
+   * @param {string} namespace - Owner namespace
+   * @param {string} name - Repository name
+   * @param {string} revision - Branch name or commit hash
+   * @param {string} path - Path within repository (with leading /)
+   * @param {Object} params - Query parameters { recursive?, expand? }
+   * @returns {Promise<Array>} - Array of files and directories across all pages
+   */
+  listTreeAll: async (type, namespace, name, revision, path, params) => {
+    const entries = [];
+    let response = await repoAPI.listTree(
+      type,
+      namespace,
+      name,
+      revision,
+      path,
+      params,
+    );
+
+    entries.push(...(response.data || []));
+
+    let nextUrl = getNextLinkFromHeader(response.headers?.link);
+    while (nextUrl) {
+      response = await api.get(nextUrl);
+      entries.push(...(response.data || []));
+      nextUrl = getNextLinkFromHeader(response.headers?.link);
+    }
+
+    return entries;
+  },
+
+  /**
+   * Get repository metadata for specific paths
+   * @param {string} type - Repository type
+   * @param {string} namespace - Owner namespace
+   * @param {string} name - Repository name
+   * @param {string} revision - Branch name or commit hash
+   * @param {Array<string>} paths - Repository-relative paths
+   * @param {boolean} expand - Whether to request expanded metadata
+   * @returns {Promise} - Array of files and directories
+   */
+  getPathsInfo: (type, namespace, name, revision, paths, expand = false) => {
+    const formData = new URLSearchParams();
+    paths.forEach((path) => formData.append("paths", path));
+    formData.append("expand", expand ? "true" : "false");
+
+    return api.post(
+      `/api/${type}s/${namespace}/${name}/paths-info/${revision}`,
+      formData,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      },
+    );
+  },
 
   /**
    * Upload files to repository
