@@ -416,10 +416,14 @@
                       class="i-carbon-model text-blue-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-blue-600 dark:text-blue-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('model', repo)"
+                          class="block text-blue-600 dark:text-blue-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -521,10 +525,14 @@
                       class="i-carbon-data-table text-green-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-green-600 dark:text-green-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('dataset', repo)"
+                          class="block text-green-600 dark:text-green-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -626,10 +634,14 @@
                       class="i-carbon-application text-purple-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-purple-600 dark:text-purple-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('space', repo)"
+                          class="block text-purple-600 dark:text-purple-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -830,9 +842,13 @@ function getQuotaStatus(percentage) {
   return "success";
 }
 
-function goToRepo(type, repo) {
+function getRepoPath(type, repo) {
   const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  return `/${type}s/${namespace}/${name}`;
+}
+
+function goToRepo(type, repo) {
+  router.push(getRepoPath(type, repo));
 }
 
 function openExternalRepo(repo, type) {

@@ -59,10 +59,14 @@
               <div class="flex items-start gap-2 mb-2">
                 <div class="i-carbon-model text-blue-500 flex-shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-blue-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('model', repo)"
+                      class="block text-blue-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -112,10 +116,14 @@
               <div class="flex items-start gap-2 mb-2">
                 <div class="i-carbon-data-table text-green-500 flex-shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-green-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('dataset', repo)"
+                      class="block text-green-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -167,10 +175,14 @@
                   class="i-carbon-application text-purple-500 flex-shrink-0"
                 />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-purple-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('space', repo)"
+                      class="block text-purple-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -225,9 +237,13 @@ function formatDate(date) {
   return dayjs(date).fromNow();
 }
 
-function goToRepo(type, repo) {
+function getRepoPath(type, repo) {
   const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  return `/${type}s/${namespace}/${name}`;
+}
+
+function goToRepo(type, repo) {
+  router.push(getRepoPath(type, repo));
 }
 
 async function loadStats() {

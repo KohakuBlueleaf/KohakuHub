@@ -58,10 +58,14 @@
               style="display: none"
             />
             <div class="flex-1 min-w-0">
-              <h3
-                class="text-lg font-semibold text-blue-600 dark:text-blue-400 truncate"
-              >
-                {{ org.name }}
+              <h3 class="text-lg font-semibold truncate">
+                <RouterLink
+                  :to="getOrganizationPath(org.name)"
+                  class="block text-blue-600 dark:text-blue-400 hover:underline"
+                  @click.stop
+                >
+                  {{ org.name }}
+                </RouterLink>
               </h3>
               <p
                 class="text-sm text-gray-600 dark:text-gray-400 mt-1"
@@ -154,8 +158,12 @@ function getRoleType(role) {
   }
 }
 
+function getOrganizationPath(orgName) {
+  return `/organizations/${orgName}`;
+}
+
 function goToOrganization(orgName) {
-  router.push(`/organizations/${orgName}`);
+  router.push(getOrganizationPath(orgName));
 }
 
 async function loadOrganizations() {

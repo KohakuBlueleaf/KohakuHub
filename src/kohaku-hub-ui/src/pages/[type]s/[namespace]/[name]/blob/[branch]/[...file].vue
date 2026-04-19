@@ -3,15 +3,37 @@
   <div class="container-main">
     <!-- Breadcrumb -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${namespace}` }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s/${namespace}/${name}` }">
-        {{ name }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${namespace}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>{{ fileName }}</el-breadcrumb-item>
     </el-breadcrumb>
@@ -112,15 +134,13 @@
                 v-for="(segment, idx) in pathSegments"
                 :key="idx"
               >
-                <a
+                <RouterLink
                   v-if="idx < pathSegments.length - 1"
-                  @click="
-                    navigateToFolder(pathSegments.slice(0, idx + 1).join('/'))
-                  "
-                  class="cursor-pointer text-blue-600 dark:text-blue-400 hover:underline"
+                  :to="getFolderPath(pathSegments.slice(0, idx + 1).join('/'))"
+                  class="text-blue-600 dark:text-blue-400 hover:underline"
                 >
                   {{ segment }}
-                </a>
+                </RouterLink>
                 <span v-else class="text-gray-700 dark:text-gray-300">{{
                   segment
                 }}</span>
@@ -582,11 +602,8 @@ async function copyContent() {
   }
 }
 
-function navigateToFolder(folderPath) {
-  // Navigate back to tree viewer with the folder path
-  router.push(
-    `/${repoType.value}s/${namespace.value}/${name.value}/tree/${branch.value}/${folderPath}`,
-  );
+function getFolderPath(folderPath) {
+  return `/${repoType.value}s/${namespace.value}/${name.value}/tree/${branch.value}/${folderPath}`;
 }
 
 function editFile() {

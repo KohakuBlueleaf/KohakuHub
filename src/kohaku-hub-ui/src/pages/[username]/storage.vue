@@ -3,9 +3,21 @@
   <div class="container-main">
     <!-- Breadcrumb Navigation -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${username}` }">
-        {{ username }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${username}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ username }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>Storage</el-breadcrumb-item>
     </el-breadcrumb>
