@@ -54,8 +54,9 @@ async def resolve_url_redirects(url: str, auth_headers: dict[str, str] = None) -
 
     # This is a resolve path - make authenticated request to backend
     try:
-        # Build full backend URL using our base_url
-        backend_url = f"{cfg.app.base_url.rstrip('/')}{path}"
+        # Use an internal backend URL when one is configured for local reverse-proxy setups.
+        internal_base_url = (cfg.app.internal_base_url or cfg.app.base_url).rstrip("/")
+        backend_url = f"{internal_base_url}{path}"
 
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             # Send GET request with auth headers to get redirect

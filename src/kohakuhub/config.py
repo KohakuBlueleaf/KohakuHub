@@ -1,10 +1,14 @@
 """Configuration management for Kohaku Hub."""
 
 import os
-import tomllib
 from functools import lru_cache
 
 from pydantic import BaseModel
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 # Default configuration values
 _DEFAULT_S3_ENDPOINT = "http://localhost:9000"
@@ -77,6 +81,8 @@ class FallbackConfig(BaseModel):
 
 class AppConfig(BaseModel):
     base_url: str = "http://localhost:48888"
+    # Allows local dev to expose frontend-facing URLs while backend self-calls stay direct.
+    internal_base_url: str | None = None
     api_base: str = "/api"
     db_backend: str = "sqlite"
     # Optional features
@@ -395,6 +401,8 @@ def load_config(path: str = None) -> Config:
     app_env = {}
     if "KOHAKU_HUB_BASE_URL" in os.environ:
         app_env["base_url"] = os.environ["KOHAKU_HUB_BASE_URL"]
+    if "KOHAKU_HUB_INTERNAL_BASE_URL" in os.environ:
+        app_env["internal_base_url"] = os.environ["KOHAKU_HUB_INTERNAL_BASE_URL"]
     if "KOHAKU_HUB_API_BASE" in os.environ:
         app_env["api_base"] = os.environ["KOHAKU_HUB_API_BASE"]
     if "KOHAKU_HUB_DISABLE_DATASET_VIEWER" in os.environ:

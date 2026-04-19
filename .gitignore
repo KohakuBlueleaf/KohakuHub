@@ -8,6 +8,12 @@ kohakuboard/
 *_refactor.*
 CLAUDE.md
 .claude/
+# Local agent scratch files should never leak into the repo.
+AGENTS.md
+**/AGENTS.md
+.agents/
+# Local dev secrets belong in the tracked example file, not the real env file.
+.env.dev
 example.md
 hub-meta/
 hub-storage/

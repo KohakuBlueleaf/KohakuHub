@@ -39,6 +39,7 @@ dependencies = [
     "requests",
     "rich",
     "toml",
+    "tomli; python_version < '3.11'",
     "uvicorn",
     "pillow",
 ]
