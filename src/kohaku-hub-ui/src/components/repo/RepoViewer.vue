@@ -483,7 +483,16 @@
                   <div
                     class="mt-1 text-sm text-gray-500 dark:text-gray-400 truncate md:hidden"
                   >
-                    {{ getEntryCommitTitle(file) }}
+                    <RouterLink
+                      v-if="file.lastCommit"
+                      :to="getCommitPath(file.lastCommit.id)"
+                      class="text-blue-600 dark:text-blue-400 hover:underline"
+                      :title="file.lastCommit.title"
+                      @click.stop
+                    >
+                      {{ getEntryCommitTitle(file) }}
+                    </RouterLink>
+                    <span v-else>{{ getEntryCommitTitle(file) }}</span>
                   </div>
                   <div
                     class="mt-1 text-xs text-gray-400 dark:text-gray-500 md:hidden"
@@ -497,7 +506,16 @@
                 <div
                   class="hidden md:block min-w-0 text-sm text-gray-500 dark:text-gray-400 truncate"
                 >
-                  {{ getEntryCommitTitle(file) }}
+                  <RouterLink
+                    v-if="file.lastCommit"
+                    :to="getCommitPath(file.lastCommit.id)"
+                    class="text-blue-600 dark:text-blue-400 hover:underline"
+                    :title="file.lastCommit.title"
+                    @click.stop
+                  >
+                    {{ getEntryCommitTitle(file) }}
+                  </RouterLink>
+                  <span v-else>{{ getEntryCommitTitle(file) }}</span>
                 </div>
                 <div
                   class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
