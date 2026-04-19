@@ -4,10 +4,11 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
+from peewee import JOIN, fn
 
 from kohakuhub.config import cfg
 from kohakuhub.constants import DATETIME_FORMAT_ISO
-from kohakuhub.db import Repository, User, UserOrganization
+from kohakuhub.db import Commit, Repository, User, UserOrganization
 from kohakuhub.db_operations import (
     get_file,
     get_organization,
@@ -40,6 +41,40 @@ logger = get_logger("REPO")
 router = APIRouter()
 
 RepoType = Literal["model", "dataset", "space"]
+
+
+def _apply_repo_sorting(q, repo_type: str, sort: str):
+    """Apply repository sorting while preserving existing API semantics."""
+    if sort == "likes":
+        return q.order_by(Repository.likes_count.desc())
+
+    if sort == "downloads":
+        return q.order_by(Repository.downloads.desc())
+
+    if sort == "updated":
+        latest_commit_subq = (
+            Commit.select(
+                Commit.repository.alias("repository_id"),
+                fn.MAX(Commit.created_at).alias("last_commit_at"),
+            )
+            .where((Commit.repo_type == repo_type) & (Commit.branch == "main"))
+            .group_by(Commit.repository)
+            .alias("latest_commit_subq")
+        )
+
+        return q.join(
+            latest_commit_subq,
+            JOIN.LEFT_OUTER,
+            on=(Repository.id == latest_commit_subq.c.repository_id),
+        ).order_by(
+            fn.COALESCE(
+                latest_commit_subq.c.last_commit_at,
+                Repository.created_at,
+            ).desc(),
+            Repository.created_at.desc(),
+        )
+
+    return q.order_by(Repository.created_at.desc())
 
 
 @router.get("/models/{namespace}/{repo_name}")
@@ -338,15 +373,7 @@ async def _list_repos_internal(
 
         rows = get_trending_repositories(rt, limit=limit, days=7)
     else:
-        # Standard sorting
-        if sort == "likes":
-            q = q.order_by(Repository.likes_count.desc())
-        elif sort == "downloads":
-            q = q.order_by(Repository.downloads.desc())
-        else:  # recent (default)
-            q = q.order_by(Repository.created_at.desc())
-
-        rows = list(q.limit(limit))
+        rows = list(_apply_repo_sorting(q, rt, sort).limit(limit))
 
     # Format response with lastModified from LakeFS
     client = get_lakefs_client()
@@ -416,7 +443,7 @@ async def list_repos(
     limit: int = Query(
         50, ge=1, le=100000
     ),  # Very high limit to support "get all repos"
-    sort: str = Query("recent", regex="^(recent|likes|downloads|trending)$"),
+    sort: str = Query("recent", regex="^(recent|updated|likes|downloads|trending)$"),
     fallback: bool = Query(True, description="Enable fallback to external sources"),
     request: Request = None,
     user: User | None = Depends(get_optional_user),
@@ -426,7 +453,7 @@ async def list_repos(
     Args:
         author: Filter by author/namespace
         limit: Maximum number of results
-        sort: Sort order (recent, likes, downloads, trending) - default: recent
+        sort: Sort order (recent, updated, likes, downloads, trending) - default: recent
         fallback: Enable fallback to external sources (default: True)
         request: FastAPI request object
         user: Current authenticated user (optional)

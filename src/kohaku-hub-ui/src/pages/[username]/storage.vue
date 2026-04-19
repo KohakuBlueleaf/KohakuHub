@@ -213,11 +213,8 @@
 
 <script setup>
 import { quotaAPI } from "@/utils/api";
+import { formatRelativeTime } from "@/utils/datetime";
 import { ElMessage } from "element-plus";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
 
 const route = useRoute();
 const router = useRouter();
@@ -269,7 +266,7 @@ function formatSize(bytes) {
 
 function formatDate(dateStr) {
   if (!dateStr) return "Unknown";
-  return dayjs(dateStr).fromNow();
+  return formatRelativeTime(dateStr, "Unknown");
 }
 
 function getRepoIcon(type) {

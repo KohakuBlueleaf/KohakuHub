@@ -454,13 +454,29 @@
           <!-- Models Section -->
           <section class="mb-8">
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-blue-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-blue-500"
             >
               <div class="flex items-center gap-2">
                 <div class="i-carbon-model text-blue-500 text-xl md:text-2xl" />
                 <h2 class="text-xl md:text-2xl font-bold">Models</h2>
               </div>
-              <el-tag type="info" size="large">{{ getCount("model") }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.model"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="info" size="large">{{ getCount("model") }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('model') > 0" class="space-y-4">
@@ -559,7 +575,7 @@
           <!-- Datasets Section -->
           <section class="mb-8">
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-green-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-green-500"
             >
               <div class="flex items-center gap-2">
                 <div
@@ -567,9 +583,25 @@
                 />
                 <h2 class="text-xl md:text-2xl font-bold">Datasets</h2>
               </div>
-              <el-tag type="success" size="large">{{
-                getCount("dataset")
-              }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.dataset"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="success" size="large">{{
+                  getCount("dataset")
+                }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('dataset') > 0" class="space-y-4">
@@ -666,7 +698,7 @@
           <!-- Spaces Section -->
           <section>
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-purple-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-purple-500"
             >
               <div class="flex items-center gap-2">
                 <div
@@ -674,9 +706,25 @@
                 />
                 <h2 class="text-xl md:text-2xl font-bold">Spaces</h2>
               </div>
-              <el-tag type="warning" size="large">{{
-                getCount("space")
-              }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.space"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="warning" size="large">{{
+                  getCount("space")
+                }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('space') > 0" class="space-y-4">
@@ -777,13 +825,14 @@
 
 <script setup>
 import { repoAPI, orgAPI, settingsAPI } from "@/utils/api";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import SocialLinks from "@/components/profile/SocialLinks.vue";
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 import axios from "axios";
-
-dayjs.extend(relativeTime);
 
 const route = useRoute();
 const router = useRouter();
@@ -799,8 +848,35 @@ const quotaInfo = ref(null);
 const userRole = ref(null);
 const hasAvatar = ref(true); // Assume avatar exists, will be set to false on error
 const orgNotFound = ref(false);
+const selectedSorts = reactive({
+  model: getRepoSortPreference({
+    scope: "org",
+    repoType: "model",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+  dataset: getRepoSortPreference({
+    scope: "org",
+    repoType: "dataset",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+  space: getRepoSortPreference({
+    scope: "org",
+    repoType: "space",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+});
 
 const MAX_DISPLAYED = 6; // 2 per row × 3 rows
+
+const sortOptions = [
+  { label: "Recently Created", value: "recent" },
+  { label: "Recently Updated", value: "updated" },
+  { label: "Most Downloads", value: "downloads" },
+  { label: "Most Likes", value: "likes" },
+];
 
 // External org detection
 const isExternalOrg = computed(() => {
@@ -840,7 +916,7 @@ function hasMoreRepos(type) {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "never";
+  return formatRelativeTime(date, "never");
 }
 
 function formatBytes(bytes) {
@@ -928,15 +1004,15 @@ async function loadMembers() {
 async function loadRepos() {
   try {
     const [models, datasets, spaces] = await Promise.all([
-      repoAPI.listRepos("model", { author: orgname.value, limit: 100000 }),
-      repoAPI.listRepos("dataset", { author: orgname.value, limit: 100000 }),
-      repoAPI.listRepos("space", { author: orgname.value, limit: 100000 }),
+      loadRepoType("model"),
+      loadRepoType("dataset"),
+      loadRepoType("space"),
     ]);
 
     repos.value = {
-      model: models.data,
-      dataset: datasets.data,
-      space: spaces.data,
+      model: models,
+      dataset: datasets,
+      space: spaces,
     };
 
     return true;
@@ -946,6 +1022,60 @@ async function loadRepos() {
     return true; // Continue on error
   }
 }
+
+async function loadRepoType(repoType) {
+  const { data } = await repoAPI.listRepos(repoType, {
+    author: orgname.value,
+    limit: 100000,
+    sort: selectedSorts[repoType],
+  });
+  return data;
+}
+
+watch(
+  () => selectedSorts.model,
+  async () => {
+    setRepoSortPreference({
+      scope: "org",
+      repoType: "model",
+      value: selectedSorts.model,
+    });
+
+    if (!loading.value && !orgNotFound.value) {
+      repos.value.model = await loadRepoType("model");
+    }
+  },
+);
+
+watch(
+  () => selectedSorts.dataset,
+  async () => {
+    setRepoSortPreference({
+      scope: "org",
+      repoType: "dataset",
+      value: selectedSorts.dataset,
+    });
+
+    if (!loading.value && !orgNotFound.value) {
+      repos.value.dataset = await loadRepoType("dataset");
+    }
+  },
+);
+
+watch(
+  () => selectedSorts.space,
+  async () => {
+    setRepoSortPreference({
+      scope: "org",
+      repoType: "space",
+      value: selectedSorts.space,
+    });
+
+    if (!loading.value && !orgNotFound.value) {
+      repos.value.space = await loadRepoType("space");
+    }
+  },
+);
 
 async function loadOrgCard() {
   try {

@@ -74,10 +74,7 @@
 </template>
 
 <script setup>
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
+import { formatRelativeTime } from "@/utils/datetime";
 
 /**
  * @typedef {Object} Props
@@ -108,7 +105,7 @@ function getIconClass(type) {
 }
 
 function formatDate(date) {
-  return dayjs(date).fromNow();
+  return formatRelativeTime(date, "never");
 }
 
 function getRepoPath(repo) {
