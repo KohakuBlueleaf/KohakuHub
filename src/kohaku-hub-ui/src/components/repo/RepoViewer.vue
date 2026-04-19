@@ -2,14 +2,38 @@
 <template>
   <div class="container-main">
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: namespaceLink }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item>{{ name }}</el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="namespaceLink"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
+      </el-breadcrumb-item>
     </el-breadcrumb>
 
     <div v-if="loading" class="text-center py-20">
@@ -529,10 +553,14 @@
                     class="i-carbon-commit text-2xl text-blue-500 flex-shrink-0 mt-1"
                   />
                   <div class="flex-1 min-w-0">
-                    <div
-                      class="font-medium text-sm mb-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                    >
-                      {{ commit.title }}
+                    <div class="font-medium text-sm mb-1">
+                      <RouterLink
+                        :to="getCommitPath(commit.id)"
+                        class="block text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                        @click.stop
+                      >
+                        {{ commit.title }}
+                      </RouterLink>
                     </div>
                     <div
                       class="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400"
@@ -1031,10 +1059,12 @@ function navigateToUpload() {
   );
 }
 
+function getCommitPath(commitId) {
+  return `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`;
+}
+
 function viewCommit(commitId) {
-  router.push(
-    `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`,
-  );
+  router.push(getCommitPath(commitId));
 }
 
 function handleBranchChange() {

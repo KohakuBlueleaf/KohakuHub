@@ -3,15 +3,37 @@
   <div class="container-main">
     <!-- Breadcrumb -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${namespace}` }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s/${namespace}/${name}` }">
-        {{ name }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${namespace}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>
         <span class="text-gray-500">Edit:</span> {{ fileName }}

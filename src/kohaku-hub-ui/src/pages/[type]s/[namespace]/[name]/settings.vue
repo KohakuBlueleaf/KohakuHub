@@ -3,25 +3,43 @@
   <div class="container-main">
     <!-- Breadcrumb Navigation -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{
-          repoType === "model"
-            ? "Models"
-            : repoType === "dataset"
-              ? "Datasets"
-              : "Spaces"
-        }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${route.params.namespace}` }">
-        {{ route.params.namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{
+            repoType === "model"
+              ? "Models"
+              : repoType === "dataset"
+                ? "Datasets"
+                : "Spaces"
+          }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item
-        :to="{
-          path: `/${repoType}s/${route.params.namespace}/${route.params.name}`,
-        }"
-      >
-        {{ route.params.name }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${route.params.namespace}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ route.params.namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${route.params.namespace}/${route.params.name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ route.params.name }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>Settings</el-breadcrumb-item>
     </el-breadcrumb>
