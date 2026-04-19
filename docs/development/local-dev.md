@@ -214,6 +214,46 @@ docker logs -f kohakuhub-dev-minio
 docker logs -f kohakuhub-dev-postgres
 ```
 
+## Fast Backend Tests
+
+The fast backend suite does not require Docker services. It uses a deterministic SQLite baseline plus fake S3/LakeFS services under `hub-meta/test/backend/`.
+
+Prepare the reusable baseline:
+
+```bash
+make test-backend-prepare
+```
+
+Restore the active test data back to that baseline:
+
+```bash
+make test-backend-restore
+```
+
+Run the fast backend suite:
+
+```bash
+make test-backend-fast
+```
+
+Run the same suite with coverage:
+
+```bash
+make test-backend-cov
+```
+
+Clean the fast test state:
+
+```bash
+make test-backend-clean
+```
+
+The underlying cross-platform entrypoint used by CI is:
+
+```bash
+python scripts/tests/backend_fast_state.py pytest -- test -q
+```
+
 ## Reset Local Data
 
 `make reset-local-data` is intentionally destructive. The script prints a bold red warning, explains the consequences, and requires typing the same confirmation phrase twice before it removes `hub-meta/dev/`.

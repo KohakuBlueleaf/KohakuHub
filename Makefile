@@ -1,8 +1,10 @@
 SHELL := /bin/bash
+PYTHON ?= $(if $(wildcard ./venv/bin/python),./venv/bin/python,python)
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs
+	logs-postgres logs-minio logs-lakefs test-backend-prepare \
+	test-backend-restore test-backend-clean test-backend-fast test-backend-cov
 
 help:
 	@echo "Local development targets:"
@@ -18,6 +20,11 @@ help:
 	@echo "  make backend          Run FastAPI backend in reload mode"
 	@echo "  make ui               Run the main Vite frontend on :5173"
 	@echo "  make admin            Run the admin Vite frontend on :5174"
+	@echo "  make test-backend-prepare Build the fast backend test baseline"
+	@echo "  make test-backend-restore Restore the active fast backend test state"
+	@echo "  make test-backend-clean Remove the fast backend test state"
+	@echo "  make test-backend-fast Run the fast backend pytest suite"
+	@echo "  make test-backend-cov Run the fast backend suite with coverage"
 	@echo "  make status           Show local dev infra container status"
 	@echo "  make logs-postgres    Tail Postgres logs"
 	@echo "  make logs-minio       Tail MinIO logs"
@@ -69,6 +76,21 @@ ui:
 
 admin:
 	npm run dev --prefix src/kohaku-hub-admin
+
+test-backend-prepare:
+	$(PYTHON) scripts/tests/backend_fast_state.py prepare
+
+test-backend-restore:
+	$(PYTHON) scripts/tests/backend_fast_state.py restore
+
+test-backend-clean:
+	$(PYTHON) scripts/tests/backend_fast_state.py clean
+
+test-backend-fast:
+	$(PYTHON) scripts/tests/backend_fast_state.py pytest -- test -q
+
+test-backend-cov:
+	$(PYTHON) scripts/tests/backend_fast_state.py pytest -- test -q --cov=kohakuhub --cov-config=.coveragerc --cov-fail-under=50 --cov-report=term-missing --cov-report=xml
 
 status:
 	docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep 'kohakuhub-dev-' || true
