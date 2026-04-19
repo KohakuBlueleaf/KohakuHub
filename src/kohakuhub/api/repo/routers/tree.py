@@ -134,6 +134,65 @@ async def fetch_lakefs_objects_page(
     )
 
 
+async def _calculate_directory_stats(
+    lakefs_repo: str,
+    revision: str,
+    directory_path: str,
+    first_page: dict | None = None,
+) -> tuple[int, float | None]:
+    """Calculate recursive directory size and latest file mtime."""
+    client = get_lakefs_client()
+    total_size = 0
+    latest_mtime = None
+    prefix = f"{directory_path}/"
+
+    def consume_page(page: dict) -> None:
+        nonlocal total_size, latest_mtime
+
+        for child_obj in page.get("results", []):
+            if child_obj.get("path_type") != "object":
+                continue
+
+            total_size += child_obj.get("size_bytes") or 0
+
+            child_mtime = child_obj.get("mtime")
+            if child_mtime and (latest_mtime is None or child_mtime > latest_mtime):
+                latest_mtime = child_mtime
+
+    page = first_page
+    if page is None:
+        page = await client.list_objects(
+            repository=lakefs_repo,
+            ref=revision,
+            prefix=prefix,
+            amount=1000,
+            delimiter="",
+        )
+
+    consume_page(page)
+
+    pagination = page.get("pagination", {})
+    has_more = pagination.get("has_more", False)
+    after = pagination.get("next_offset", "")
+
+    while has_more:
+        page = await client.list_objects(
+            repository=lakefs_repo,
+            ref=revision,
+            prefix=prefix,
+            amount=1000,
+            after=after,
+            delimiter="",
+        )
+        consume_page(page)
+
+        pagination = page.get("pagination", {})
+        has_more = pagination.get("has_more", False)
+        after = pagination.get("next_offset", "")
+
+    return total_size, latest_mtime
+
+
 def _make_tree_item(
     obj: dict,
     repository: Repository,
@@ -319,6 +378,7 @@ async def _process_single_path(
     clean_path: str,
     file_records: dict[str, File],
     semaphore: asyncio.Semaphore,
+    expand: bool,
 ) -> dict | None:
     """Resolve one path to either a file or directory entry."""
     client = get_lakefs_client()
@@ -388,6 +448,23 @@ async def _process_single_path(
         }
 
         last_modified = _format_last_modified(first_result.get("mtime"))
+
+        if expand:
+            try:
+                dir_size, latest_mtime = await _calculate_directory_stats(
+                    lakefs_repo=lakefs_repo,
+                    revision=revision,
+                    directory_path=clean_path,
+                    first_page=list_result,
+                )
+                dir_info["size"] = dir_size
+                last_modified = _format_last_modified(latest_mtime) or last_modified
+            except Exception as error:
+                if not is_lakefs_not_found_error(error):
+                    logger.debug(
+                        f"Failed to calculate directory stats for {clean_path}: {error}"
+                    )
+
         if last_modified:
             dir_info["lastModified"] = last_modified
 
@@ -558,6 +635,7 @@ async def get_paths_info(
                     clean_path=clean_path,
                     file_records=file_records,
                     semaphore=semaphore,
+                    expand=expand,
                 )
                 for clean_path in normalized_paths
             ]

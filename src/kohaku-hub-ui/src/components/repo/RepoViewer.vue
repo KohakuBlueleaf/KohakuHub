@@ -1045,7 +1045,6 @@ function formatSize(bytes) {
 }
 
 function formatEntrySize(file) {
-  if (file.type === "directory") return "-";
   return formatSize(file.size);
 }
 
