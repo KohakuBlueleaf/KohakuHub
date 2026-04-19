@@ -366,7 +366,7 @@
                   <el-input-number
                     v-model="lfsSettings.keep_versions"
                     :min="2"
-                    :max="100"
+                    :max="9999"
                     :step="1"
                   />
                   <div class="text-sm text-gray-500 dark:text-gray-400 mt-1">
