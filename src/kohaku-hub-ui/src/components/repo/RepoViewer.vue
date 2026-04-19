@@ -358,7 +358,7 @@
               <el-select
                 v-model="currentBranch"
                 size="small"
-                class="w-full min-w-28 sm:w-48 sm:min-w-48 sm:flex-none"
+                class="w-full min-w-28 sm:w-37 sm:min-w-37 sm:flex-none"
                 @change="handleBranchChange"
               >
                 <el-option label="main" value="main" />
