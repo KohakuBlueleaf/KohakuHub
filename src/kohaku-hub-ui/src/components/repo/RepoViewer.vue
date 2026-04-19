@@ -486,7 +486,7 @@
                     <RouterLink
                       v-if="file.lastCommit"
                       :to="getCommitPath(file.lastCommit.id)"
-                      class="text-blue-600 dark:text-blue-400 hover:underline"
+                      class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
                       :title="file.lastCommit.title"
                       @click.stop
                     >
@@ -509,7 +509,7 @@
                   <RouterLink
                     v-if="file.lastCommit"
                     :to="getCommitPath(file.lastCommit.id)"
-                    class="text-blue-600 dark:text-blue-400 hover:underline"
+                    class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
                     :title="file.lastCommit.title"
                     @click.stop
                   >
