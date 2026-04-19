@@ -30,6 +30,14 @@ OperationType = Literal["resolve", "tree", "info", "revision", "paths_info"]
 UserOperationType = Literal["profile", "repos", "avatar"]
 
 
+def _repo_sort_key(item: dict) -> tuple[str, str, str]:
+    return (
+        item.get("lastModified") or "",
+        item.get("createdAt") or "",
+        item.get("id") or "",
+    )
+
+
 def with_repo_fallback(operation: OperationType):
     """Decorator for endpoints that access individual repositories.
 
@@ -364,6 +372,10 @@ def with_list_aggregation(repo_type: str):
                     if item_id and item_id not in seen_ids:
                         all_results.append(item)
                         seen_ids.add(item_id)
+
+            sort = kwargs.get("sort", args[2] if len(args) > 2 else "recent")
+            if sort == "updated":
+                all_results.sort(key=_repo_sort_key, reverse=True)
 
             # Get limit from kwargs (if None or very large, return all)
             limit = kwargs.get("limit")

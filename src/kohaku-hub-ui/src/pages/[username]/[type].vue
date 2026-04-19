@@ -184,13 +184,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -297,13 +300,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -397,13 +403,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -491,10 +500,11 @@
 <script setup>
 import { repoAPI, orgAPI } from "@/utils/api";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 
 const route = useRoute();
 const router = useRouter();
@@ -507,7 +517,6 @@ const userNotFound = ref(false);
 const userInfo = ref(null);
 const repos = ref({ model: [], dataset: [], space: [] });
 const searchQuery = ref("");
-const sortBy = ref("recent");
 
 // Map route type to API type
 const repoType = computed(() => {
@@ -516,6 +525,22 @@ const repoType = computed(() => {
   if (currentType.value === "spaces") return "space";
   return "model";
 });
+
+const selectedSort = ref(
+  getRepoSortPreference({
+    scope: "user",
+    repoType: repoType.value,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+);
+
+const sortOptions = [
+  { label: "Recently Created", value: "recent" },
+  { label: "Recently Updated", value: "updated" },
+  { label: "Most Downloads", value: "downloads" },
+  { label: "Most Likes", value: "likes" },
+];
 
 const filteredRepos = computed(() => {
   const query = searchQuery.value.toLowerCase();
@@ -536,7 +561,7 @@ function getCount(type) {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "never";
+  return formatRelativeTime(date, "never");
 }
 
 function getRepoPath(type, repo) {
@@ -617,17 +642,41 @@ async function loadRepos() {
     const [models, datasets, spaces] = await Promise.all([
       repoAPI.listRepos("model", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "model"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "model",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000, // Very high limit to get all repos
       }),
       repoAPI.listRepos("dataset", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "dataset"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "dataset",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000,
       }),
       repoAPI.listRepos("space", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "space"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "space",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000,
       }),
     ]);
@@ -643,13 +692,30 @@ async function loadRepos() {
 }
 
 // Reload when sort changes
-watch(sortBy, () => {
-  loadRepos();
+watch(selectedSort, () => {
+  setRepoSortPreference({
+    scope: "user",
+    repoType: repoType.value,
+    value: selectedSort.value,
+  });
+
+  if (!loading.value && !userNotFound.value) {
+    loadRepos();
+  }
 });
 
 // Reset search when type changes
 watch(currentType, () => {
   searchQuery.value = "";
+});
+
+watch(repoType, (type) => {
+  selectedSort.value = getRepoSortPreference({
+    scope: "user",
+    repoType: type,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  });
 });
 
 onMounted(async () => {

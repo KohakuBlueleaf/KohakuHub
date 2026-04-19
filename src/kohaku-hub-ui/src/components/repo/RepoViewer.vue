@@ -808,8 +808,10 @@ huggingface-cli download {{ repoInfo?.id }}</pre
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  formatRelativeTime,
+  formatUnixRelativeTime,
+} from "@/utils/datetime";
 
 import { useAuthStore } from "@/stores/auth";
 import { copyToClipboard } from "@/utils/clipboard";
@@ -822,8 +824,6 @@ import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPa
 import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDatasetsCard.vue";
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
-
-dayjs.extend(relativeTime);
 
 /**
  * @typedef {Object} Props
@@ -994,7 +994,7 @@ function openExternalRepo() {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "Unknown";
+  return formatRelativeTime(date, "Unknown");
 }
 
 function formatSize(bytes) {
@@ -1007,12 +1007,7 @@ function formatSize(bytes) {
 }
 
 function formatLastModified(dateString) {
-  if (!dateString) return "-";
-  try {
-    return dayjs(dateString).fromNow();
-  } catch (e) {
-    return "-";
-  }
+  return formatRelativeTime(dateString, "-");
 }
 
 function getFileName(path) {
@@ -1295,8 +1290,7 @@ function downloadRepo() {
 }
 
 function formatCommitDate(timestamp) {
-  if (!timestamp) return "Unknown";
-  return dayjs.unix(timestamp).fromNow();
+  return formatUnixRelativeTime(timestamp, "Unknown");
 }
 
 function getProgressColor(percentage) {
