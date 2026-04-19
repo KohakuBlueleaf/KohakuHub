@@ -354,11 +354,11 @@
           <div
             class="mb-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3"
           >
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <el-select
                 v-model="currentBranch"
                 size="small"
-                class="w-full sm:w-37"
+                class="w-full min-w-28 sm:w-37 sm:min-w-37 sm:flex-none"
                 @change="handleBranchChange"
               >
                 <el-option label="main" value="main" />
