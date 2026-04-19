@@ -202,11 +202,15 @@
                 <div class="flex items-start gap-2 mb-2">
                   <div :class="iconClass" class="text-xl flex-shrink-0" />
                   <div class="flex-1 min-w-0">
-                    <h3
-                      class="font-semibold hover:underline truncate"
-                      :class="titleColor"
-                    >
-                      {{ repo.id }}
+                    <h3 class="font-semibold">
+                      <RouterLink
+                        :to="getRepoPath(repo)"
+                        class="block hover:underline truncate"
+                        :class="titleColor"
+                        @click.stop
+                      >
+                        {{ repo.id }}
+                      </RouterLink>
                     </h3>
                     <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                       Updated {{ formatDate(repo.lastModified) }}
@@ -365,10 +369,14 @@ function formatDate(date) {
   return date ? dayjs(date).fromNow() : "never";
 }
 
-function goToRepo(repo) {
+function getRepoPath(repo) {
   const type = typeMapping[currentType.value] || "model";
   const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  return `/${type}s/${namespace}/${name}`;
+}
+
+function goToRepo(repo) {
+  router.push(getRepoPath(repo));
 }
 
 function goToUser(username) {
