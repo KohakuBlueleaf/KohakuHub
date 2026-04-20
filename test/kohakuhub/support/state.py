@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -242,6 +244,18 @@ class FastTestState:
         if not db.is_closed():
             db.close()
 
+    def _unlink_with_retry(self, path: Path) -> None:
+        """Remove state files after closing SQLite handles, with a short Windows-safe retry."""
+        for attempt in range(5):
+            try:
+                path.unlink(missing_ok=True)
+                return
+            except PermissionError:
+                self._close_db()
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
+
     def restore_active_state(self) -> None:
         """Restore DB and fake services from the prepared baseline."""
         self._close_db()
@@ -262,14 +276,10 @@ class FastTestState:
             needs_prepare = snapshot.get("version") != STATE_VERSION
 
         if needs_prepare:
-            if ACTIVE_DB_PATH.exists():
-                ACTIVE_DB_PATH.unlink()
-            if BASELINE_DB_PATH.exists():
-                BASELINE_DB_PATH.unlink()
-            if SNAPSHOT_PATH.exists():
-                SNAPSHOT_PATH.unlink()
-
             self._close_db()
+            self._unlink_with_retry(ACTIVE_DB_PATH)
+            self._unlink_with_retry(BASELINE_DB_PATH)
+            SNAPSHOT_PATH.unlink(missing_ok=True)
             self.modules.db_module.init_db()
             transport = httpx.ASGITransport(app=self.modules.app)
             async with httpx.AsyncClient(
