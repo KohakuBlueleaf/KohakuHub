@@ -214,45 +214,32 @@ docker logs -f kohakuhub-dev-minio
 docker logs -f kohakuhub-dev-postgres
 ```
 
-## Fast Backend Tests
+## Backend Tests
 
-The fast backend suite does not require Docker services. It uses a deterministic SQLite baseline plus fake S3/LakeFS services under `hub-meta/test/backend/`.
+Backend tests run against the real Postgres, MinIO, and LakeFS services. The same `make test` entrypoint is used locally and in GitHub Actions.
 
-Prepare the reusable baseline:
-
-```bash
-make test-backend-prepare
-```
-
-Restore the active test data back to that baseline:
+Start the local infra first:
 
 ```bash
-make test-backend-restore
+make infra-up
 ```
 
-Run the fast backend suite:
+Run the full backend suite with coverage:
 
 ```bash
-make test-backend-fast
+make test
 ```
 
-Run the same suite with coverage:
+Run only one backend submodule by passing a path relative to both `test/kohakuhub/` and `src/kohakuhub/`:
 
 ```bash
-make test-backend-cov
+make test RANGE_DIR=api
+make test RANGE_DIR=api/repo/routers
 ```
 
-Clean the fast test state:
+When `RANGE_DIR` is set, pytest runs `test/kohakuhub/${RANGE_DIR}` and coverage focuses on `src/kohakuhub/${RANGE_DIR}`.
 
-```bash
-make test-backend-clean
-```
-
-The underlying cross-platform entrypoint used by CI is:
-
-```bash
-python scripts/tests/backend_fast_state.py pytest -- test -q
-```
+If you need to override service endpoints locally, create a repo-root `.env` file with `export KEY=value` lines. `pytest` loads that file automatically before the suite starts.
 
 ## Reset Local Data
 

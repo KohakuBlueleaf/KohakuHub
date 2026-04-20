@@ -20,7 +20,7 @@ async def test_preupload_respects_lfs_rules(owner_client):
     assert payload["weights/new-model.safetensors"]["uploadMode"] == "lfs"
 
 
-async def test_get_revision_and_resolve_file_routes(client):
+async def test_get_revision_and_resolve_file_routes(client, backend_test_state):
     revision_response = await client.get("/api/models/owner/demo-model/revision/main")
     assert revision_response.status_code == 200
     assert revision_response.json()["id"] == "owner/demo-model"
@@ -31,6 +31,13 @@ async def test_get_revision_and_resolve_file_routes(client):
 
     get_response = await client.get("/api/models/owner/demo-model/resolve/main/README.md")
     assert get_response.status_code == 302
-    assert get_response.headers["location"].startswith("https://fake-s3.local/")
+    location = get_response.headers["location"]
+    bucket = backend_test_state.modules.config_module.cfg.s3.bucket
+    public_endpoint = (
+        backend_test_state.modules.config_module.cfg.s3.public_endpoint.rstrip("/")
+    )
+    assert location.startswith("https://fake-s3.local/") or location.startswith(
+        f"{public_endpoint}/{bucket}/"
+    )
 
     await asyncio.sleep(0)

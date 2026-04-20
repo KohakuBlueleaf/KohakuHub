@@ -28,7 +28,7 @@ async def _login(
 
 async def build_baseline(
     client: httpx.AsyncClient,
-    fake_s3,
+    s3_client,
     cfg,
 ) -> None:
     """Create a deterministic baseline dataset through backend APIs."""
@@ -132,7 +132,7 @@ async def build_baseline(
     lfs_bytes = b"safe tensor payload"
     oid = hashlib.sha256(lfs_bytes).hexdigest()
     lfs_key = f"lfs/{oid[:2]}/{oid[2:4]}/{oid}"
-    fake_s3.put_object(
+    s3_client.put_object(
         Bucket=cfg.s3.bucket,
         Key=lfs_key,
         Body=lfs_bytes,

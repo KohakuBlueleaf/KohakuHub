@@ -1,0 +1,108 @@
+name: backend-tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  backend-tests:
+    name: service-backed backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      KOHAKU_HUB_DATABASE_URL: postgresql://hub_test:hub_test_password@127.0.0.1:25432/kohakuhub_test
+      KOHAKU_HUB_S3_ENDPOINT: http://127.0.0.1:29001
+      KOHAKU_HUB_S3_PUBLIC_ENDPOINT: http://127.0.0.1:29001
+      KOHAKU_HUB_S3_ACCESS_KEY: minioadmin
+      KOHAKU_HUB_S3_SECRET_KEY: minioadmin
+      KOHAKU_HUB_S3_BUCKET: hub-storage
+      KOHAKU_HUB_S3_REGION: us-east-1
+      KOHAKU_HUB_LAKEFS_ENDPOINT: http://127.0.0.1:28000
+      KOHAKU_HUB_LAKEFS_REPO_NAMESPACE: hf
+      KOHAKU_HUB_LAKEFS_CREDENTIALS_FILE: ${{ github.workspace }}/hub-meta/test/backend-service/lakefs-credentials.env
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hub_test
+          POSTGRES_PASSWORD: hub_test_password
+          POSTGRES_DB: kohakuhub_test
+        ports:
+          - 25432:5432
+        options: >-
+          --health-cmd "pg_isready -U hub_test -d kohakuhub_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      minio:
+        image: quay.io/minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 29001:9000
+          - 29000:29000
+        command: server /data --console-address ":29000"
+        options: >-
+          --health-cmd "curl -f http://127.0.0.1:9000/minio/health/live || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      lakefs:
+        image: treeverse/lakefs:latest
+        env:
+          LAKEFS_DATABASE_TYPE: local
+          LAKEFS_DATABASE_LOCAL_PATH: /tmp/lakefs/metadata.db
+          LAKEFS_BLOCKSTORE_TYPE: s3
+          LAKEFS_BLOCKSTORE_S3_ENDPOINT: http://minio:9000
+          LAKEFS_BLOCKSTORE_S3_BUCKET: hub-storage
+          LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+          LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID: minioadmin
+          LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY: minioadmin
+          LAKEFS_BLOCKSTORE_S3_REGION: us-east-1
+          LAKEFS_AUTH_ENCRYPT_SECRET_KEY: 0123456789abcdef0123456789abcdef
+          LAKEFS_LOGGING_FORMAT: text
+          LAKEFS_LISTEN_ADDRESS: 0.0.0.0:8000
+        ports:
+          - 28000:8000
+        options: >-
+          --health-cmd "wget --spider --quiet http://127.0.0.1:8000/_health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run backend tests with coverage
+        run: |
+          make test
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: backend
+          name: backend-tests
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage.xml

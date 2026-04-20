@@ -1,4 +1,4 @@
-"""Fake external services used by the fast backend test suite."""
+"""Fake external services used by isolated backend helper tests."""
 
 from __future__ import annotations
 

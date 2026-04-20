@@ -1,10 +1,16 @@
 SHELL := /bin/bash
 PYTHON ?= $(if $(wildcard ./venv/bin/python),./venv/bin/python,python)
+TEST_ROOT ?= test/kohakuhub
+SOURCE_ROOT ?= src/kohakuhub
+RANGE_DIR ?=
+TEST_RANGE = $(if $(strip $(RANGE_DIR)),$(TEST_ROOT)/$(RANGE_DIR),$(TEST_ROOT))
+COV_RANGE = $(if $(strip $(RANGE_DIR)),$(SOURCE_ROOT)/$(RANGE_DIR),$(SOURCE_ROOT))
+COV_FAIL_UNDER ?= $(if $(strip $(RANGE_DIR)),0,50)
+PYTEST_ARGS ?= -q --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) --cov-report=term-missing --cov-report=xml
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs test-backend-prepare \
-	test-backend-restore test-backend-clean test-backend-fast test-backend-cov
+	logs-postgres logs-minio logs-lakefs test
 
 help:
 	@echo "Local development targets:"
@@ -20,11 +26,9 @@ help:
 	@echo "  make backend          Run FastAPI backend in reload mode"
 	@echo "  make ui               Run the main Vite frontend on :5173"
 	@echo "  make admin            Run the admin Vite frontend on :5174"
-	@echo "  make test-backend-prepare Build the fast backend test baseline"
-	@echo "  make test-backend-restore Restore the active fast backend test state"
-	@echo "  make test-backend-clean Remove the fast backend test state"
-	@echo "  make test-backend-fast Run the fast backend pytest suite"
-	@echo "  make test-backend-cov Run the fast backend suite with coverage"
+	@echo "  make test             Run the full backend pytest suite against the real test services with coverage"
+	@echo "                        Example: make test RANGE_DIR=api"
+	@echo "                        Example: make test RANGE_DIR=api/repo/routers"
 	@echo "  make status           Show local dev infra container status"
 	@echo "  make logs-postgres    Tail Postgres logs"
 	@echo "  make logs-minio       Tail MinIO logs"
@@ -77,20 +81,16 @@ ui:
 admin:
 	npm run dev --prefix src/kohaku-hub-admin
 
-test-backend-prepare:
-	$(PYTHON) scripts/tests/backend_fast_state.py prepare
-
-test-backend-restore:
-	$(PYTHON) scripts/tests/backend_fast_state.py restore
-
-test-backend-clean:
-	$(PYTHON) scripts/tests/backend_fast_state.py clean
-
-test-backend-fast:
-	$(PYTHON) scripts/tests/backend_fast_state.py pytest -- test -q
-
-test-backend-cov:
-	$(PYTHON) scripts/tests/backend_fast_state.py pytest -- test -q --cov=kohakuhub --cov-config=.coveragerc --cov-fail-under=50 --cov-report=term-missing --cov-report=xml
+test:
+	@if [[ ! -e "$(TEST_RANGE)" ]]; then \
+		echo "Missing test range: $(TEST_RANGE)" >&2; \
+		exit 1; \
+	fi
+	@if [[ ! -e "$(COV_RANGE)" ]]; then \
+		echo "Missing coverage range: $(COV_RANGE)" >&2; \
+		exit 1; \
+	fi
+	$(PYTHON) -m pytest $(TEST_RANGE) $(PYTEST_ARGS)
 
 status:
 	docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep 'kohakuhub-dev-' || true

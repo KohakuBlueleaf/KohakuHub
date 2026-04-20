@@ -27,12 +27,12 @@ async def test_commit_regular_file_and_show_up_in_tree(owner_client):
     assert any(item["path"] == "notes.txt" for item in tree_response.json())
 
 
-async def test_commit_lfs_file_from_fake_storage(owner_client, fast_test_state):
+async def test_commit_lfs_file_from_service_storage(owner_client, backend_test_state):
     content = b"second lfs payload"
     oid = hashlib.sha256(content).hexdigest()
     key = f"lfs/{oid[:2]}/{oid[2:4]}/{oid}"
-    fast_test_state.fake_s3.put_object(
-        Bucket=fast_test_state.modules.config_module.cfg.s3.bucket,
+    backend_test_state.s3_client.put_object(
+        Bucket=backend_test_state.modules.config_module.cfg.s3.bucket,
         Key=key,
         Body=content,
         ContentType="application/octet-stream",

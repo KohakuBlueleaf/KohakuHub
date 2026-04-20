@@ -61,13 +61,13 @@ async def test_create_list_and_revoke_token(owner_client):
 
 
 async def test_login_blocks_unverified_user_when_email_verification_required(
-    client, fast_test_state, monkeypatch
+    client, backend_test_state, monkeypatch
 ):
     owner = get_user_by_username("owner")
     owner.email_verified = False
     owner.save()
     monkeypatch.setattr(
-        fast_test_state.modules.config_module.cfg.auth,
+        backend_test_state.modules.config_module.cfg.auth,
         "require_email_verification",
         True,
     )
@@ -82,15 +82,15 @@ async def test_login_blocks_unverified_user_when_email_verification_required(
 
 
 async def test_register_with_email_verification_and_verify_flow(
-    client, fast_test_state, monkeypatch
+    client, backend_test_state, monkeypatch
 ):
     monkeypatch.setattr(
-        fast_test_state.modules.config_module.cfg.auth,
+        backend_test_state.modules.config_module.cfg.auth,
         "require_email_verification",
         True,
     )
     monkeypatch.setattr(
-        fast_test_state.modules.auth_routes_module,
+        backend_test_state.modules.auth_routes_module,
         "send_verification_email",
         lambda email, username, token: True,
     )
@@ -123,10 +123,10 @@ async def test_register_with_email_verification_and_verify_flow(
 
 
 async def test_register_requires_invitation_when_invitation_only_enabled(
-    client, fast_test_state, monkeypatch
+    client, backend_test_state, monkeypatch
 ):
     monkeypatch.setattr(
-        fast_test_state.modules.config_module.cfg.auth,
+        backend_test_state.modules.config_module.cfg.auth,
         "invitation_only",
         True,
     )
