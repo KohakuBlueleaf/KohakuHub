@@ -248,10 +248,11 @@ class ServiceTestState:
                     repository=repo_id,
                     force=True,
                 )
-                for _ in range(40):
+                deadline = time.monotonic() + 20.0
+                while time.monotonic() < deadline:
                     if not await self.lakefs_client.repository_exists(repo_id):
                         break
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.25)
                 else:
                     raise TimeoutError(f"Timed out deleting LakeFS repository: {repo_id}")
 
