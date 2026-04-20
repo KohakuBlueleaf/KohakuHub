@@ -32,4 +32,20 @@ describe("datetime utilities", () => {
     expect(typeof unixFormatted).toBe("string");
     expect(unixFormatted.length).toBeGreaterThan(0);
   });
+
+  it("handles Date objects and unix timestamps", () => {
+    const dateFormatted = formatRelativeTime(
+      new Date(Date.now() - 5 * 60_000),
+      "never",
+    );
+    expect(typeof dateFormatted).toBe("string");
+    expect(dateFormatted.length).toBeGreaterThan(0);
+
+    const unixFormatted = formatUnixRelativeTime(
+      Math.floor(Date.now() / 1000) + 10,
+      "Unknown",
+    );
+    expect(typeof unixFormatted).toBe("string");
+    expect(unixFormatted.length).toBeGreaterThan(0);
+  });
 });

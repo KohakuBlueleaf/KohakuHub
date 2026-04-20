@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
+import { server } from "./msw-server";
 
 class ResizeObserverMock {
   observe() {}
@@ -28,6 +29,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  server.resetHandlers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: "error" });
+});
+
+afterAll(() => {
+  server.close();
 });
