@@ -1,0 +1,21 @@
+{
+  "_id": 1,
+  "id": "mai_lin/lineart-caption-base",
+  "modelId": "mai_lin/lineart-caption-base",
+  "author": "mai_lin",
+  "sha": null,
+  "lastModified": null,
+  "createdAt": "2026-04-20T08:47:31.616317Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "downloads": 4,
+  "likes": 3,
+  "tags": [],
+  "pipeline_tag": null,
+  "library_name": null,
+  "siblings": [],
+  "spaces": [],
+  "models": [],
+  "datasets": []
+}

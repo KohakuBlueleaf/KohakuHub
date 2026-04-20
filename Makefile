@@ -8,10 +8,12 @@ COV_RANGE = $(if $(strip $(RANGE_DIR)),$(SOURCE_ROOT)/$(RANGE_DIR),$(SOURCE_ROOT
 COV_FAIL_UNDER ?= $(if $(strip $(RANGE_DIR)),0,80)
 COV_TYPES ?= xml term-missing
 PYTEST_ARGS ?= -ra -vv --durations=10 --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) $(shell for type in $(COV_TYPES); do echo --cov-report=$$type; done)
+UI_DIR ?= src/kohaku-hub-ui
+UI_TEST_ROOT ?= test/kohaku-hub-ui
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs test
+	logs-postgres logs-minio logs-lakefs test test-backend test-ui
 
 help:
 	@echo "Local development targets:"
@@ -27,10 +29,12 @@ help:
 	@echo "  make backend          Run FastAPI backend in reload mode"
 	@echo "  make ui               Run the main Vite frontend on :5173"
 	@echo "  make admin            Run the admin Vite frontend on :5174"
-	@echo "  make test             Run the full backend pytest suite against the real test services with coverage"
-	@echo "                        Example: make test RANGE_DIR=api"
-	@echo "                        Example: make test RANGE_DIR=api/repo/routers"
+	@echo "  make test-backend     Run the backend pytest suite against the real test services with coverage"
+	@echo "                        Example: make test-backend RANGE_DIR=api"
+	@echo "                        Example: make test-backend RANGE_DIR=api/repo/routers"
 	@echo "                        Options: COV_TYPES='xml term-missing'"
+	@echo "  make test-ui          Run the frontend Vitest suite with coverage"
+	@echo "  make test             Run backend tests, then frontend tests"
 	@echo "  make status           Show local dev infra container status"
 	@echo "  make logs-postgres    Tail Postgres logs"
 	@echo "  make logs-minio       Tail MinIO logs"
@@ -83,7 +87,7 @@ ui:
 admin:
 	npm run dev --prefix src/kohaku-hub-admin
 
-test:
+test-backend:
 	@if [[ ! -e "$(TEST_RANGE)" ]]; then \
 		echo "Missing test range: $(TEST_RANGE)" >&2; \
 		exit 1; \
@@ -93,6 +97,19 @@ test:
 		exit 1; \
 	fi
 	$(PYTHON) -m pytest $(TEST_RANGE) $(PYTEST_ARGS)
+
+test-ui:
+	@if [[ ! -d "$(UI_DIR)" ]]; then \
+		echo "Missing UI directory: $(UI_DIR)" >&2; \
+		exit 1; \
+	fi
+	@if [[ ! -d "$(UI_TEST_ROOT)" ]]; then \
+		echo "Missing UI test directory: $(UI_TEST_ROOT)" >&2; \
+		exit 1; \
+	fi
+	npm run test --prefix $(UI_DIR)
+
+test: test-backend test-ui
 
 status:
 	docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep 'kohakuhub-dev-' || true

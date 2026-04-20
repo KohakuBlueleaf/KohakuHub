@@ -1,4 +1,4 @@
-name: backend-tests
+name: frontend-backend-unit-tests
 
 on:
   pull_request:
@@ -9,9 +9,20 @@ on:
 
 jobs:
   backend-tests:
-    name: service-backed backend tests
+    name: backend unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+        huggingface-hub-version:
+          - "0.20.3"
+          - "0.30.2"
+          - "latest"
     env:
       KOHAKU_HUB_DATABASE_URL: postgresql://hub_test:hub_test_password@127.0.0.1:25432/kohakuhub_test
       KOHAKU_HUB_S3_ENDPOINT: http://127.0.0.1:29001
@@ -23,6 +34,7 @@ jobs:
       KOHAKU_HUB_LAKEFS_ENDPOINT: http://127.0.0.1:28000
       KOHAKU_HUB_LAKEFS_REPO_NAMESPACE: hf
       KOHAKU_HUB_LAKEFS_CREDENTIALS_FILE: ${{ github.workspace }}/hub-meta/test/backend-service/lakefs-credentials.env
+      HUGGINGFACE_HUB_VERSION: ${{ matrix.huggingface-hub-version }}
     services:
       postgres:
         image: postgres:15
@@ -79,30 +91,73 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+          if [ "${HUGGINGFACE_HUB_VERSION}" = "latest" ]; then
+            python -m pip install --upgrade huggingface_hub
+          else
+            python -m pip install --upgrade "huggingface_hub==${HUGGINGFACE_HUB_VERSION}"
+          fi
 
       - name: Run backend tests with coverage
         run: |
-          make test
+          make test-backend
 
-      - name: Upload coverage to Codecov
+      - name: Upload backend coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
-          flags: backend
-          name: backend-tests
+          flags: backend,py${{ matrix.python-version }},hf${{ matrix.huggingface-hub-version }}
+          name: backend-tests-py${{ matrix.python-version }}-hf${{ matrix.huggingface-hub-version }}
           fail_ci_if_error: true
           verbose: true
 
-      - name: Upload coverage artifact
+      - name: Upload backend coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-coverage
+          name: backend-coverage-py${{ matrix.python-version }}-hf${{ matrix.huggingface-hub-version }}
           path: coverage.xml
+
+  ui-tests:
+    name: frontend unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/kohaku-hub-ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          npm install --prefix src/kohaku-hub-ui
+
+      - name: Run frontend tests with coverage
+        run: |
+          make test-ui
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-ui/cobertura-coverage.xml
+          flags: frontend
+          name: frontend-tests
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload frontend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage-ui/cobertura-coverage.xml

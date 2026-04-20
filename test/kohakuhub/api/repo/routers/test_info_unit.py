@@ -333,6 +333,18 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
     )
     assert info_without_siblings["siblings"] == []
 
+    client.branch_error = RuntimeError("missing branch")
+    client.list_error = None
+    client.list_payloads = [{"results": [], "pagination": {"has_more": False}}]
+    info_without_sha = await repo_info.get_repo_info.__wrapped__(
+        "alice",
+        "demo",
+        request=_request("/api/models/alice/demo"),
+        user=None,
+    )
+    assert info_without_sha["sha"] is None
+    client.branch_error = None
+
 
 @pytest.mark.asyncio
 async def test_list_routes_cover_trending_invalid_path_and_user_repo_error_paths(

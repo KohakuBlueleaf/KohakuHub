@@ -42,6 +42,18 @@ def test_hf_shortcuts_cover_repo_revision_entry_and_server_errors():
     assert server_error.headers["x-error-code"] == "CustomError"
 
 
+def test_hf_error_response_sanitizes_header_values_for_http_transport():
+    response = hf_utils.hf_error_response(
+        500,
+        hf_utils.HFErrorCode.SERVER_ERROR,
+        "line 1\nline 2\twith\tspacing",
+        headers={"X-Debug": " debug\nvalue "},
+    )
+
+    assert response.headers["x-error-message"] == "line 1 line 2 with spacing"
+    assert response.headers["x-debug"] == "debug value"
+
+
 def test_format_hf_datetime_and_lakefs_error_classifiers(monkeypatch):
     seen = {}
 
