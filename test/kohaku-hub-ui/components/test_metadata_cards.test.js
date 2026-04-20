@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ElementPlusStubs } from "../helpers/vue";
 
@@ -21,6 +21,22 @@ describe("metadata cards", () => {
     expect(tags).toHaveLength(2);
     expect(wrapper.text()).toContain("English");
     expect(wrapper.text()).toContain("Chinese");
+  });
+
+  it("handles invalid language collections gracefully", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = mount(LanguageCard, {
+      props: {
+        languages: "en",
+      },
+      global: {
+        stubs: ElementPlusStubs,
+      },
+    });
+
+    expect(wrapper.text()).toContain("Language");
+    expect(wrapper.findAll("[data-el-tag='true']")).toHaveLength(0);
+    warnSpy.mockRestore();
   });
 
   it("renders license name and fallback link logic", () => {
@@ -50,5 +66,14 @@ describe("metadata cards", () => {
     expect(customWrapper.get("a").attributes("href")).toBe(
       "https://example.com/license",
     );
+
+    const unknownWrapper = mount(LicenseCard, {
+      props: {
+        metadata: {},
+      },
+    });
+
+    expect(unknownWrapper.text()).toContain("Unknown");
+    expect(unknownWrapper.find("a").exists()).toBe(false);
   });
 });

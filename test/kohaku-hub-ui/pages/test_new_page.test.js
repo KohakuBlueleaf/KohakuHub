@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ElementPlusStubs } from "../helpers/vue";
+import { ElementPlusStubs, InvalidElFormStub } from "../helpers/vue";
 import { createMemoryHistory, createRouter } from "@/testing/router";
 
 const mocks = vi.hoisted(() => ({
@@ -38,11 +38,14 @@ describe("new repository page", () => {
     return router;
   }
 
-  function mountPage(router) {
+  function mountPage(router, extraStubs = {}) {
     return mount(NewRepoPage, {
       global: {
         plugins: [router],
-        stubs: ElementPlusStubs,
+        stubs: {
+          ...ElementPlusStubs,
+          ...extraStubs,
+        },
       },
     });
   }
@@ -59,7 +62,9 @@ describe("new repository page", () => {
 
     const wrapper = mountPage(router);
     await wrapper.find('select[data-el-select="true"]').setValue("aurora-labs");
-    await wrapper.find('input[placeholder="my-awesome-dataset"]').setValue("vision-set");
+    await wrapper
+      .find('input[placeholder="my-awesome-dataset"]')
+      .setValue("vision-set");
     await wrapper
       .findAll("button")
       .find((button) => button.text().includes("Create Dataset"))
@@ -72,9 +77,7 @@ describe("new repository page", () => {
       organization: "aurora-labs",
       private: false,
     });
-    expect(pushSpy).toHaveBeenCalledWith(
-      "/datasets/aurora-labs/vision-set",
-    );
+    expect(pushSpy).toHaveBeenCalledWith("/datasets/aurora-labs/vision-set");
   });
 
   it("keeps the personal namespace null and stays on the page after failures", async () => {
@@ -90,7 +93,9 @@ describe("new repository page", () => {
     });
 
     const wrapper = mountPage(router);
-    await wrapper.find('input[placeholder="my-awesome-space"]').setValue("my-demo");
+    await wrapper
+      .find('input[placeholder="my-awesome-space"]')
+      .setValue("my-demo");
     await wrapper
       .findAll("button")
       .find((button) => button.text().includes("Create Space"))
@@ -104,5 +109,84 @@ describe("new repository page", () => {
       private: false,
     });
     expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the current username when the backend omits repo_id", async () => {
+    const router = await createTestRouter("/new");
+    const pushSpy = vi.spyOn(router, "push");
+    const authStore = useAuthStore();
+    authStore.user = { username: "mai_lin" };
+    authStore.userOrganizations = [];
+    mocks.repoApi.create.mockResolvedValue({
+      data: {},
+    });
+
+    const wrapper = mountPage(router);
+    await wrapper
+      .find('input[placeholder="my-awesome-model"]')
+      .setValue("fresh-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.repoApi.create).toHaveBeenCalledWith({
+      type: "model",
+      name: "fresh-model",
+      organization: null,
+      private: false,
+    });
+    expect(pushSpy).toHaveBeenCalledWith("/models/mai_lin/fresh-model");
+  });
+
+  it("ignores invalid type query values and accepts later valid updates", async () => {
+    const router = await createTestRouter("/new?type=unknown");
+    const wrapper = mountPage(router);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Create Repository");
+    expect(wrapper.text()).toContain("A repository contains all project files");
+
+    await router.push("/new?type=space");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Create Space");
+  });
+
+  it("stops invalid submissions and handles fallback create errors", async () => {
+    const router = await createTestRouter("/new");
+    const authStore = useAuthStore();
+    authStore.user = { username: "mai_lin" };
+    authStore.userOrganizations = [];
+    mocks.repoApi.create.mockRejectedValue(new Error("boom"));
+
+    const invalidWrapper = mountPage(router, {
+      ElForm: InvalidElFormStub,
+    });
+    await flushPromises();
+    await invalidWrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+    expect(mocks.repoApi.create).not.toHaveBeenCalled();
+
+    const wrapper = mountPage(router);
+    await wrapper
+      .find('input[placeholder="my-awesome-model"]')
+      .setValue("fresh-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.repoApi.create).toHaveBeenCalledWith({
+      type: "model",
+      name: "fresh-model",
+      organization: null,
+      private: false,
+    });
   });
 });

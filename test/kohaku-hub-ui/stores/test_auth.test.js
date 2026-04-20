@@ -114,6 +114,60 @@ describe("auth store", () => {
     ]);
   });
 
+  it("fetches a user directly and rejects anonymous namespace writes", async () => {
+    authApiMock.me.mockResolvedValue({
+      data: {
+        username: "owner",
+      },
+    });
+
+    const store = await createStore();
+
+    const payload = await store.fetchUser();
+
+    expect(payload).toEqual({ username: "owner" });
+    expect(store.user).toEqual({ username: "owner" });
+    expect(store.canWriteToNamespace("owner")).toBe(true);
+
+    store.user = null;
+    expect(store.canWriteToNamespace("owner")).toBe(false);
+  });
+
+  it("defaults missing organization lists to an empty array during init", async () => {
+    settingsApiMock.whoamiV2.mockResolvedValue({
+      data: {
+        id: "1",
+        name: "owner",
+        email: "owner@example.com",
+        emailVerified: true,
+      },
+    });
+    authApiMock.listExternalTokens.mockResolvedValue({ data: [] });
+
+    const store = await createStore();
+
+    await store.init();
+
+    expect(store.userOrganizations).toEqual([]);
+    expect(store.initialized).toBe(true);
+  });
+
+  it("handles successful logout and empty external token payloads", async () => {
+    authApiMock.logout.mockResolvedValue(undefined);
+    authApiMock.listExternalTokens.mockResolvedValue({ data: null });
+
+    const store = await createStore();
+    store.user = { username: "owner" };
+    store.token = "persisted-token";
+
+    await store.loadExternalTokens();
+    expect(store.externalTokens).toEqual([]);
+
+    await expect(store.logout()).resolves.toBeUndefined();
+    expect(store.user).toBeNull();
+    expect(store.token).toBeNull();
+  });
+
   it("clears auth state when init fails", async () => {
     localStorage.setItem("hf_token", "persisted-token");
     settingsApiMock.whoamiV2.mockRejectedValue(new Error("unauthorized"));

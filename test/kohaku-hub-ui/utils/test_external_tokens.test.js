@@ -40,16 +40,37 @@ describe("external token utilities", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     expect(getExternalTokens()).toEqual([]);
-    expect(formatAuthHeader("main-token", [
-      { url: "https://a.example.com", token: "x" },
-      { url: "https://b.example.com", token: "" },
-    ])).toBe("Bearer main-token|https://a.example.com,x|https://b.example.com,");
+    expect(
+      formatAuthHeader("main-token", [
+        { url: "https://a.example.com", token: "x" },
+        { url: "https://b.example.com", token: "" },
+      ]),
+    ).toBe("Bearer main-token|https://a.example.com,x|https://b.example.com,");
 
     setExternalTokens([{ url: "https://c.example.com", token: "z" }]);
     expect(getExternalTokens()).toEqual([
       { url: "https://c.example.com", token: "z" },
     ]);
 
+    errorSpy.mockRestore();
+  });
+
+  it("handles storage write failures and empty auth headers", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("quota exceeded");
+      });
+
+    expect(formatAuthHeader(null)).toBe("Bearer ");
+    expect(() =>
+      setExternalTokens([{ url: "https://blocked.example.com", token: "z" }]),
+    ).not.toThrow();
+
+    expect(errorSpy).toHaveBeenCalled();
+
+    setItemSpy.mockRestore();
     errorSpy.mockRestore();
   });
 });

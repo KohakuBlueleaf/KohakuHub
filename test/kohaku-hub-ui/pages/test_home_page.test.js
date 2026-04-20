@@ -101,30 +101,53 @@ describe("home page", () => {
     expect(wrapper.text()).toContain("mai_lin/mai_lin");
 
     const buttons = wrapper.findAll("button");
-    await buttons.find((button) => button.text().includes("Get Started")).trigger(
-      "click",
-    );
+    await buttons
+      .find((button) => button.text().includes("Get Started"))
+      .trigger("click");
     await buttons
       .find((button) => button.text().includes("Host Your Own Hub"))
       .trigger("click");
     await buttons
       .find((button) => button.text().includes("View all models"))
       .trigger("click");
+    await buttons
+      .find((button) => button.text().includes("View all datasets"))
+      .trigger("click");
+    await buttons
+      .find((button) => button.text().includes("View all spaces"))
+      .trigger("click");
 
     await wrapper.get('select[data-el-select="true"]').setValue("likes");
     await flushPromises();
+    expect(wrapper.text()).toContain("❤️ Most Liked");
 
-    expect(mocks.repoSortPreference.setRepoSortPreference).toHaveBeenCalledWith({
-      scope: "home",
-      repoType: "all",
-      value: "likes",
-    });
+    await wrapper.get('select[data-el-select="true"]').setValue("recent");
+    await flushPromises();
+    expect(wrapper.text()).toContain("🆕 Recently Created");
+
+    await wrapper.get('select[data-el-select="true"]').setValue("updated");
+    await flushPromises();
+    expect(wrapper.text()).toContain("🕒 Recently Updated");
+
+    await wrapper.get('select[data-el-select="true"]').setValue("downloads");
+    await flushPromises();
+    expect(wrapper.text()).toContain("⬇️ Most Downloaded");
+
+    expect(mocks.repoSortPreference.setRepoSortPreference).toHaveBeenCalledWith(
+      {
+        scope: "home",
+        repoType: "all",
+        value: "downloads",
+      },
+    );
     expect(mocks.router.push).toHaveBeenCalledWith("/get-started");
     expect(mocks.router.push).toHaveBeenCalledWith("/self-hosted");
     expect(mocks.router.push).toHaveBeenCalledWith("/models");
+    expect(mocks.router.push).toHaveBeenCalledWith("/datasets");
+    expect(mocks.router.push).toHaveBeenCalledWith("/spaces");
   });
 
-it("handles verification error query params and cleans up the URL", async () => {
+  it("handles invalid token query params and cleans up the URL", async () => {
     mocks.route.query = {
       error: "invalid_token",
       message: encodeURIComponent("Invitation expired"),
@@ -134,6 +157,44 @@ it("handles verification error query params and cleans up the URL", async () => 
     await flushPromises();
 
     expect(mocks.router.replace).toHaveBeenCalledWith("/");
+    expect(wrapper.text()).toContain("Welcome to KohakuHub");
+  });
+
+  it("handles missing users and renders fallback metrics", async () => {
+    mocks.route.query = {
+      error: "user_not_found",
+    };
+    mocks.repoApi.listRepos.mockImplementation(async (type) => ({
+      data: [
+        {
+          ...repoInfo,
+          id: `mai_lin/${type}-demo`,
+          downloads: undefined,
+          likes: undefined,
+          lastModified: null,
+        },
+      ],
+    }));
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(mocks.router.replace).toHaveBeenCalledWith("/");
+    expect(wrapper.text()).toContain("never");
+    expect(wrapper.text()).toContain("0");
+  });
+
+  it("ignores unknown query errors and load failures without redirecting", async () => {
+    mocks.route.query = {
+      error: "something_else",
+    };
+    mocks.repoApi.listRepos.mockRejectedValue(new Error("boom"));
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(mocks.elMessage.error).not.toHaveBeenCalled();
+    expect(mocks.router.replace).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Welcome to KohakuHub");
   });
 });

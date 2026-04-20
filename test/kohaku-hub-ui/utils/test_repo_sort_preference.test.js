@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   clearRepoSortPreference,
@@ -66,5 +66,26 @@ describe("repo sort preference utilities", () => {
     clearRepoSortPreference();
 
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("falls back safely when window is unavailable", () => {
+    vi.stubGlobal("window", undefined);
+
+    expect(
+      getRepoSortPreference({
+        scope: "home",
+        repoType: "all",
+        fallback: "likes",
+      }),
+    ).toBe("likes");
+
+    expect(() =>
+      setRepoSortPreference({
+        scope: "home",
+        repoType: "all",
+        value: "recent",
+      }),
+    ).not.toThrow();
+    expect(() => clearRepoSortPreference()).not.toThrow();
   });
 });

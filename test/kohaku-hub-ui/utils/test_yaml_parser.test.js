@@ -58,4 +58,19 @@ describe("yaml parser utilities", () => {
       }),
     ).toEqual({ custom_field: "value" });
   });
+
+  it("handles empty markdown and missing metadata values", () => {
+    expect(parseYAMLFrontmatter("")).toEqual({
+      metadata: {},
+      content: "",
+    });
+
+    expect(parseYAMLFrontmatter("---\n---\n# Demo\n")).toEqual({
+      metadata: {},
+      content: "# Demo\n",
+    });
+
+    expect(normalizeMetadata(null)).toEqual({});
+    expect(getOtherMetadata({})).toEqual({});
+  });
 });

@@ -37,29 +37,32 @@ describe("LFS utilities", () => {
 
   it("uploads a single-part LFS object and formats sizes", async () => {
     server.use(
-      http.post("*/alice/demo.git/info/lfs/objects/batch", async ({ request }) => {
-        const body = await request.json();
-        expect(body.operation).toBe("upload");
-        expect(body.objects).toEqual([{ oid: "sha-single", size: 4 }]);
+      http.post(
+        "*/alice/demo.git/info/lfs/objects/batch",
+        async ({ request }) => {
+          const body = await request.json();
+          expect(body.operation).toBe("upload");
+          expect(body.objects).toEqual([{ oid: "sha-single", size: 4 }]);
 
-        return HttpResponse.json({
-          objects: [
-            {
-              actions: {
-                upload: {
-                  href: "https://s3.example/upload",
-                  header: {
-                    "Content-Type": "application/octet-stream",
+          return HttpResponse.json({
+            objects: [
+              {
+                actions: {
+                  upload: {
+                    href: "https://s3.example/upload",
+                    header: {
+                      "Content-Type": "application/octet-stream",
+                    },
+                  },
+                  verify: {
+                    href: "https://s3.example/verify",
                   },
                 },
-                verify: {
-                  href: "https://s3.example/verify",
-                },
               },
-            },
-          ],
-        });
-      }),
+            ],
+          });
+        },
+      ),
       http.put("https://s3.example/upload", async ({ request }) => {
         expect(request.headers.get("content-type")).toContain(
           "application/octet-stream",
@@ -162,23 +165,29 @@ describe("LFS utilities", () => {
           ],
         }),
       ),
-      http.put("https://s3.example/part-1", () =>
-        new HttpResponse(null, {
-          status: 200,
-          headers: { ETag: '"etag-1"' },
-        }),
+      http.put(
+        "https://s3.example/part-1",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-1"' },
+          }),
       ),
-      http.put("https://s3.example/part-2", () =>
-        new HttpResponse(null, {
-          status: 200,
-          headers: { ETag: '"etag-2"' },
-        }),
+      http.put(
+        "https://s3.example/part-2",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-2"' },
+          }),
       ),
-      http.put("https://s3.example/part-3", () =>
-        new HttpResponse(null, {
-          status: 200,
-          headers: { ETag: '"etag-3"' },
-        }),
+      http.put(
+        "https://s3.example/part-3",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-3"' },
+          }),
       ),
       http.post("https://s3.example/complete", async ({ request }) => {
         const body = await request.json();
@@ -209,6 +218,241 @@ describe("LFS utilities", () => {
       uploadLFSFile("alice/demo", file, "sha-multipart"),
     ).resolves.toEqual({
       oid: "sha-multipart",
+      size: 9,
+    });
+  });
+
+  it("tolerates verification failures after a successful single-part upload", async () => {
+    server.use(
+      http.post("*/alice/demo.git/info/lfs/objects/batch", () =>
+        HttpResponse.json({
+          objects: [
+            {
+              actions: {
+                upload: {
+                  href: "https://s3.example/upload-verify-failure",
+                  header: {
+                    "Content-Type": "application/octet-stream",
+                  },
+                },
+                verify: {
+                  href: "https://s3.example/verify-failure",
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      http.put(
+        "https://s3.example/upload-verify-failure",
+        () => new HttpResponse(null, { status: 200 }),
+      ),
+      http.post(
+        "https://s3.example/verify-failure",
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+
+    const { uploadLFSFile } = await loadModule();
+    const file = new File(["data"], "weights.bin", {
+      type: "application/octet-stream",
+    });
+
+    await expect(
+      uploadLFSFile("alice/demo", file, "sha-verify-failure"),
+    ).resolves.toEqual({
+      oid: "sha-verify-failure",
+      size: 4,
+    });
+  });
+
+  it("fails multipart uploads when the backend does not return every part URL", async () => {
+    server.use(
+      http.post("*/alice/demo.git/info/lfs/objects/batch", () =>
+        HttpResponse.json({
+          objects: [
+            {
+              actions: {
+                upload: {
+                  href: "https://s3.example/complete-missing-part",
+                  header: {
+                    chunk_size: "3",
+                    upload_id: "upload-2",
+                    1: "https://s3.example/missing-part-1",
+                    3: "https://s3.example/missing-part-3",
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      http.put(
+        "https://s3.example/missing-part-1",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-1"' },
+          }),
+      ),
+      http.put(
+        "https://s3.example/missing-part-3",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-3"' },
+          }),
+      ),
+    );
+
+    const { uploadLFSFile } = await loadModule();
+    const file = new File(["abcdefghi"], "archive.bin", {
+      type: "application/octet-stream",
+    });
+
+    await expect(
+      uploadLFSFile("alice/demo", file, "sha-missing-part"),
+    ).rejects.toThrow("No URL found for part 2");
+  });
+
+  it("uploads single-part files without a verify action", async () => {
+    server.use(
+      http.post("*/alice/demo.git/info/lfs/objects/batch", () =>
+        HttpResponse.json({
+          objects: [
+            {
+              actions: {
+                upload: {
+                  href: "https://s3.example/upload-no-verify",
+                  header: {
+                    "Content-Type": "application/octet-stream",
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      http.put(
+        "https://s3.example/upload-no-verify",
+        () => new HttpResponse(null, { status: 200 }),
+      ),
+    );
+
+    const { uploadLFSFile } = await loadModule();
+    const file = new File(["data"], "weights.bin", {
+      type: "application/octet-stream",
+    });
+
+    await expect(
+      uploadLFSFile("alice/demo", file, "sha-no-verify"),
+    ).resolves.toEqual({
+      oid: "sha-no-verify",
+      size: 4,
+    });
+  });
+
+  it("surfaces single-part upload failures from S3", async () => {
+    server.use(
+      http.post("*/alice/demo.git/info/lfs/objects/batch", () =>
+        HttpResponse.json({
+          objects: [
+            {
+              actions: {
+                upload: {
+                  href: "https://s3.example/upload-failure",
+                  header: {
+                    "Content-Type": "application/octet-stream",
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      http.put(
+        "https://s3.example/upload-failure",
+        () => new HttpResponse("denied", { status: 500 }),
+      ),
+    );
+
+    const { uploadLFSFile } = await loadModule();
+    const file = new File(["data"], "weights.bin", {
+      type: "application/octet-stream",
+    });
+
+    await expect(
+      uploadLFSFile("alice/demo", file, "sha-upload-error"),
+    ).rejects.toThrow("Request failed with status code 500");
+  });
+
+  it("tolerates multipart verification failures after upload completion", async () => {
+    server.use(
+      http.post("*/alice/demo.git/info/lfs/objects/batch", () =>
+        HttpResponse.json({
+          objects: [
+            {
+              actions: {
+                upload: {
+                  href: "https://s3.example/complete-verify-failure",
+                  header: {
+                    chunk_size: "3",
+                    upload_id: "upload-3",
+                    1: "https://s3.example/verify-failure-part-1",
+                    2: "https://s3.example/verify-failure-part-2",
+                    3: "https://s3.example/verify-failure-part-3",
+                  },
+                },
+                verify: {
+                  href: "https://s3.example/multipart-verify-failure",
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      http.put(
+        "https://s3.example/verify-failure-part-1",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-1"' },
+          }),
+      ),
+      http.put(
+        "https://s3.example/verify-failure-part-2",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-2"' },
+          }),
+      ),
+      http.put(
+        "https://s3.example/verify-failure-part-3",
+        () =>
+          new HttpResponse(null, {
+            status: 200,
+            headers: { ETag: '"etag-3"' },
+          }),
+      ),
+      http.post("https://s3.example/complete-verify-failure", () =>
+        HttpResponse.json({ ok: true }),
+      ),
+      http.post(
+        "https://s3.example/multipart-verify-failure",
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+
+    const { uploadLFSFile } = await loadModule();
+    const file = new File(["abcdefghi"], "archive.bin", {
+      type: "application/octet-stream",
+    });
+
+    await expect(
+      uploadLFSFile("alice/demo", file, "sha-multipart-verify-failure"),
+    ).resolves.toEqual({
+      oid: "sha-multipart-verify-failure",
       size: 9,
     });
   });

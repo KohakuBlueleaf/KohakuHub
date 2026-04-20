@@ -2,7 +2,11 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ElementPlusStubs, RouterLinkStub } from "../helpers/vue";
+import {
+  ElementPlusStubs,
+  InvalidElFormStub,
+  RouterLinkStub,
+} from "../helpers/vue";
 import repoInfo from "../fixtures/repo-info.json";
 
 const mocks = vi.hoisted(() => ({
@@ -58,7 +62,10 @@ describe("RepoListPage", () => {
     setActivePinia(createPinia());
     mocks.repoSortPreference.getRepoSortPreference.mockReturnValue("likes");
     mocks.repoApi.listRepos.mockResolvedValue({
-      data: [repoInfo, { ...repoInfo, id: "alice/other-model", author: "alice" }],
+      data: [
+        repoInfo,
+        { ...repoInfo, id: "alice/other-model", author: "alice" },
+      ],
     });
     mocks.orgApi.getUserOrgs.mockResolvedValue({
       data: {
@@ -72,14 +79,15 @@ describe("RepoListPage", () => {
     });
   });
 
-  function mountPage() {
+  function mountPage(repoType = "model", extraStubs = {}) {
     return mount(RepoListPage, {
       props: {
-        repoType: "model",
+        repoType,
       },
       global: {
         stubs: {
           ...ElementPlusStubs,
+          ...extraStubs,
           RouterLink: RouterLinkStub,
         },
       },
@@ -113,11 +121,13 @@ describe("RepoListPage", () => {
     await sortSelect.setValue("recent");
     await flushPromises();
 
-    expect(mocks.repoSortPreference.setRepoSortPreference).toHaveBeenCalledWith({
-      scope: "repo",
-      repoType: "model",
-      value: "recent",
-    });
+    expect(mocks.repoSortPreference.setRepoSortPreference).toHaveBeenCalledWith(
+      {
+        scope: "repo",
+        repoType: "model",
+        value: "recent",
+      },
+    );
     expect(mocks.repoApi.listRepos).toHaveBeenLastCalledWith("model", {
       limit: 100,
       sort: "recent",
@@ -135,7 +145,9 @@ describe("RepoListPage", () => {
     );
 
     await wrapper.get('input[placeholder="my-model"]').setValue("fresh-model");
-    await wrapper.get('select[aria-label="Select organization or leave empty"]').setValue("acme");
+    await wrapper
+      .get('select[aria-label="Select organization or leave empty"]')
+      .setValue("acme");
     await wrapper.get('input[type="checkbox"]').setValue(true);
 
     const createDialogButton = wrapper
@@ -161,5 +173,129 @@ describe("RepoListPage", () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain("New Model");
+  });
+
+  it("falls back to the current user when the backend omits repo_id", async () => {
+    const authStore = useAuthStore();
+    authStore.user = { username: "mai_lin" };
+    authStore.userOrganizations = [];
+    mocks.repoApi.create.mockResolvedValue({
+      data: {},
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const createButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("New Model"));
+    await createButton.trigger("click");
+    await flushPromises();
+
+    await wrapper.get('input[placeholder="my-model"]').setValue("fresh-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.repoApi.create).toHaveBeenCalledWith({
+      type: "model",
+      name: "fresh-model",
+      organization: null,
+      private: false,
+    });
+    expect(mocks.router.push).toHaveBeenCalledWith(
+      "/models/mai_lin/fresh-model",
+    );
+  });
+
+  it("renders alternate repository type labels for non-model pages", async () => {
+    const authStore = useAuthStore();
+    authStore.user = {
+      username: "alice",
+    };
+
+    const wrapper = mountPage("space");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Spaces");
+    expect(wrapper.text()).toContain("Discover ML demos and applications");
+    expect(wrapper.text()).toContain("New Space");
+  });
+
+  it("filters by author and reports organization or creation failures", async () => {
+    const authStore = useAuthStore();
+    authStore.user = {
+      username: "alice",
+    };
+    mocks.repoApi.listRepos.mockResolvedValue({
+      data: [{ ...repoInfo, id: "team/project", author: "alice" }],
+    });
+    mocks.orgApi.getUserOrgs.mockRejectedValue(new Error("boom"));
+    mocks.repoApi.create.mockRejectedValue(new Error("boom"));
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper
+      .get('input[placeholder="Search models..."]')
+      .setValue("alice");
+    expect(wrapper.text()).toContain("team/project");
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("New Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.orgApi.getUserOrgs).toHaveBeenCalledWith("alice");
+
+    await wrapper.get('input[placeholder="my-model"]').setValue("broken-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.repoApi.create).toHaveBeenCalledWith({
+      type: "model",
+      name: "broken-model",
+      organization: null,
+      private: false,
+    });
+    expect(mocks.router.push).not.toHaveBeenCalledWith(
+      "/models/alice/broken-model",
+    );
+  });
+
+  it("defaults missing organization payloads and stops invalid create submissions", async () => {
+    const authStore = useAuthStore();
+    authStore.user = {
+      username: "alice",
+    };
+    mocks.orgApi.getUserOrgs.mockResolvedValue({
+      data: {},
+    });
+
+    const wrapper = mountPage("model", {
+      ElForm: InvalidElFormStub,
+    });
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("New Model"))
+      .trigger("click");
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.orgApi.getUserOrgs).toHaveBeenCalledWith("alice");
+    expect(mocks.repoApi.create).not.toHaveBeenCalled();
   });
 });

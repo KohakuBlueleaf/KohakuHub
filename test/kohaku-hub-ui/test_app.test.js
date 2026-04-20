@@ -28,7 +28,8 @@ const RepoViewerStub = defineComponent({
   name: "RepoViewer",
   setup() {
     mountCounts.repoViewer += 1;
-    return () => h("div", { "data-repo-viewer": "true" }, routeState.value.path);
+    return () =>
+      h("div", { "data-repo-viewer": "true" }, routeState.value.path);
   },
 });
 
@@ -75,5 +76,33 @@ describe("App shell", () => {
     };
     await nextTick();
     expect(mountCounts.repoViewer).toBe(2);
+
+    wrapper.unmount();
+  });
+
+  it("uses the raw path as the route key for non-repository pages", async () => {
+    mountCounts.repoViewer = 0;
+    routeState.value = {
+      path: "/login",
+    };
+
+    const wrapper = mount(App, {
+      global: {
+        components: {
+          RouterView: RouterViewStub,
+        },
+      },
+    });
+
+    expect(mountCounts.repoViewer).toBe(1);
+
+    routeState.value = {
+      path: "/register",
+    };
+    await nextTick();
+
+    expect(mountCounts.repoViewer).toBe(2);
+
+    wrapper.unmount();
   });
 });

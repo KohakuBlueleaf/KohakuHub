@@ -6,6 +6,7 @@ import {
   getLanguageName,
   getLicenseName,
   getPipelineTagName,
+  getTaskCategoryName,
   getStandardLicenseLink,
 } from "@/utils/metadata-helpers";
 
@@ -22,6 +23,7 @@ describe("metadata helpers", () => {
     expect(getStandardLicenseLink("apache-2.0")).toBe(
       "https://www.apache.org/licenses/LICENSE-2.0",
     );
+    expect(getStandardLicenseLink(null)).toBeNull();
     expect(getStandardLicenseLink("unknown")).toBeNull();
   });
 
@@ -29,6 +31,9 @@ describe("metadata helpers", () => {
     expect(formatMetadataKey("pipeline_tag")).toBe("Pipeline Tag");
     expect(getPipelineTagName("text-generation")).toBe("Text Generation");
     expect(getPipelineTagName("custom_task")).toBe("Custom Task");
+    expect(getTaskCategoryName("text-classification")).toBe(
+      "Text Classification",
+    );
     expect(formatSizeCategory("1K<n<10K")).toBe("1K < N < 10K");
   });
 });

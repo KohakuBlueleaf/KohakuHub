@@ -1,8 +1,10 @@
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ElementPlusStubs, RouterLinkStub } from "../helpers/vue";
+import { flushPromises } from "@vue/test-utils";
 
 const mocks = vi.hoisted(() => ({
   router: {
@@ -94,21 +96,21 @@ describe("TheHeader", () => {
 
     const buttons = wrapper.findAll("button");
 
-    await buttons.find((button) => button.text().includes("New Model")).trigger(
-      "click",
-    );
+    await buttons
+      .find((button) => button.text().includes("New Model"))
+      .trigger("click");
     await buttons
       .find((button) => button.text().includes("New Organization"))
       .trigger("click");
-    await buttons.find((button) => button.text().includes("Profile")).trigger(
-      "click",
-    );
-    await buttons.find((button) => button.text().includes("Settings")).trigger(
-      "click",
-    );
-    await buttons.find((button) => button.text().includes("Logout")).trigger(
-      "click",
-    );
+    await buttons
+      .find((button) => button.text().includes("Profile"))
+      .trigger("click");
+    await buttons
+      .find((button) => button.text().includes("Settings"))
+      .trigger("click");
+    await buttons
+      .find((button) => button.text().includes("Logout"))
+      .trigger("click");
 
     expect(mocks.router.push).toHaveBeenCalledWith({
       path: "/new",
@@ -119,5 +121,48 @@ describe("TheHeader", () => {
     expect(mocks.router.push).toHaveBeenCalledWith("/settings");
     expect(authStore.logout).toHaveBeenCalled();
     expect(mocks.router.push).toHaveBeenCalledWith("/");
+  });
+
+  it("opens the mobile menu and falls back to the default avatar", async () => {
+    const authStore = useAuthStore();
+    authStore.user = {
+      username: "alice",
+    };
+    authStore.logout = vi.fn().mockResolvedValue(undefined);
+
+    const wrapper = mountHeader();
+
+    const menuButton = wrapper
+      .findAll("button")
+      .find((button) => button.find(".i-carbon-menu").exists());
+    await menuButton.trigger("click");
+    await nextTick();
+
+    expect(wrapper.find('[data-el-drawer="true"]').exists()).toBe(true);
+
+    const avatar = wrapper.get('img[alt="alice avatar"]');
+    await avatar.trigger("error");
+    await nextTick();
+
+    expect(wrapper.find(".i-carbon-user-avatar").exists()).toBe(true);
+  });
+
+  it("shows an error message when logout fails", async () => {
+    const authStore = useAuthStore();
+    authStore.user = {
+      username: "alice",
+    };
+    authStore.logout = vi.fn().mockRejectedValue(new Error("network"));
+
+    const wrapper = mountHeader();
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Logout"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(authStore.logout).toHaveBeenCalled();
+    expect(mocks.router.push).not.toHaveBeenCalledWith("/");
   });
 });

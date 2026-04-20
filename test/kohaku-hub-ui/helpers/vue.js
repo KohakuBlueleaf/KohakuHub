@@ -82,8 +82,12 @@ export const ElementPlusStubs = {
         const value = props.modelValue ?? props.value ?? "";
 
         return h("div", { "data-el-input": "true" }, [
-          slots.prepend ? h("span", { "data-slot": "prepend" }, slots.prepend()) : null,
-          slots.prefix ? h("span", { "data-slot": "prefix" }, slots.prefix()) : null,
+          slots.prepend
+            ? h("span", { "data-slot": "prepend" }, slots.prepend())
+            : null,
+          slots.prefix
+            ? h("span", { "data-slot": "prefix" }, slots.prefix())
+            : null,
           h(tag, {
             value,
             type: props.type === "textarea" ? undefined : props.type,
@@ -93,7 +97,9 @@ export const ElementPlusStubs = {
             onInput: (event) => emitValueUpdate(emit, event.target.value),
             onChange: (event) => emitValueUpdate(emit, event.target.value),
           }),
-          slots.append ? h("span", { "data-slot": "append" }, slots.append()) : null,
+          slots.append
+            ? h("span", { "data-slot": "append" }, slots.append())
+            : null,
         ]);
       };
     },
@@ -155,7 +161,11 @@ export const ElementPlusStubs = {
     emits: ["update:modelValue", "change", "input"],
     setup(_, { slots }) {
       return () =>
-        h("div", { "data-el-radio-group": "true" }, slots.default ? slots.default() : []);
+        h(
+          "div",
+          { "data-el-radio-group": "true" },
+          slots.default ? slots.default() : [],
+        );
     },
   }),
   ElRadioButton: defineComponent({
@@ -220,7 +230,11 @@ export const ElementPlusStubs = {
     setup(props, { slots }) {
       return () =>
         props.modelValue
-          ? h("aside", { "data-el-drawer": "true" }, slots.default ? slots.default() : [])
+          ? h(
+              "aside",
+              { "data-el-drawer": "true" },
+              slots.default ? slots.default() : [],
+            )
           : null;
     },
   }),
@@ -245,7 +259,11 @@ export const ElementPlusStubs = {
       });
 
       return () =>
-        h("form", { "data-el-form": "true" }, slots.default ? slots.default() : []);
+        h(
+          "form",
+          { "data-el-form": "true" },
+          slots.default ? slots.default() : [],
+        );
     },
   }),
   ElFormItem: passthroughDiv("ElFormItem", { "data-el-form-item": "true" }),
@@ -284,10 +302,17 @@ export const ElementPlusStubs = {
       loading: { type: Boolean, default: false },
     },
     setup(_, { slots }) {
-      return () => h("div", { "data-el-skeleton": "true" }, slots.default ? slots.default() : []);
+      return () =>
+        h(
+          "div",
+          { "data-el-skeleton": "true" },
+          slots.default ? slots.default() : [],
+        );
     },
   }),
-  ElBreadcrumb: passthroughDiv("ElBreadcrumb", { "data-el-breadcrumb": "true" }),
+  ElBreadcrumb: passthroughDiv("ElBreadcrumb", {
+    "data-el-breadcrumb": "true",
+  }),
   ElBreadcrumbItem: passthroughDiv("ElBreadcrumbItem", {
     "data-el-breadcrumb-item": "true",
   }),
@@ -296,7 +321,9 @@ export const ElementPlusStubs = {
     setup(_, { slots }) {
       return () =>
         h("section", { "data-el-alert": "true" }, [
-          slots.title ? h("div", { "data-slot": "title" }, slots.title()) : null,
+          slots.title
+            ? h("div", { "data-slot": "title" }, slots.title())
+            : null,
           slots.default ? slots.default() : [],
         ]);
     },
@@ -331,6 +358,35 @@ export const ElementPlusStubs = {
   ElIcon: passthroughDiv("ElIcon", { "data-el-icon": "true" }),
 };
 
+export const InvalidElFormStub = defineComponent({
+  name: "ElForm",
+  props: {
+    model: { type: Object, default: () => ({}) },
+    rules: { type: Object, default: () => ({}) },
+    labelPosition: { type: String, default: "top" },
+  },
+  setup(_, { slots, expose }) {
+    expose({
+      validate(callback) {
+        if (callback) {
+          callback(false);
+        }
+        return Promise.resolve(false);
+      },
+      resetFields() {
+        return undefined;
+      },
+    });
+
+    return () =>
+      h(
+        "form",
+        { "data-el-form": "true" },
+        slots.default ? slots.default() : [],
+      );
+  },
+});
+
 export const RouterLinkStub = defineComponent({
   name: "RouterLink",
   props: {
@@ -345,7 +401,8 @@ export const RouterLinkStub = defineComponent({
         "a",
         {
           "data-router-link": "true",
-          href: typeof props.to === "string" ? props.to : JSON.stringify(props.to),
+          href:
+            typeof props.to === "string" ? props.to : JSON.stringify(props.to),
         },
         slots.default ? slots.default() : [],
       );
