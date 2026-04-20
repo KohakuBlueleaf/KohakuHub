@@ -511,3 +511,369 @@ async def test_try_fallback_user_repos_supports_hf_aggregation_and_kohakuhub(mon
     assert hf_repos["datasets"] == []
     assert hf_repos["spaces"][0]["id"] == "alice/space-a"
     assert kohaku_repos["models"][0]["_source_url"] == "https://kohaku.local"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_returns_none_after_generic_source_failures(monkeypatch):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://broken.local", "name": "Broken", "source_type": "huggingface"}
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/config.json"
+    FakeFallbackClient.queue(
+        "https://broken.local",
+        "HEAD",
+        path,
+        RuntimeError("boom"),
+    )
+
+    assert (
+        await fallback_ops.try_fallback_resolve(
+            "model",
+            "owner",
+            "demo",
+            "main",
+            "config.json",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_paths(
+    monkeypatch,
+):
+    cache = DummyCache(
+        {
+            "exists": True,
+            "source_url": "https://secondary.local",
+            "source_name": "Secondary",
+            "source_type": "huggingface",
+        }
+    )
+    monkeypatch.setattr(fallback_ops, "get_cache", lambda: cache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://primary.local", "name": "Primary", "source_type": "huggingface"},
+            {"url": "https://secondary.local", "name": "Secondary", "source_type": "huggingface"},
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://secondary.local",
+        "GET",
+        "/api/models/owner/demo",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
+    assert FakeFallbackClient.calls[0][0] == "https://secondary.local"
+
+    FakeFallbackClient.reset()
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://info.local", "name": "Info", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://info.local",
+        "GET",
+        "/api/models/owner/demo",
+        RuntimeError("info failed"),
+    )
+    assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
+
+    monkeypatch.setattr(fallback_ops, "get_enabled_sources", lambda namespace, user_tokens=None: [])
+    assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
+    assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
+    assert (
+        await fallback_ops.try_fallback_paths_info(
+            "model",
+            "owner",
+            "demo",
+            "main",
+            ["README.md"],
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://tree.local", "name": "Tree", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://tree.local",
+        "GET",
+        "/api/models/owner/demo/tree/main/",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
+
+    FakeFallbackClient.reset()
+    FakeFallbackClient.queue(
+        "https://tree.local",
+        "GET",
+        "/api/models/owner/demo/tree/main/",
+        RuntimeError("tree failed"),
+    )
+    assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://paths.local", "name": "Paths", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://paths.local",
+        "POST",
+        "/api/models/owner/demo/paths-info/main",
+        _content_response(403),
+    )
+    assert (
+        await fallback_ops.try_fallback_paths_info(
+            "model",
+            "owner",
+            "demo",
+            "main",
+            ["README.md"],
+        )
+        is None
+    )
+
+    FakeFallbackClient.reset()
+    FakeFallbackClient.queue(
+        "https://paths.local",
+        "POST",
+        "/api/models/owner/demo/paths-info/main",
+        RuntimeError("paths failed"),
+    )
+    assert (
+        await fallback_ops.try_fallback_paths_info(
+            "model",
+            "owner",
+            "demo",
+            "main",
+            ["README.md"],
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_external_list_returns_empty_for_non_success_status(monkeypatch):
+    source = {"url": "https://source.local", "name": "Source", "source_type": "huggingface"}
+
+    class SimpleClient:
+        def __init__(self, source_url: str, source_type: str, token: str | None = None):
+            self.timeout = 9
+            self.source_url = source_url
+
+        def map_url(self, kohaku_path: str, repo_type: str) -> str:
+            return f"{self.source_url}{kohaku_path}"
+
+    class FailingStatusHTTPClient:
+        def __init__(self, timeout: int):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str, params: dict):
+            return _content_response(500, b"upstream failure", url=url)
+
+    monkeypatch.setattr(fallback_ops, "FallbackClient", SimpleClient)
+    monkeypatch.setattr(fallback_ops.httpx, "AsyncClient", FailingStatusHTTPClient)
+
+    assert await fallback_ops.fetch_external_list(source, "model", {"author": "owner"}) == []
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_user_profile_covers_empty_hf_miss_and_non_retryable_kohakuhub(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_enabled_sources", lambda namespace="", user_tokens=None: [])
+    assert await fallback_ops.try_fallback_user_profile("alice") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/users/alice/overview",
+        _content_response(404),
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/organizations/alice/members",
+        _content_response(404),
+    )
+    assert await fallback_ops.try_fallback_user_profile("alice") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://unknown.local", "name": "Unknown", "source_type": "other"},
+            {"url": "https://kohaku.local", "name": "Kohaku", "source_type": "kohakuhub"},
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://kohaku.local",
+        "GET",
+        "/api/users/bob/profile",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_user_profile("bob") is None
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_user_and_org_avatar_cover_empty_and_non_retryable_paths(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_enabled_sources", lambda namespace="", user_tokens=None: [])
+    assert await fallback_ops.try_fallback_user_avatar("alice") is None
+    assert await fallback_ops.try_fallback_org_avatar("acme") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/users/alice/overview",
+        _json_response(200, {"name": "Alice"}),
+    )
+    assert await fallback_ops.try_fallback_user_avatar("alice") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://unknown.local", "name": "Unknown", "source_type": "other"},
+            {"url": "https://kohaku.local", "name": "Kohaku", "source_type": "kohakuhub"},
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://kohaku.local",
+        "GET",
+        "/api/users/bob/avatar",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_user_avatar("bob") is None
+
+    FakeFallbackClient.reset()
+    FakeFallbackClient.queue(
+        "https://kohaku.local",
+        "GET",
+        "/api/organizations/acme/avatar",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_org_avatar("acme") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://unknown.local", "name": "Unknown", "source_type": "other"},
+            {"url": "https://broken.local", "name": "Broken", "source_type": "kohakuhub"},
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://broken.local",
+        "GET",
+        "/api/organizations/acme/avatar",
+        RuntimeError("avatar failed"),
+    )
+    assert await fallback_ops.try_fallback_org_avatar("acme") is None
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_user_repos_covers_empty_dataset_success_and_failure_paths(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_enabled_sources", lambda namespace="", user_tokens=None: [])
+    assert await fallback_ops.try_fallback_user_repos("alice") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/models?author=alice&limit=100",
+        _json_response(200, [{"id": "alice/model-a"}]),
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/datasets?author=alice&limit=100",
+        _json_response(200, [{"id": "alice/dataset-a"}]),
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        "/api/spaces?author=alice&limit=100",
+        _json_response(200, [{"id": "alice/space-a"}]),
+    )
+    hf_repos = await fallback_ops.try_fallback_user_repos("alice")
+    assert hf_repos["datasets"][0]["_source"] == "HF"
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://unknown.local", "name": "Unknown", "source_type": "other"},
+            {"url": "https://kohaku.local", "name": "Kohaku", "source_type": "kohakuhub"},
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://kohaku.local",
+        "GET",
+        "/api/users/bob/repos",
+        _content_response(403),
+    )
+    assert await fallback_ops.try_fallback_user_repos("bob") is None
+
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace="", user_tokens=None: [
+            {"url": "https://broken.local", "name": "Broken", "source_type": "kohakuhub"}
+        ],
+    )
+    FakeFallbackClient.queue(
+        "https://broken.local",
+        "GET",
+        "/api/users/carol/repos",
+        RuntimeError("repos failed"),
+    )
+    assert await fallback_ops.try_fallback_user_repos("carol") is None
