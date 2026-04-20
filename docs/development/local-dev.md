@@ -239,7 +239,14 @@ make test RANGE_DIR=api/repo/routers
 
 When `RANGE_DIR` is set, pytest runs `test/kohakuhub/${RANGE_DIR}` and coverage focuses on `src/kohakuhub/${RANGE_DIR}`.
 
-If you need to override service endpoints locally, create a repo-root `.env` file with `export KEY=value` lines. `pytest` loads that file automatically before the suite starts.
+If you keep local test overrides in a repo-root `.env`, load them into your shell before running tests:
+
+```bash
+source .env
+make test
+```
+
+The test code reads environment variables only. It does not load `.env` directly.
 
 ## Reset Local Data
 

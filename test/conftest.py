@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import httpx
 import pytest
 import pytest_asyncio
-from dotenv import load_dotenv
 
 from test.kohakuhub.support.bootstrap import ADMIN_TOKEN, DEFAULT_PASSWORD
 from test.kohakuhub.support.service_bootstrap import apply_service_test_env
 from test.kohakuhub.support.service_state import create_service_test_state
 
-
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 apply_service_test_env()
 
 
