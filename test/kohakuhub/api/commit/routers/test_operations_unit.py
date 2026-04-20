@@ -458,6 +458,7 @@ async def test_commit_route_covers_parse_dispatch_noop_and_success_paths(monkeyp
     )
     noop_response = await commit_ops.commit(commit_ops.RepoType.model, "owner", "repo", "main", _FakeRequest(noop_payload), user=user)
     assert noop_response["commitOid"] == "head-commit"
+    assert noop_response["commitUrl"] == "models/owner/repo/commit/head-commit"
 
     monkeypatch.setattr(commit_ops, "process_regular_file", lambda **kwargs: _async_return(True))
     monkeypatch.setattr(
@@ -477,6 +478,7 @@ async def test_commit_route_covers_parse_dispatch_noop_and_success_paths(monkeyp
     )
     success_response = await commit_ops.commit(commit_ops.RepoType.model, "owner", "repo", "main", _FakeRequest(success_payload), user=user)
     assert success_response["commitOid"] == "commit-created"
+    assert success_response["commitUrl"] == "models/owner/repo/commit/commit-created"
     assert tracked
     assert gc_calls
 

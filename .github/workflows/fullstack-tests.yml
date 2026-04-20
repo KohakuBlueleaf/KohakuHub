@@ -22,6 +22,9 @@ jobs:
         huggingface-hub-version:
           - "0.20.3"
           - "0.30.2"
+          - "0.36.2"
+          - "1.0.1"
+          - "1.6.0"
           - "latest"
     env:
       KOHAKU_HUB_DATABASE_URL: postgresql://hub_test:hub_test_password@127.0.0.1:25432/kohakuhub_test
