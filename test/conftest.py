@@ -14,8 +14,14 @@ apply_service_test_env()
 
 
 @pytest.fixture(scope="session")
-def backend_test_state():
-    return create_service_test_state()
+def backend_test_state(pytestconfig):
+    terminal_reporter = pytestconfig.pluginmanager.get_plugin("terminalreporter")
+
+    def report_progress(message: str) -> None:
+        if terminal_reporter is not None:
+            terminal_reporter.write_line(f"[backend-test] {message}")
+
+    return create_service_test_state(progress_callback=report_progress)
 
 
 @pytest.fixture(scope="session")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -116,11 +117,21 @@ def _wait_for_http(url: str, timeout_seconds: int = 60) -> None:
     raise TimeoutError(f"Timed out waiting for {url}")
 
 
-def _ensure_services_ready() -> None:
+def _ensure_services_ready(
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
+    def report(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
     cfg = get_service_test_config()
+    report("waiting for PostgreSQL")
     _wait_for_postgres(cfg.database_url)
+    report("ensuring the test database exists")
     _ensure_database_exists(cfg.database_url)
+    report("waiting for MinIO")
     _wait_for_http(f"{cfg.s3_endpoint.rstrip('/')}/minio/health/live")
+    report("checking LakeFS credentials")
 
     if (
         not _lakefs_credentials_valid(cfg.lakefs_endpoint, cfg.lakefs_credentials_file)
@@ -133,6 +144,7 @@ def _ensure_services_ready() -> None:
         )
 
     if not _lakefs_credentials_valid(cfg.lakefs_endpoint, cfg.lakefs_credentials_file):
+        report("bootstrapping LakeFS test credentials")
         cfg.lakefs_credentials_file.unlink(missing_ok=True)
         result = initialize_lakefs(
             endpoint=cfg.lakefs_endpoint,
@@ -162,6 +174,11 @@ class ServiceTestState:
     modules: object
     s3_client: object
     lakefs_client: object
+    progress_callback: Callable[[str], None] | None = None
+
+    def _report(self, message: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(message)
 
     def _close_db(self) -> None:
         db = self.modules.db_module.db
@@ -238,11 +255,18 @@ class ServiceTestState:
                 else:
                     raise TimeoutError(f"Timed out deleting LakeFS repository: {repo_id}")
 
-    async def _restore_active_state(self) -> None:
+    async def _restore_active_state(self, *, emit_progress: bool) -> None:
+        report = self._report if emit_progress else (lambda _message: None)
+
+        report("clearing LakeFS repositories")
         await self._clear_lakefs()
+        report("clearing the object storage bucket")
         self._clear_bucket()
+        report("resetting the PostgreSQL schema")
         self._reset_database()
+        report("rebuilding the database schema")
         self.modules.db_module.init_db()
+        report("initializing the storage bucket")
         self.modules.s3_module.init_storage()
         transport = httpx.ASGITransport(app=self.modules.app)
         async with httpx.AsyncClient(
@@ -250,26 +274,30 @@ class ServiceTestState:
             base_url="http://testserver",
             follow_redirects=False,
         ) as client:
+            report("seeding the backend baseline")
             await build_baseline(
                 client,
                 self.s3_client,
                 self.modules.config_module.cfg,
             )
         self.modules.fallback_cache_module.get_cache().clear()
+        report("baseline restore completed")
 
     async def prepare(self) -> None:
         """Prepare the backend test baseline in the real service stack."""
-        await self._restore_active_state()
+        await self._restore_active_state(emit_progress=True)
 
     def restore_active_state(self) -> None:
         """Restore the backend test baseline in the real service stack."""
-        asyncio.run(self._restore_active_state())
+        asyncio.run(self._restore_active_state(emit_progress=False))
 
 
-def create_service_test_state() -> ServiceTestState:
+def create_service_test_state(
+    progress_callback: Callable[[str], None] | None = None,
+) -> ServiceTestState:
     """Create the service-backed state manager used by the backend suite."""
     apply_service_test_env()
-    _ensure_services_ready()
+    _ensure_services_ready(progress_callback=progress_callback)
     modules = load_backend_modules(force_reload=True, apply_env=apply_service_test_env)
     s3_client = modules.s3_module.get_s3_client()
     lakefs_client = modules.lakefs_rest_client_module.get_lakefs_rest_client()
@@ -277,4 +305,5 @@ def create_service_test_state() -> ServiceTestState:
         modules=modules,
         s3_client=s3_client,
         lakefs_client=lakefs_client,
+        progress_callback=progress_callback,
     )

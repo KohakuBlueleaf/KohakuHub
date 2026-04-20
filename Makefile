@@ -6,7 +6,7 @@ RANGE_DIR ?=
 TEST_RANGE = $(if $(strip $(RANGE_DIR)),$(TEST_ROOT)/$(RANGE_DIR),$(TEST_ROOT))
 COV_RANGE = $(if $(strip $(RANGE_DIR)),$(SOURCE_ROOT)/$(RANGE_DIR),$(SOURCE_ROOT))
 COV_FAIL_UNDER ?= $(if $(strip $(RANGE_DIR)),0,50)
-PYTEST_ARGS ?= -q --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) --cov-report=term-missing --cov-report=xml
+PYTEST_ARGS ?= -ra -vv --durations=10 --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) --cov-report=term-missing --cov-report=xml
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
