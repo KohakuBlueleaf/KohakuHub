@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from kohakuhub.db import RepositoryLike
 from kohakuhub.db_operations import (
     check_invitation_available,
@@ -21,6 +23,8 @@ from kohakuhub.db_operations import (
     set_user_external_token,
     should_use_lfs,
 )
+
+pytestmark = pytest.mark.usefixtures("prepared_backend_test_state")
 
 
 def test_set_user_external_token_and_merge_with_header_overrides():

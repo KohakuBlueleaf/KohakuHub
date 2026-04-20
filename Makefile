@@ -6,7 +6,8 @@ RANGE_DIR ?=
 TEST_RANGE = $(if $(strip $(RANGE_DIR)),$(TEST_ROOT)/$(RANGE_DIR),$(TEST_ROOT))
 COV_RANGE = $(if $(strip $(RANGE_DIR)),$(SOURCE_ROOT)/$(RANGE_DIR),$(SOURCE_ROOT))
 COV_FAIL_UNDER ?= $(if $(strip $(RANGE_DIR)),0,50)
-PYTEST_ARGS ?= -ra -vv --durations=10 --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) --cov-report=term-missing --cov-report=xml
+COV_TYPES ?= xml term-missing
+PYTEST_ARGS ?= -ra -vv --durations=10 --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) $(shell for type in $(COV_TYPES); do echo --cov-report=$$type; done)
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
@@ -29,6 +30,7 @@ help:
 	@echo "  make test             Run the full backend pytest suite against the real test services with coverage"
 	@echo "                        Example: make test RANGE_DIR=api"
 	@echo "                        Example: make test RANGE_DIR=api/repo/routers"
+	@echo "                        Options: COV_TYPES='xml term-missing'"
 	@echo "  make status           Show local dev infra container status"
 	@echo "  make logs-postgres    Tail Postgres logs"
 	@echo "  make logs-minio       Tail MinIO logs"

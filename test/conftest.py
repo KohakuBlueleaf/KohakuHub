@@ -14,6 +14,20 @@ from test.kohakuhub.support.service_state import create_service_test_state
 apply_service_test_env()
 
 _INITIAL_BASELINE_READY = False
+_LAST_BACKEND_MODULE = None
+_BACKEND_FIXTURE_NAMES = {
+    "prepared_backend_test_state",
+    "backend_test_state",
+    "app",
+    "client",
+    "owner_client",
+    "member_client",
+    "visitor_client",
+    "outsider_client",
+    "admin_client",
+    "live_server_url",
+    "hf_api_token",
+}
 
 
 @pytest.fixture(scope="session")
@@ -28,30 +42,41 @@ def backend_test_state(pytestconfig):
 
 
 @pytest.fixture(scope="session")
-def app(backend_test_state):
-    return backend_test_state.modules.app
-
-
-@pytest.fixture(scope="session", autouse=True)
-async def _prepare_backend_state(backend_test_state):
+async def prepared_backend_test_state(backend_test_state):
     global _INITIAL_BASELINE_READY
     await backend_test_state.prepare()
     _INITIAL_BASELINE_READY = True
+    return backend_test_state
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _restore_backend_state_by_module(backend_test_state):
-    global _INITIAL_BASELINE_READY
-    if _INITIAL_BASELINE_READY:
-        _INITIAL_BASELINE_READY = False
-        return
-    backend_test_state.restore_active_state()
+@pytest.fixture(scope="session")
+def app(prepared_backend_test_state):
+    return prepared_backend_test_state.modules.app
 
 
 @pytest.fixture(autouse=True)
-def _restore_backend_state_per_test(request, backend_test_state):
+def _restore_backend_state_per_test(request):
+    global _INITIAL_BASELINE_READY, _LAST_BACKEND_MODULE
+
+    needs_backend = bool(_BACKEND_FIXTURE_NAMES.intersection(request.fixturenames))
+    if not needs_backend:
+        return
+
+    backend_test_state = request.getfixturevalue("backend_test_state")
+    request.getfixturevalue("prepared_backend_test_state")
+    current_module = request.node.module.__name__
+
     if request.node.get_closest_marker("backend_per_test") is not None:
         backend_test_state.restore_active_state()
+        _LAST_BACKEND_MODULE = current_module
+        return
+
+    if _LAST_BACKEND_MODULE != current_module:
+        if _INITIAL_BASELINE_READY:
+            _INITIAL_BASELINE_READY = False
+        else:
+            backend_test_state.restore_active_state()
+        _LAST_BACKEND_MODULE = current_module
 
 
 @pytest_asyncio.fixture

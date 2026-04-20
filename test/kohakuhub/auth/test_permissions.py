@@ -11,6 +11,8 @@ from kohakuhub.auth.permissions import (
 )
 from kohakuhub.db_operations import get_repository, get_user_by_username
 
+pytestmark = pytest.mark.usefixtures("prepared_backend_test_state")
+
 
 def test_namespace_permission_allows_owner_namespace():
     owner = get_user_by_username("owner")
