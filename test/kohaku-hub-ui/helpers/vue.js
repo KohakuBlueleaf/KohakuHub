@@ -72,11 +72,13 @@ export const ElementPlusStubs = {
       value: { type: [String, Number], default: undefined },
       type: { type: String, default: "text" },
       placeholder: { type: String, default: "" },
+      size: { type: String, default: "" },
+      showPassword: { type: Boolean, default: false },
       readonly: { type: Boolean, default: false },
       maxlength: { type: [String, Number], default: undefined },
     },
     emits: ["update:modelValue", "change", "input"],
-    setup(props, { slots, emit }) {
+    setup(props, { slots, emit, attrs }) {
       return () => {
         const tag = props.type === "textarea" ? "textarea" : "input";
         const value = props.modelValue ?? props.value ?? "";
@@ -89,6 +91,7 @@ export const ElementPlusStubs = {
             ? h("span", { "data-slot": "prefix" }, slots.prefix())
             : null,
           h(tag, {
+            ...attrs,
             value,
             type: props.type === "textarea" ? undefined : props.type,
             placeholder: props.placeholder,

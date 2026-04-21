@@ -108,6 +108,32 @@ describe("auth pages", () => {
     expect(pushSpy).toHaveBeenCalledWith("/");
   });
 
+  it("submits login when Enter is pressed in the password field", async () => {
+    const router = await createTestRouter("/login");
+    const pushSpy = vi.spyOn(router, "push");
+    const authStore = useAuthStore();
+    authStore.login = vi.fn().mockResolvedValue({ ok: true });
+
+    const wrapper = mountPage(LoginPage, router);
+    await flushPromises();
+
+    await wrapper
+      .find('input[placeholder="Enter your username"]')
+      .setValue("mai_lin");
+    const passwordInput = wrapper.find(
+      'input[placeholder="Enter your password"]',
+    );
+    await passwordInput.setValue("KohakuDev123!");
+    await passwordInput.trigger("keyup.enter");
+    await flushPromises();
+
+    expect(authStore.login).toHaveBeenCalledWith({
+      username: "mai_lin",
+      password: "KohakuDev123!",
+    });
+    expect(pushSpy).toHaveBeenCalledWith("/");
+  });
+
   it("shows the invitation-only login message when signups are closed", async () => {
     const router = await createTestRouter("/login");
     axios.get.mockResolvedValueOnce({

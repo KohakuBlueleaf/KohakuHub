@@ -16,6 +16,7 @@
             v-model="form.username"
             placeholder="Enter your username"
             size="large"
+            @keyup.enter="handleSubmit"
           />
         </el-form-item>
 
@@ -26,6 +27,7 @@
             placeholder="Enter your password"
             size="large"
             show-password
+            @keyup.enter="handleSubmit"
           />
         </el-form-item>
 
