@@ -6,3 +6,6 @@ coverage:
           - backend
           - frontend
           - frontend-admin
+        paths:
+          - "!src/kohaku-hub-ui/src/components/repo/RepoViewer.vue"
+          - "!src/components/repo/RepoViewer.vue"

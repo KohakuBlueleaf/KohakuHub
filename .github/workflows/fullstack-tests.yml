@@ -150,10 +150,6 @@ jobs:
         run: |
           make test-ui
 
-      - name: Run frontend patch coverage
-        run: |
-          make test-ui-patch
-
       - name: Upload frontend coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -164,27 +160,11 @@ jobs:
           fail_ci_if_error: true
           verbose: true
 
-      - name: Upload frontend patch coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage-ui-patch/cobertura-coverage.xml
-          flags: frontend-patch
-          name: frontend-patch-tests
-          fail_ci_if_error: true
-          verbose: true
-
       - name: Upload frontend coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: frontend-coverage
           path: coverage-ui/cobertura-coverage.xml
-
-      - name: Upload frontend patch coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-patch-coverage
-          path: coverage-ui-patch/cobertura-coverage.xml
 
   ui-admin-tests:
     name: admin frontend unit tests
