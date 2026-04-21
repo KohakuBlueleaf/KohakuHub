@@ -189,12 +189,20 @@ def with_repo_fallback(operation: OperationType):
                     case "tree":
                         revision = kwargs.get("revision", "main")
                         path = kwargs.get("path", "")
+                        recursive = kwargs.get("recursive", False)
+                        expand = kwargs.get("expand", False)
+                        limit = kwargs.get("limit")
+                        cursor = kwargs.get("cursor")
                         result = await try_fallback_tree(
                             repo_type,
                             namespace,
                             name,
                             revision,
                             path,
+                            recursive=recursive,
+                            expand=expand,
+                            limit=limit,
+                            cursor=cursor,
                             user_tokens=user_tokens,
                         )
 
@@ -207,12 +215,14 @@ def with_repo_fallback(operation: OperationType):
                         # For paths-info, extract paths and revision from kwargs
                         revision = kwargs.get("revision", "main")
                         paths = kwargs.get("paths", [])
+                        expand = kwargs.get("expand", False)
                         result = await try_fallback_paths_info(
                             repo_type,
                             namespace,
                             name,
                             revision,
                             paths,
+                            expand=expand,
                             user_tokens=user_tokens,
                         )
 

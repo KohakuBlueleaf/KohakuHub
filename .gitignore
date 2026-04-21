@@ -79,7 +79,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
-coverage-ui/
+coverage-ui*/
 *.cover
 *.py.cover
 .hypothesis/

@@ -258,8 +258,12 @@ async def try_fallback_tree(
     name: str,
     revision: str,
     path: str = "",
+    recursive: bool = False,
+    expand: bool = False,
+    limit: int | None = None,
+    cursor: str | None = None,
     user_tokens: dict[str, str] | None = None,
-) -> Optional[list]:
+) -> Optional[Response]:
     """Try to get repository tree from fallback sources.
 
     Args:
@@ -271,7 +275,7 @@ async def try_fallback_tree(
         user_tokens: User-provided external tokens (overrides admin tokens)
 
     Returns:
-        List of file/folder objects or None if not found
+        JSON response or None if not found
     """
     sources = get_enabled_sources(namespace, user_tokens=user_tokens)
 
@@ -291,15 +295,30 @@ async def try_fallback_tree(
                 token=source.get("token"),
             )
 
-            response = await client.get(kohaku_path, repo_type)
+            params = {
+                "recursive": recursive,
+                "expand": expand,
+            }
+            if limit is not None:
+                params["limit"] = limit
+            if cursor:
+                params["cursor"] = cursor
+
+            response = await client.get(kohaku_path, repo_type, params=params)
 
             if response.status_code == 200:
-                data = response.json()
-
                 logger.info(
                     f"Fallback tree SUCCESS: {repo_type}/{namespace}/{name}/tree from {source['name']}"
                 )
-                return data
+                headers = {}
+                if response.headers.get("link"):
+                    headers["Link"] = response.headers["link"]
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
+                    headers=headers,
+                )
 
             elif not should_retry_source(response):
                 return None
@@ -317,6 +336,7 @@ async def try_fallback_paths_info(
     name: str,
     revision: str,
     paths: list[str],
+    expand: bool = False,
     user_tokens: dict[str, str] | None = None,
 ) -> Optional[list]:
     """Try to get paths info from fallback sources.
@@ -351,7 +371,7 @@ async def try_fallback_paths_info(
 
             # POST request with form data
             response = await client.post(
-                kohaku_path, repo_type, data={"paths": paths, "expand": False}
+                kohaku_path, repo_type, data={"paths": paths, "expand": expand}
             )
 
             if response.status_code == 200:
