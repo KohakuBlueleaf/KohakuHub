@@ -78,6 +78,7 @@ export default defineConfig({
         "src/components/profile/SocialLinks.vue",
         "src/components/repo/FileUploader.vue",
         "src/components/repo/RepoList.vue",
+        "src/components/repo/RepoViewer.vue",
         "src/components/repo/metadata/LanguageCard.vue",
         "src/components/repo/metadata/LicenseCard.vue",
         "src/pages/index.vue",

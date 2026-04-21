@@ -166,6 +166,52 @@ describe("RepoViewer path handling", () => {
     );
   });
 
+  it("sorts directories before files and orders same-type paths alphabetically", async () => {
+    mocks.repoApi.listTreeAll.mockResolvedValue([
+      {
+        type: "file",
+        path: "catalog/z-last.txt",
+        size: 4,
+        lastModified: "2026-04-21T13:53:39.000000Z",
+      },
+      {
+        type: "directory",
+        path: "catalog/b-section",
+        size: 0,
+        lastModified: "2026-04-21T13:53:39.000000Z",
+      },
+      {
+        type: "file",
+        path: "catalog/a-first.txt",
+        size: 2,
+        lastModified: "2026-04-21T13:53:39.000000Z",
+      },
+      {
+        type: "directory",
+        path: "catalog/a-section",
+        size: 0,
+        lastModified: "2026-04-21T13:53:39.000000Z",
+      },
+    ]);
+    mocks.repoApi.getPathsInfo.mockResolvedValue({ data: [] });
+
+    const wrapper = mountViewer({ currentPath: "catalog" });
+
+    await flushPromises();
+    await flushPromises();
+
+    const rowNames = wrapper
+      .findAll('[class*="cursor-pointer"] .font-medium.truncate')
+      .map((node) => node.text());
+
+    expect(rowNames).toEqual([
+      "a-section",
+      "b-section",
+      "a-first.txt",
+      "z-last.txt",
+    ]);
+  });
+
   it("keeps repo-root file navigation working when expanded path info fails", async () => {
     mocks.repoApi.listTreeAll.mockResolvedValue([
       {
@@ -195,6 +241,28 @@ describe("RepoViewer path handling", () => {
     expect(mocks.router.push).toHaveBeenCalledWith(
       "/datasets/open-media-lab/table-scan-fixtures/blob/main/metadata/features.json",
     );
+  });
+
+  it("skips expanded path loading for empty trees and clears the tree when loading fails", async () => {
+    mocks.repoApi.listTreeAll
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("tree failed"));
+
+    const emptyWrapper = mountViewer({ currentPath: "catalog" });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(emptyWrapper.text()).toContain("No files found");
+    expect(mocks.repoApi.getPathsInfo).not.toHaveBeenCalled();
+
+    const failedWrapper = mountViewer({ currentPath: "catalog-next" });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(failedWrapper.findAll('[class*="cursor-pointer"]')).toHaveLength(0);
+    expect(mocks.repoApi.getPathsInfo).not.toHaveBeenCalled();
   });
 
   it("ignores stale tree responses after the current path changes", async () => {
