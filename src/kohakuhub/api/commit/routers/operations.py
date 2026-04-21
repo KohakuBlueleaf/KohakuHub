@@ -41,6 +41,11 @@ class RepoType(str, Enum):
     space = "space"
 
 
+def build_public_repo_path(repo_type: RepoType, repo_id: str) -> str:
+    """Return the HF-compatible repository path used in commit responses."""
+    return f"{repo_type.value}s/{repo_id}"
+
+
 def calculate_git_blob_sha1(content: bytes) -> str:
     """Calculate SHA1 hash in git blob format.
 
@@ -825,7 +830,7 @@ async def commit(
         except Exception:
             commit_id = "no-changes"
 
-        commit_url = f"{cfg.app.base_url}/{repo_id}/commit/{commit_id}"
+        commit_url = f"{build_public_repo_path(repo_type, repo_id)}/commit/{commit_id}"
 
         return {
             "commitUrl": commit_url,
@@ -889,7 +894,9 @@ async def commit(
         # Don't fail the commit if DB recording fails
 
     # Generate commit URL
-    commit_url = f"{cfg.app.base_url}/{repo_id}/commit/{commit_result['id']}"
+    commit_url = (
+        f"{build_public_repo_path(repo_type, repo_id)}/commit/{commit_result['id']}"
+    )
     logger.success(f"Commit URL: {commit_url}")
 
     # Track LFS objects and run GC

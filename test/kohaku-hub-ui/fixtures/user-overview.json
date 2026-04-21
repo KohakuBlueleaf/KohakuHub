@@ -1,0 +1,44 @@
+{
+  "models": [
+    {
+      "id": "mai_lin/lineart-caption-base",
+      "author": "mai_lin",
+      "private": false,
+      "sha": null,
+      "lastModified": null,
+      "createdAt": "2026-04-20T08:47:31.616317Z",
+      "downloads": 4,
+      "likes": 3,
+      "gated": false,
+      "tags": []
+    }
+  ],
+  "datasets": [
+    {
+      "id": "mai_lin/street-sign-zh-en",
+      "author": "mai_lin",
+      "private": false,
+      "sha": null,
+      "lastModified": null,
+      "createdAt": "2026-04-20T08:47:33.425102Z",
+      "downloads": 9,
+      "likes": 2,
+      "gated": false,
+      "tags": []
+    }
+  ],
+  "spaces": [
+    {
+      "id": "mai_lin/mai_lin",
+      "author": "mai_lin",
+      "private": false,
+      "sha": null,
+      "lastModified": null,
+      "createdAt": "2026-04-20T08:47:35.171051Z",
+      "downloads": 0,
+      "likes": 0,
+      "gated": false,
+      "tags": []
+    }
+  ]
+}

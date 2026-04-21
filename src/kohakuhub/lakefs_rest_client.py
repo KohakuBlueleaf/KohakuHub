@@ -188,6 +188,33 @@ class LakeFSRestClient:
             self._check_response(response)
             return response.json()
 
+    async def list_repositories(
+        self, amount: int = 1000, after: str | None = None
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """List repositories.
+
+        Args:
+            amount: Maximum number of repositories to return
+            after: Pagination offset token from a previous response
+
+        Returns:
+            Raw LakeFS API response payload
+        """
+        url = f"{self.base_url}/repositories"
+        params: dict[str, Any] = {"amount": amount}
+        if after:
+            params["after"] = after
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params,
+                auth=self.auth,
+                timeout=None,
+            )
+            self._check_response(response)
+            return response.json()
+
     async def link_physical_address(
         self,
         repository: str,
@@ -474,11 +501,14 @@ class LakeFSRestClient:
         Returns:
             True if repository exists, False otherwise
         """
-        try:
-            await self.get_repository(repository)
+        url = f"{self.base_url}/repositories/{repository}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, auth=self.auth, timeout=None)
+            if response.status_code == 404:
+                return False
+            self._check_response(response)
             return True
-        except Exception:
-            return False
 
     async def get_branch(self, repository: str, branch: str) -> dict[str, Any]:
         """Get branch details.
@@ -494,6 +524,39 @@ class LakeFSRestClient:
 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, auth=self.auth, timeout=None)
+            self._check_response(response)
+            return response.json()
+
+    async def list_branches(
+        self,
+        repository: str,
+        after: str | None = None,
+        amount: int | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """List repository branches.
+
+        Args:
+            repository: Repository name
+            after: Pagination cursor
+            amount: Number of branches to return
+
+        Returns:
+            LakeFS branch list payload
+        """
+        url = f"{self.base_url}/repositories/{repository}/branches"
+        params: dict[str, Any] = {}
+        if after:
+            params["after"] = after
+        if amount:
+            params["amount"] = amount
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params,
+                auth=self.auth,
+                timeout=None,
+            )
             self._check_response(response)
             return response.json()
 
@@ -559,6 +622,39 @@ class LakeFSRestClient:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url, json=tag_data, auth=self.auth, timeout=None
+            )
+            self._check_response(response)
+            return response.json()
+
+    async def list_tags(
+        self,
+        repository: str,
+        after: str | None = None,
+        amount: int | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """List repository tags.
+
+        Args:
+            repository: Repository name
+            after: Pagination cursor
+            amount: Number of tags to return
+
+        Returns:
+            LakeFS tag list payload
+        """
+        url = f"{self.base_url}/repositories/{repository}/tags"
+        params: dict[str, Any] = {}
+        if after:
+            params["after"] = after
+        if amount:
+            params["amount"] = amount
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params,
+                auth=self.auth,
+                timeout=None,
             )
             self._check_response(response)
             return response.json()

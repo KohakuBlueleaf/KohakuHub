@@ -275,6 +275,7 @@
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import CodeViewer from "@/components/common/CodeViewer.vue";
 import { copyToClipboard } from "@/utils/clipboard";
+import { normalizeCatchAllParam } from "@/utils/repo-paths";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { repoAPI } from "@/utils/api";
@@ -294,7 +295,7 @@ const repoType = computed(() => {
 const namespace = computed(() => route.params.namespace);
 const name = computed(() => route.params.name);
 const branch = computed(() => route.params.branch || "main");
-const filePath = computed(() => route.params.file || "");
+const filePath = computed(() => normalizeCatchAllParam(route.params.file));
 
 // Constants
 const maxPreviewSize = 100 * 1000; // 100KB

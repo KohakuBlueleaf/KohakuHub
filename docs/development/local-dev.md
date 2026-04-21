@@ -214,9 +214,52 @@ docker logs -f kohakuhub-dev-minio
 docker logs -f kohakuhub-dev-postgres
 ```
 
+## Backend Tests
+
+Backend tests run against the real Postgres, MinIO, and LakeFS services. The same `make test` entrypoint is used locally and in GitHub Actions.
+
+Start the local infra first:
+
+```bash
+make infra-up
+```
+
+Run the full backend suite with coverage:
+
+```bash
+make test
+```
+
+Run only one backend submodule by passing a path relative to both `test/kohakuhub/` and `src/kohakuhub/`:
+
+```bash
+make test RANGE_DIR=api
+make test RANGE_DIR=api/repo/routers
+```
+
+When `RANGE_DIR` is set, pytest runs `test/kohakuhub/${RANGE_DIR}` and coverage focuses on `src/kohakuhub/${RANGE_DIR}`.
+
+If you keep local test overrides in a repo-root `.env`, load them into your shell before running tests:
+
+```bash
+source .env
+make test
+```
+
+The test code reads environment variables only. It does not load `.env` directly.
+
 ## Reset Local Data
 
-`make reset-local-data` is intentionally destructive. The script prints a bold red warning, explains the consequences, and requires typing the same confirmation phrase twice before it removes `hub-meta/dev/`.
+`make reset-local-data` is intentionally destructive. The script prints a bold red warning, explains the consequences, and asks for a single `y/N` confirmation before it clears the local app state through the in-process local reset helper.
+
+The reset flow no longer deletes `hub-meta/dev/` directly. Instead, it:
+
+- deletes all LakeFS repositories through the local LakeFS API
+- clears the configured S3 bucket through the storage client
+- rebuilds the KohakuHub application schema
+- removes the local demo seed manifest
+
+This avoids Docker bind-mount ownership issues and keeps the local infra containers running so you can re-seed immediately.
 
 If you want a clean local reset followed by fresh demo data bootstrapping:
 
@@ -224,7 +267,7 @@ If you want a clean local reset followed by fresh demo data bootstrapping:
 make reset-and-seed
 ```
 
-That command still goes through the same double-confirmation prompt before anything is deleted.
+That command still goes through the same single `y/N` confirmation before anything is deleted.
 
 ## Troubleshooting
 

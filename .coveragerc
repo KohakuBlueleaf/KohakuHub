@@ -1,0 +1,21 @@
+[run]
+source = kohakuhub
+omit =
+    */test/*
+    */tests/*
+    */migrations/*
+    */__pycache__/*
+    */venv/*
+    */virtualenv/*
+    */src/kohakuhub/old_db.py
+    */src/kohakuhub/old_logger.py
+    */src/kohakuhub/datasetviewer/*
+
+[report]
+precision = 2
+show_missing = True
+skip_covered = False
+fail_under = 50
+
+[html]
+directory = htmlcov

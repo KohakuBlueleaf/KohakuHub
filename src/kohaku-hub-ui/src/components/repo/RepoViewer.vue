@@ -855,6 +855,7 @@ import { copyToClipboard } from "@/utils/clipboard";
 import { parseYAMLFrontmatter, normalizeMetadata } from "@/utils/yaml-parser";
 import { parseTags } from "@/utils/tag-parser";
 import { likesAPI, repoAPI } from "@/utils/api";
+import { resolveRepoTreeEntryPath } from "@/utils/repo-paths";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import MetadataHeader from "@/components/repo/metadata/MetadataHeader.vue";
 import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPanel.vue";
@@ -1377,21 +1378,15 @@ async function loadMoreCommits() {
 }
 
 function handleFileClick(file) {
+  const targetPath = resolveRepoTreeEntryPath(props.currentPath, file.path);
+
   if (file.type === "directory") {
-    // Navigate to folder using tree route
-    const newPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
     router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${newPath}`,
+      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${targetPath}`,
     );
   } else {
-    // Navigate to file viewer using blob route
-    const fullPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
     router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${fullPath}`,
+      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${targetPath}`,
     );
   }
 }
