@@ -66,6 +66,25 @@ async def _run(func, *args, **kwargs):
     return await asyncio.to_thread(lambda: func(*args, **kwargs))
 
 
+_MISSING = object()
+
+
+def _field(obj, name: str):
+    """Version-portable access for attribute-or-dict-key fields.
+
+    Older huggingface_hub releases (notably v0.20.3) return plain ``dict``
+    instances from ``repo_info`` siblings / ``get_paths_info`` entries. Newer
+    releases wrap the same payload in a dataclass. Access through this helper
+    so the tests read the same on both shapes.
+    """
+    value = getattr(obj, name, _MISSING)
+    if value is not _MISSING:
+        return value
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return None
+
+
 async def _create_hf_token(client, name: str) -> str:
     response = await client.post("/api/auth/tokens/create", json={"name": name})
     response.raise_for_status()
@@ -122,14 +141,15 @@ async def test_repo_info_exposes_sha_and_lfs_sibling_metadata(
     weights_sibling = siblings_by_path["weights/model.safetensors"]
 
     # Regular file still carries size metadata.
-    assert readme_sibling.size is not None and readme_sibling.size > 0
+    readme_size = _field(readme_sibling, "size")
+    assert readme_size is not None and readme_size > 0
 
-    # LFS sibling exposes sha256 + size.
+    # LFS sibling exposes sha256 + size. In hf<0.21 ``lfs`` is a plain dict;
+    # newer releases wrap it in a dataclass that also subclasses dict.
     lfs_block = weights_sibling.lfs
     assert lfs_block is not None
-    # huggingface_hub maps this as a BlobLfsInfo dataclass-ish object.
-    assert lfs_block.sha256
-    assert lfs_block.size == len(b"safe tensor payload")
+    assert _field(lfs_block, "sha256")
+    assert _field(lfs_block, "size") == len(b"safe tensor payload")
 
 
 async def test_repo_info_respects_explicit_revision(live_server_url, hf_api_token):
@@ -630,6 +650,14 @@ async def test_create_commit_supports_copy_operation(
             ],
             commit_message="copy operation",
         )
+    except NotImplementedError:
+        # In huggingface_hub<0.21, CommitOperationCopy is a client-side
+        # stub that rejects non-LFS files outright. Treat that as an
+        # upstream-side limitation for this version.
+        pytest.skip(
+            "CommitOperationCopy on non-LFS files is a client-side "
+            "NotImplementedError in older huggingface_hub releases"
+        )
     except HfHubHTTPError as exc:
         # If the server explicitly rejects, it must be a clean 4xx — not 500.
         assert 400 <= exc.response.status_code < 500
@@ -692,15 +720,17 @@ async def test_get_paths_info_returns_size_and_lfs_metadata(
         repo_id="owner/demo-model",
         paths=["README.md", "weights/model.safetensors"],
     )
-    by_path = {e.path: e for e in entries}
+    # In hf<0.21 ``get_paths_info`` returns plain dicts, not RepoFile/RepoFolder.
+    by_path = {_field(e, "path"): e for e in entries}
     assert "README.md" in by_path
     readme = by_path["README.md"]
-    assert readme.size is not None and readme.size > 0
+    readme_size = _field(readme, "size")
+    assert readme_size is not None and readme_size > 0
 
     weights = by_path["weights/model.safetensors"]
-    lfs = getattr(weights, "lfs", None)
+    lfs = _field(weights, "lfs")
     assert lfs is not None, "LFS object must carry LFS metadata in paths-info"
-    assert lfs.size == len(b"safe tensor payload")
+    assert _field(lfs, "size") == len(b"safe tensor payload")
 
 
 async def test_file_exists_for_missing_file_returns_false_not_exception(
