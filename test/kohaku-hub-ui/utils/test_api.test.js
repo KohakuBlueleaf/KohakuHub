@@ -291,6 +291,66 @@ describe("frontend API client", () => {
     });
   });
 
+  it("follows paginated tree Link headers and submits expanded paths-info forms", async () => {
+    const { apiClient, repoAPI } = await loadModules();
+
+    const getSpy = vi
+      .spyOn(apiClient, "get")
+      .mockResolvedValueOnce({
+        data: [{ path: "docs" }],
+        headers: {
+          link: '<https://hub.local/api/models/alice/demo/tree/main/docs?cursor=page-2>; rel="next"',
+        },
+      })
+      .mockResolvedValueOnce({
+        data: [{ path: "docs/guide.md" }],
+        headers: {},
+      });
+    const postSpy = vi.spyOn(apiClient, "post").mockResolvedValue({ data: [] });
+
+    const allEntries = await repoAPI.listTreeAll(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      "/docs",
+      { recursive: false },
+    );
+    await repoAPI.getPathsInfo(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      ["docs", "docs/guide.md"],
+      true,
+    );
+
+    expect(allEntries).toEqual([{ path: "docs" }, { path: "docs/guide.md" }]);
+    expect(getSpy).toHaveBeenNthCalledWith(
+      1,
+      "/api/models/alice/demo/tree/main/docs",
+      { params: { recursive: false } },
+    );
+    expect(getSpy).toHaveBeenNthCalledWith(
+      2,
+      "https://hub.local/api/models/alice/demo/tree/main/docs?cursor=page-2",
+    );
+
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0][0]).toBe(
+      "/api/models/alice/demo/paths-info/main",
+    );
+    expect(postSpy.mock.calls[0][1]).toBeInstanceOf(URLSearchParams);
+    expect(postSpy.mock.calls[0][1].toString()).toBe(
+      "paths=docs&paths=docs%2Fguide.md&expand=true",
+    );
+    expect(postSpy.mock.calls[0][2]).toEqual({
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+  });
+
   it("builds NDJSON commits for ignored, regular, LFS, and editor flows", async () => {
     const originalFileReader = globalThis.FileReader;
     globalThis.FileReader = class {

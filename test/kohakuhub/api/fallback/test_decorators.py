@@ -124,6 +124,111 @@ async def test_with_repo_fallback_returns_original_response_on_fallback_miss(mon
 
 
 @pytest.mark.asyncio
+async def test_with_repo_fallback_forwards_tree_and_paths_info_expand_parameters(monkeypatch):
+    forwarded_tree_calls = []
+    forwarded_paths_info_calls = []
+
+    monkeypatch.setattr(
+        fallback_decorators,
+        "get_merged_external_tokens",
+        lambda user, header_tokens: {"https://hf.local": "token"},
+    )
+
+    async def fake_try_fallback_tree(*args, **kwargs):
+        forwarded_tree_calls.append((args, kwargs))
+        return {"tree": True}
+
+    async def fake_try_fallback_paths_info(*args, **kwargs):
+        forwarded_paths_info_calls.append((args, kwargs))
+        return [{"path": "README.md"}]
+
+    monkeypatch.setattr(fallback_decorators, "try_fallback_tree", fake_try_fallback_tree)
+    monkeypatch.setattr(
+        fallback_decorators,
+        "try_fallback_paths_info",
+        fake_try_fallback_paths_info,
+    )
+
+    @fallback_decorators.with_repo_fallback("tree")
+    async def tree_handler(
+        namespace: str,
+        name: str,
+        revision: str,
+        path: str = "",
+        recursive: bool = False,
+        expand: bool = False,
+        limit: int | None = None,
+        cursor: str | None = None,
+        request=None,
+        user=None,
+    ):
+        raise HTTPException(status_code=404, detail="missing")
+
+    @fallback_decorators.with_repo_fallback("paths_info")
+    async def paths_info_handler(
+        repo_type=None,
+        namespace: str = "",
+        repo_name: str = "",
+        revision: str = "",
+        paths=None,
+        expand: bool = False,
+        request=None,
+        user=None,
+    ):
+        raise HTTPException(status_code=404, detail="missing")
+
+    tree_request = _request("/api/models/owner/demo/tree/main/docs")
+    tree_result = await tree_handler(
+        namespace="owner",
+        name="demo",
+        revision="main",
+        path="docs",
+        recursive=True,
+        expand=True,
+        limit=25,
+        cursor="page-1",
+        request=tree_request,
+        user="owner-user",
+    )
+    assert tree_result == {"tree": True}
+    assert forwarded_tree_calls == [
+        (
+            ("model", "owner", "demo", "main", "docs"),
+            {
+                "recursive": True,
+                "expand": True,
+                "limit": 25,
+                "cursor": "page-1",
+                "user_tokens": {"https://hf.local": "token"},
+            },
+        )
+    ]
+
+    paths_info_request = _request("/api/models/owner/demo/paths-info/main")
+    repo_type = SimpleNamespace(value="model")
+    paths_info_result = await paths_info_handler(
+        repo_type=repo_type,
+        namespace="owner",
+        repo_name="demo",
+        revision="main",
+        paths=["README.md", "docs"],
+        expand=True,
+        request=paths_info_request,
+        user="owner-user",
+    )
+    assert paths_info_result == [{"path": "README.md"}]
+    assert forwarded_paths_info_calls == [
+        (
+            ("model", "owner", "demo", "main", ["README.md", "docs"]),
+            {
+                "expand": True,
+                "user_tokens": {"https://hf.local": "token"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_with_list_aggregation_merges_local_and_external_results(monkeypatch):
     monkeypatch.setattr(
         fallback_decorators,

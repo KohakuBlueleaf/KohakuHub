@@ -268,7 +268,17 @@ async def test_try_fallback_info_tree_and_paths_info_cover_success_paths(monkeyp
         "https://source.local",
         "GET",
         "/api/models/owner/demo/tree/main/folder/file.txt",
-        _json_response(200, [{"path": "folder/file.txt"}]),
+        httpx.Response(
+            200,
+            json=[{"path": "folder/file.txt"}],
+            headers={
+                "content-type": "application/json",
+                "link": '</api/models/owner/demo/tree/main/folder/file.txt?cursor=page-2>; rel="next"',
+            },
+            request=httpx.Request(
+                "GET", "https://source.local/api/models/owner/demo/tree/main/folder/file.txt"
+            ),
+        ),
     )
     FakeFallbackClient.queue(
         "https://source.local",
@@ -278,23 +288,42 @@ async def test_try_fallback_info_tree_and_paths_info_cover_success_paths(monkeyp
     )
 
     info = await fallback_ops.try_fallback_info("model", "owner", "demo")
-    tree = await fallback_ops.try_fallback_tree("model", "owner", "demo", "main", "/folder/file.txt")
+    tree = await fallback_ops.try_fallback_tree(
+        "model",
+        "owner",
+        "demo",
+        "main",
+        "/folder/file.txt",
+        recursive=True,
+        expand=True,
+        limit=25,
+        cursor="page-1",
+    )
     paths_info = await fallback_ops.try_fallback_paths_info(
         "model",
         "owner",
         "demo",
         "main",
         ["folder/file.txt"],
+        expand=True,
     )
 
     assert info["_source"] == "Source"
     assert info["_source_url"] == "https://source.local"
-    assert tree == [{"path": "folder/file.txt"}]
+    assert tree.status_code == 200
+    assert tree.body == b'[{"path":"folder/file.txt"}]'
+    assert tree.headers["link"] == '</api/models/owner/demo/tree/main/folder/file.txt?cursor=page-2>; rel="next"'
     assert paths_info == [{"path": "folder/file.txt", "type": "file"}]
     assert cache.set_calls[0][0][:3] == ("model", "owner", "demo")
+    assert FakeFallbackClient.calls[1][3]["params"] == {
+        "recursive": True,
+        "expand": True,
+        "limit": 25,
+        "cursor": "page-1",
+    }
     assert FakeFallbackClient.calls[-1][3]["data"] == {
         "paths": ["folder/file.txt"],
-        "expand": False,
+        "expand": True,
     }
 
 
