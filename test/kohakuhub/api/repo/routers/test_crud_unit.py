@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -177,13 +178,18 @@ async def test_create_repo_covers_conflicts_lakefs_failure_and_success(monkeypat
     conflict = await repo_crud.create_repo(
         repo_crud.CreateRepoPayload(type="model", name="Demo_Model"), user=user
     )
-    assert conflict.status_code == 400
+    # huggingface_hub's create_repo(exist_ok=True) only shortcuts on 409, so the
+    # conflict response now uses 409 Conflict with a JSON body carrying `url`.
+    assert conflict.status_code == 409
+    assert conflict.headers.get("x-error-code") == repo_crud.HFErrorCode.REPO_EXISTS
+    assert json.loads(bytes(conflict.body)).get("url")
 
     monkeypatch.setattr(repo_crud, "get_repository", lambda *_args: SimpleNamespace())
     exact_conflict = await repo_crud.create_repo(
         repo_crud.CreateRepoPayload(type="model", name="demo-model"), user=user
     )
-    assert exact_conflict.status_code == 400
+    assert exact_conflict.status_code == 409
+    assert json.loads(bytes(exact_conflict.body)).get("url")
 
     monkeypatch.setattr(repo_crud, "get_repository", lambda *_args: None)
     _FakeRepositoryModel.select_query = _Query(items=[])
@@ -369,7 +375,8 @@ async def test_move_repo_covers_validation_quota_success_and_nonfatal_cleanup(mo
         repo_crud.MoveRepoPayload(fromRepo="owner/from", toRepo="owner/to", type="model"),
         auth=(SimpleNamespace(username="owner"), False),
     )
-    assert exists.status_code == 400
+    assert exists.status_code == 409
+    assert exists.headers.get("x-error-code") == repo_crud.HFErrorCode.REPO_EXISTS
 
     monkeypatch.setattr(repo_crud, "get_repository", lambda repo_type, namespace, name: repo_row if (namespace, name) == ("owner", "from") else None)
     monkeypatch.setattr(repo_crud, "check_quota", lambda **kwargs: (False, "quota exceeded"))
