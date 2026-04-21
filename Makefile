@@ -26,7 +26,7 @@ help:
 	@echo "  make infra-up         Start local Postgres/MinIO/LakeFS with persisted data"
 	@echo "  make infra-down       Stop local infra containers but keep persisted data"
 	@echo "  make seed-demo        Run migrations + first-run demo seed without starting uvicorn"
-	@echo "  make reset-local-data Dangerously delete all persisted local KohakuHub dev data"
+	@echo "  make reset-local-data Dangerously clear local KohakuHub dev data through the local reset helper"
 	@echo "  make reset-and-seed   Reset persisted local data, then bootstrap fresh demo data"
 	@echo "  make backend          Run FastAPI backend in reload mode"
 	@echo "  make ui               Run the main Vite frontend on :5173"

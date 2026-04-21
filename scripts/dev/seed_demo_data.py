@@ -1437,15 +1437,63 @@ def url_to_internal_path(url: str) -> str:
     return path
 
 
-async def user_seed_exists(client: httpx.AsyncClient) -> bool:
+def manifest_matches_current_seed() -> bool:
+    if not MANIFEST_PATH.exists():
+        return False
+
+    try:
+        payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    return payload.get("seed_version") == SEED_VERSION
+
+
+def representative_seed_repositories() -> tuple[RepoSeed, ...]:
+    seen_types: set[str] = set()
+    selected: list[RepoSeed] = []
+
+    for repo in REPO_SEEDS:
+        if repo.private or repo.repo_type in seen_types:
+            continue
+        seen_types.add(repo.repo_type)
+        selected.append(repo)
+
+    return tuple(selected)
+
+
+async def detect_seed_state(client: httpx.AsyncClient) -> str:
     response = await client.get(
         f"/api/users/{PRIMARY_USERNAME}/type",
         params={"fallback": "false"},
     )
     if response.status_code == 404:
-        return False
+        return "missing"
     await ensure_response(response, f"check existing seed for {PRIMARY_USERNAME}")
-    return True
+
+    if not manifest_matches_current_seed():
+        return "incomplete"
+
+    for repo in representative_seed_repositories():
+        info_response = await client.get(f"/api/{repo.repo_type}s/{repo.namespace}/{repo.name}")
+        if info_response.status_code == 404:
+            return "incomplete"
+        await ensure_response(
+            info_response,
+            f"verify seeded repo metadata for {repo.namespace}/{repo.name}",
+        )
+
+        tree_response = await client.get(
+            f"/api/{repo.repo_type}s/{repo.namespace}/{repo.name}/tree/main"
+        )
+        if tree_response.status_code == 404:
+            return "incomplete"
+        await ensure_response(
+            tree_response,
+            f"verify seeded repo storage for {repo.namespace}/{repo.name}",
+        )
+
+    return "ready"
 
 
 async def register_account(client: httpx.AsyncClient, account: AccountSeed) -> None:
@@ -1897,10 +1945,16 @@ async def seed_demo_data() -> None:
             )
         )
 
-        if await user_seed_exists(seed_client):
+        seed_state = await detect_seed_state(seed_client)
+        if seed_state == "ready":
             write_manifest()
             print_summary(seed_applied=False)
             return
+        if seed_state == "incomplete":
+            raise SeedError(
+                "Local demo seed is only partially present. "
+                "Run `make reset-local-data` and then retry `make seed-demo`."
+            )
 
         for account in ACCOUNTS:
             await register_account(seed_client, account)

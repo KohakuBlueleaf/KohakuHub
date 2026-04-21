@@ -250,7 +250,16 @@ The test code reads environment variables only. It does not load `.env` directly
 
 ## Reset Local Data
 
-`make reset-local-data` is intentionally destructive. The script prints a bold red warning, explains the consequences, and requires typing the same confirmation phrase twice before it removes `hub-meta/dev/`.
+`make reset-local-data` is intentionally destructive. The script prints a bold red warning, explains the consequences, and asks for a single `y/N` confirmation before it clears the local app state through the in-process local reset helper.
+
+The reset flow no longer deletes `hub-meta/dev/` directly. Instead, it:
+
+- deletes all LakeFS repositories through the local LakeFS API
+- clears the configured S3 bucket through the storage client
+- rebuilds the KohakuHub application schema
+- removes the local demo seed manifest
+
+This avoids Docker bind-mount ownership issues and keeps the local infra containers running so you can re-seed immediately.
 
 If you want a clean local reset followed by fresh demo data bootstrapping:
 
@@ -258,7 +267,7 @@ If you want a clean local reset followed by fresh demo data bootstrapping:
 make reset-and-seed
 ```
 
-That command still goes through the same double-confirmation prompt before anything is deleted.
+That command still goes through the same single `y/N` confirmation before anything is deleted.
 
 ## Troubleshooting
 

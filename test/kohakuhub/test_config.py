@@ -178,5 +178,4 @@ def test_load_config_uses_defaults_when_file_is_missing(monkeypatch):
     assert cfg.s3.endpoint == "http://localhost:9000"
     assert cfg.lakefs.endpoint == "http://localhost:8000"
     assert cfg.app.base_url == "http://localhost:48888"
-
     hub_config.load_config.cache_clear()

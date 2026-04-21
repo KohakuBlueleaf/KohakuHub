@@ -579,7 +579,7 @@ def _delete_objects_with_prefix_sync(bucket: str, prefix: str) -> int:
             delete_keys = [{"Key": key} for key in batch]
 
             response = s3_client.delete_objects(
-                Bucket=bucket, Delete={"Objects": delete_keys, "Quiet": True}
+                Bucket=bucket, Delete={"Objects": delete_keys, "Quiet": False}
             )
 
             if "Deleted" in response:
