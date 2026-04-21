@@ -10,10 +10,12 @@ COV_TYPES ?= xml term-missing
 PYTEST_ARGS ?= -ra -vv --durations=10 --cov=$(COV_RANGE) --cov-config=.coveragerc --cov-fail-under=$(COV_FAIL_UNDER) $(shell for type in $(COV_TYPES); do echo --cov-report=$$type; done)
 UI_DIR ?= src/kohaku-hub-ui
 UI_TEST_ROOT ?= test/kohaku-hub-ui
+UI_ADMIN_DIR ?= src/kohaku-hub-admin
+UI_ADMIN_TEST_ROOT ?= test/kohaku-hub-admin
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs test test-backend test-ui
+	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-admin
 
 help:
 	@echo "Local development targets:"
@@ -33,8 +35,9 @@ help:
 	@echo "                        Example: make test-backend RANGE_DIR=api"
 	@echo "                        Example: make test-backend RANGE_DIR=api/repo/routers"
 	@echo "                        Options: COV_TYPES='xml term-missing'"
-	@echo "  make test-ui          Run the frontend Vitest suite with coverage"
-	@echo "  make test             Run backend tests, then frontend tests"
+	@echo "  make test-ui          Run the main UI Vitest suite with coverage"
+	@echo "  make test-ui-admin    Run the admin UI Vitest suite with coverage"
+	@echo "  make test             Run backend tests, then main UI tests, then admin UI tests"
 	@echo "  make status           Show local dev infra container status"
 	@echo "  make logs-postgres    Tail Postgres logs"
 	@echo "  make logs-minio       Tail MinIO logs"
@@ -109,7 +112,18 @@ test-ui:
 	fi
 	npm run test --prefix $(UI_DIR)
 
-test: test-backend test-ui
+test-ui-admin:
+	@if [[ ! -d "$(UI_ADMIN_DIR)" ]]; then \
+		echo "Missing admin UI directory: $(UI_ADMIN_DIR)" >&2; \
+		exit 1; \
+	fi
+	@if [[ ! -d "$(UI_ADMIN_TEST_ROOT)" ]]; then \
+		echo "Missing admin UI test directory: $(UI_ADMIN_TEST_ROOT)" >&2; \
+		exit 1; \
+	fi
+	npm run test --prefix $(UI_ADMIN_DIR)
+
+test: test-backend test-ui test-ui-admin
 
 status:
 	docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep 'kohakuhub-dev-' || true
