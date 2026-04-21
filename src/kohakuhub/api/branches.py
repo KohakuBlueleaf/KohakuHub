@@ -1,6 +1,6 @@
 """Branch and tag management API endpoints."""
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,9 +8,10 @@ from pydantic import BaseModel
 from kohakuhub.db import Repository, User
 from kohakuhub.db_operations import create_commit, get_repository
 from kohakuhub.logger import get_logger
-from kohakuhub.auth.dependencies import get_current_user
+from kohakuhub.auth.dependencies import get_current_user, get_optional_user
 from kohakuhub.auth.permissions import (
     check_repo_delete_permission,
+    check_repo_read_permission,
     check_repo_write_permission,
 )
 from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
@@ -37,6 +38,12 @@ class CreateBranchPayload(BaseModel):
 
     branch: str
     revision: Optional[str] = None  # Source revision (defaults to main)
+
+
+class CreateBranchCompatPayload(BaseModel):
+    """Hugging Face compatible payload for branch creation."""
+
+    startingPoint: Optional[str] = None
 
 
 @router.post("/{repo_type}s/{namespace}/{name}/branch")
@@ -104,6 +111,28 @@ async def create_branch(
         return hf_server_error(f"Failed to create branch: {error_msg}")
 
     return {"success": True, "message": f"Branch '{payload.branch}' created"}
+
+
+@router.post("/{repo_type}s/{namespace}/{name}/branch/{branch}")
+async def create_branch_compat(
+    repo_type: str,
+    namespace: str,
+    name: str,
+    branch: str,
+    payload: CreateBranchCompatPayload,
+    user: User = Depends(get_current_user),
+):
+    """Create a branch using the Hugging Face Hub compatible route shape."""
+    return await create_branch(
+        repo_type=repo_type,
+        namespace=namespace,
+        name=name,
+        payload=CreateBranchPayload(
+            branch=branch,
+            revision=payload.startingPoint,
+        ),
+        user=user,
+    )
 
 
 @router.delete("/{repo_type}s/{namespace}/{name}/branch/{branch}")
@@ -194,6 +223,13 @@ class CreateTagPayload(BaseModel):
     message: Optional[str] = None
 
 
+class CreateTagCompatPayload(BaseModel):
+    """Hugging Face compatible payload for tag creation."""
+
+    tag: str
+    message: Optional[str] = None
+
+
 @router.post("/{repo_type}s/{namespace}/{name}/tag")
 async def create_tag(
     repo_type: str,
@@ -250,6 +286,29 @@ async def create_tag(
     return {"success": True, "message": f"Tag '{payload.tag}' created"}
 
 
+@router.post("/{repo_type}s/{namespace}/{name}/tag/{revision}")
+async def create_tag_compat(
+    repo_type: str,
+    namespace: str,
+    name: str,
+    revision: str,
+    payload: CreateTagCompatPayload,
+    user: User = Depends(get_current_user),
+):
+    """Create a tag using the Hugging Face Hub compatible route shape."""
+    return await create_tag(
+        repo_type=repo_type,
+        namespace=namespace,
+        name=name,
+        payload=CreateTagPayload(
+            tag=payload.tag,
+            revision=revision,
+            message=payload.message,
+        ),
+        user=user,
+    )
+
+
 @router.delete("/{repo_type}s/{namespace}/{name}/tag/{tag}")
 async def delete_tag(
     repo_type: str,
@@ -290,6 +349,120 @@ async def delete_tag(
         return hf_server_error(f"Failed to delete tag: {str(e)}")
 
     return {"success": True, "message": f"Tag '{tag}' deleted"}
+
+
+def _resolve_ref_name(item: dict[str, Any]) -> str | None:
+    """Extract a branch/tag name from a LakeFS reference payload."""
+    return item.get("id") or item.get("name")
+
+
+def _resolve_target_commit(item: dict[str, Any]) -> str | None:
+    """Extract the commit ID from a LakeFS reference payload."""
+    commit = item.get("commit")
+    if isinstance(commit, dict):
+        return commit.get("id") or commit.get("commit_id") or commit.get("commitId")
+
+    return item.get("commit_id") or item.get("commitId") or item.get("hash")
+
+
+async def _collect_reference_page(
+    list_method,
+    repository: str,
+) -> list[dict[str, Any]]:
+    """Collect a complete paginated list of LakeFS references."""
+    results: list[dict[str, Any]] = []
+    after: str | None = None
+
+    while True:
+        payload = await list_method(repository=repository, after=after, amount=1000)
+        if isinstance(payload, list):
+            results.extend(payload)
+            return results
+
+        results.extend(payload.get("results", []))
+        pagination = payload.get("pagination", {})
+        if not pagination.get("has_more"):
+            return results
+
+        after = pagination.get("next_offset")
+        if not after:
+            return results
+
+
+@router.get("/{repo_type}s/{namespace}/{name}/refs")
+async def list_repo_refs(
+    repo_type: str,
+    namespace: str,
+    name: str,
+    include_prs: bool = False,
+    user: User | None = Depends(get_optional_user),
+):
+    """List branches and tags using the Hugging Face Hub compatible schema."""
+    repo_id = f"{namespace}/{name}"
+    repo_row = get_repository(repo_type, namespace, name)
+
+    if not repo_row:
+        return hf_repo_not_found(repo_id, repo_type)
+
+    check_repo_read_permission(repo_row, user)
+
+    lakefs_repo = lakefs_repo_name(repo_type, repo_id)
+    client = get_lakefs_client()
+    branches: list[dict[str, str]] = []
+    tags: list[dict[str, str]] = []
+
+    try:
+        branch_items = await _collect_reference_page(client.list_branches, lakefs_repo)
+    except Exception as e:
+        logger.warning(f"Failed to list branches for {repo_id}: {e}")
+        branch_items = []
+
+    if not branch_items:
+        try:
+            branch_items = [await client.get_branch(repository=lakefs_repo, branch="main")]
+        except Exception as e:
+            logger.warning(f"Failed to fetch main branch for {repo_id}: {e}")
+
+    for item in branch_items:
+        branch_name = _resolve_ref_name(item)
+        target_commit = _resolve_target_commit(item)
+        if not branch_name or not target_commit:
+            continue
+        branches.append(
+            {
+                "name": branch_name,
+                "ref": f"refs/heads/{branch_name}",
+                "targetCommit": target_commit,
+            }
+        )
+
+    try:
+        tag_items = await _collect_reference_page(client.list_tags, lakefs_repo)
+    except Exception as e:
+        logger.warning(f"Failed to list tags for {repo_id}: {e}")
+        tag_items = []
+
+    for item in tag_items:
+        tag_name = _resolve_ref_name(item)
+        target_commit = _resolve_target_commit(item)
+        if not tag_name or not target_commit:
+            continue
+        tags.append(
+            {
+                "name": tag_name,
+                "ref": f"refs/tags/{tag_name}",
+                "targetCommit": target_commit,
+            }
+        )
+
+    response = {
+        "branches": sorted(branches, key=lambda item: item["name"]),
+        "converts": [],
+        "tags": sorted(tags, key=lambda item: item["name"]),
+    }
+    if include_prs:
+        response["pullRequests"] = []
+    return response
 
 
 @router.post("/{repo_type}s/{namespace}/{name}/branch/{branch}/revert")

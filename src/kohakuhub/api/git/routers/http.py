@@ -28,7 +28,7 @@ logger = get_logger("GIT_HTTP")
 router = APIRouter()
 
 
-async def get_user_from_git_auth(authorization: str | None) -> User | None:
+def get_user_from_git_auth(authorization: str | None) -> User | None:
     """Authenticate user from Git Basic Auth header.
 
     Args:

@@ -270,7 +270,7 @@ async def get_repo_info(
         "id": repo_id,
         "modelId": repo_id if repo_type == "model" else None,
         "author": repo_row.namespace,
-        "sha": commit_id[:40],
+        "sha": commit_id[:40] if commit_id else None,
         "lastModified": last_modified,
         "createdAt": created_at,
         "private": repo_row.private,

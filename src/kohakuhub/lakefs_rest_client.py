@@ -497,6 +497,39 @@ class LakeFSRestClient:
             self._check_response(response)
             return response.json()
 
+    async def list_branches(
+        self,
+        repository: str,
+        after: str | None = None,
+        amount: int | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """List repository branches.
+
+        Args:
+            repository: Repository name
+            after: Pagination cursor
+            amount: Number of branches to return
+
+        Returns:
+            LakeFS branch list payload
+        """
+        url = f"{self.base_url}/repositories/{repository}/branches"
+        params: dict[str, Any] = {}
+        if after:
+            params["after"] = after
+        if amount:
+            params["amount"] = amount
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params,
+                auth=self.auth,
+                timeout=None,
+            )
+            self._check_response(response)
+            return response.json()
+
     async def create_branch(self, repository: str, name: str, source: str) -> None:
         """Create branch.
 
@@ -559,6 +592,39 @@ class LakeFSRestClient:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url, json=tag_data, auth=self.auth, timeout=None
+            )
+            self._check_response(response)
+            return response.json()
+
+    async def list_tags(
+        self,
+        repository: str,
+        after: str | None = None,
+        amount: int | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """List repository tags.
+
+        Args:
+            repository: Repository name
+            after: Pagination cursor
+            amount: Number of tags to return
+
+        Returns:
+            LakeFS tag list payload
+        """
+        url = f"{self.base_url}/repositories/{repository}/tags"
+        params: dict[str, Any] = {}
+        if after:
+            params["after"] = after
+        if amount:
+            params["amount"] = amount
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params,
+                auth=self.auth,
+                timeout=None,
             )
             self._check_response(response)
             return response.json()

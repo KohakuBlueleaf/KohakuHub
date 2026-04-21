@@ -1,0 +1,205 @@
+name: frontend-backend-unit-tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  backend-tests:
+    name: backend unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+        huggingface-hub-version:
+          - "0.20.3"
+          - "0.30.2"
+          - "0.36.2"
+          - "1.0.1"
+          - "1.6.0"
+          - "latest"
+    env:
+      KOHAKU_HUB_DATABASE_URL: postgresql://hub_test:hub_test_password@127.0.0.1:25432/kohakuhub_test
+      KOHAKU_HUB_S3_ENDPOINT: http://127.0.0.1:29001
+      KOHAKU_HUB_S3_PUBLIC_ENDPOINT: http://127.0.0.1:29001
+      KOHAKU_HUB_S3_ACCESS_KEY: minioadmin
+      KOHAKU_HUB_S3_SECRET_KEY: minioadmin
+      KOHAKU_HUB_S3_BUCKET: hub-storage
+      KOHAKU_HUB_S3_REGION: us-east-1
+      KOHAKU_HUB_LAKEFS_ENDPOINT: http://127.0.0.1:28000
+      KOHAKU_HUB_LAKEFS_REPO_NAMESPACE: hf
+      KOHAKU_HUB_LAKEFS_CREDENTIALS_FILE: ${{ github.workspace }}/hub-meta/test/backend-service/lakefs-credentials.env
+      HUGGINGFACE_HUB_VERSION: ${{ matrix.huggingface-hub-version }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hub_test
+          POSTGRES_PASSWORD: hub_test_password
+          POSTGRES_DB: kohakuhub_test
+        ports:
+          - 25432:5432
+        options: >-
+          --health-cmd "pg_isready -U hub_test -d kohakuhub_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      minio:
+        image: quay.io/minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 29001:9000
+          - 29000:29000
+        command: server /data --console-address ":29000"
+        options: >-
+          --health-cmd "curl -f http://127.0.0.1:9000/minio/health/live || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      lakefs:
+        image: treeverse/lakefs:latest
+        env:
+          LAKEFS_DATABASE_TYPE: local
+          LAKEFS_DATABASE_LOCAL_PATH: /tmp/lakefs/metadata.db
+          LAKEFS_BLOCKSTORE_TYPE: s3
+          LAKEFS_BLOCKSTORE_S3_ENDPOINT: http://minio:9000
+          LAKEFS_BLOCKSTORE_S3_BUCKET: hub-storage
+          LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+          LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID: minioadmin
+          LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY: minioadmin
+          LAKEFS_BLOCKSTORE_S3_REGION: us-east-1
+          LAKEFS_AUTH_ENCRYPT_SECRET_KEY: 0123456789abcdef0123456789abcdef
+          LAKEFS_LOGGING_FORMAT: text
+          LAKEFS_LISTEN_ADDRESS: 0.0.0.0:8000
+        ports:
+          - 28000:8000
+        options: >-
+          --health-cmd "wget --spider --quiet http://127.0.0.1:8000/_health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          if [ "${HUGGINGFACE_HUB_VERSION}" = "latest" ]; then
+            python -m pip install --upgrade huggingface_hub
+          else
+            python -m pip install --upgrade "huggingface_hub==${HUGGINGFACE_HUB_VERSION}"
+          fi
+
+      - name: Run backend tests with coverage
+        run: |
+          make test-backend
+
+      - name: Upload backend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: backend,py${{ matrix.python-version }},hf${{ matrix.huggingface-hub-version }}
+          name: backend-tests-py${{ matrix.python-version }}-hf${{ matrix.huggingface-hub-version }}
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload backend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-py${{ matrix.python-version }}-hf${{ matrix.huggingface-hub-version }}
+          path: coverage.xml
+
+  ui-tests:
+    name: frontend unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/kohaku-hub-ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          npm install --prefix src/kohaku-hub-ui
+
+      - name: Run frontend tests with coverage
+        run: |
+          make test-ui
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-ui/cobertura-coverage.xml
+          flags: frontend
+          name: frontend-tests
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload frontend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage-ui/cobertura-coverage.xml
+
+  ui-admin-tests:
+    name: admin frontend unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/kohaku-hub-admin/package-lock.json
+
+      - name: Install admin frontend dependencies
+        run: |
+          npm install --prefix src/kohaku-hub-admin
+
+      - name: Run admin frontend tests with coverage
+        run: |
+          make test-ui-admin
+
+      - name: Upload admin frontend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-ui-admin/cobertura-coverage.xml
+          flags: frontend-admin
+          name: frontend-admin-tests
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload admin frontend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-admin-coverage
+          path: coverage-ui-admin/cobertura-coverage.xml

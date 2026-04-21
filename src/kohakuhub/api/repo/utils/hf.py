@@ -39,6 +39,11 @@ class HFErrorCode:
     SERVER_ERROR = "ServerError"
 
 
+def _sanitize_header_value(value: str) -> str:
+    """Normalize header values so HTTP servers can emit them safely."""
+    return " ".join(str(value).split())
+
+
 def hf_error_response(
     status_code: int,
     error_code: str,
@@ -92,10 +97,12 @@ def hf_error_response(
     """
     response_headers = {
         "X-Error-Code": error_code,
-        "X-Error-Message": message,
+        "X-Error-Message": _sanitize_header_value(message),
     }
     if headers:
-        response_headers.update(headers)
+        response_headers.update(
+            {key: _sanitize_header_value(value) for key, value in headers.items()}
+        )
 
     # Return empty body with error in headers
     # HuggingFace client reads from headers, not body
