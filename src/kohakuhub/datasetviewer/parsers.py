@@ -5,7 +5,9 @@ All parsers accept URLs (including S3 presigned URLs) and stream data efficientl
 """
 
 import asyncio
+import base64
 import tarfile
+from datetime import date, datetime, time
 from typing import Any, Optional
 
 import duckdb
@@ -90,6 +92,31 @@ class ParserError(Exception):
     pass
 
 
+def make_json_safe(value: Any) -> Any:
+    """Convert parser output values into JSON-safe primitives."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, bytes):
+        return {
+            "__type__": "bytes",
+            "encoding": "base64",
+            "size": len(value),
+            "data": base64.b64encode(value).decode("ascii"),
+        }
+
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+
+    if isinstance(value, dict):
+        return {str(key): make_json_safe(item) for key, item in value.items()}
+
+    return str(value)
+
+
 class CSVParser:
     """Parse CSV files using DuckDB (non-blocking, efficient)."""
 
@@ -125,7 +152,7 @@ class CSVParser:
 
         return {
             "columns": columns,
-            "rows": [list(row) for row in result],
+            "rows": [[make_json_safe(value) for value in row] for row in result],
             "total_rows": total_rows,
             "truncated": len(result) >= max_rows,
             "file_size": None,
@@ -188,7 +215,7 @@ class JSONLParser:
 
         return {
             "columns": columns,
-            "rows": [list(row) for row in result],
+            "rows": [[make_json_safe(value) for value in row] for row in result],
             "total_rows": total_rows,
             "truncated": len(result) >= max_rows,
             "file_size": None,
@@ -245,7 +272,7 @@ class JSONParser:
 
         return {
             "columns": columns,
-            "rows": [list(row) for row in result],
+            "rows": [[make_json_safe(value) for value in row] for row in result],
             "total_rows": total_rows,
             "truncated": len(result) >= max_rows,
             "file_size": None,
@@ -300,7 +327,7 @@ class ParquetParser:
 
         return {
             "columns": columns,
-            "rows": [list(row) for row in result],
+            "rows": [[make_json_safe(value) for value in row] for row in result],
             "total_rows": total_rows,
             "truncated": len(result) >= max_rows or total_rows > max_rows,
             "file_size": None,
