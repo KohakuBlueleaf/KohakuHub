@@ -15,7 +15,7 @@ UI_ADMIN_TEST_ROOT ?= test/kohaku-hub-admin
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-admin \
+	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-patch test-ui-admin \
 	verify-seed-demo
 
 help:
@@ -38,6 +38,7 @@ help:
 	@echo "                        Example: make test-backend RANGE_DIR=api/repo/routers"
 	@echo "                        Options: COV_TYPES='xml term-missing'"
 	@echo "  make test-ui          Run the main UI Vitest suite with coverage"
+	@echo "  make test-ui-patch    Run the targeted main UI patch coverage suite for Codecov"
 	@echo "  make test-ui-admin    Run the admin UI Vitest suite with coverage"
 	@echo "  make test             Run backend tests, then main UI tests, then admin UI tests"
 	@echo "  make status           Show local dev infra container status"
@@ -123,6 +124,17 @@ test-ui:
 		exit 1; \
 	fi
 	npm run test --prefix $(UI_DIR)
+
+test-ui-patch:
+	@if [[ ! -d "$(UI_DIR)" ]]; then \
+		echo "Missing UI directory: $(UI_DIR)" >&2; \
+		exit 1; \
+	fi
+	@if [[ ! -d "$(UI_TEST_ROOT)" ]]; then \
+		echo "Missing UI test directory: $(UI_TEST_ROOT)" >&2; \
+		exit 1; \
+	fi
+	npm run test:patch --prefix $(UI_DIR)
 
 test-ui-admin:
 	@if [[ ! -d "$(UI_ADMIN_DIR)" ]]; then \
