@@ -41,6 +41,7 @@ import ModelPage from "@/pages/models.vue";
 import SpacePage from "@/pages/spaces.vue";
 import RepoIndexPage from "@/pages/[type]s/[namespace]/[name]/index.vue";
 import RepoTreePage from "@/pages/[type]s/[namespace]/[name]/tree/[branch]/index.vue";
+import RepoTreePathPage from "@/pages/[type]s/[namespace]/[name]/tree/[branch]/[...path].vue";
 
 describe("repo route pages", () => {
   beforeEach(() => {
@@ -87,5 +88,20 @@ describe("repo route pages", () => {
     mocks.route.path = "/spaces/mai_lin/demo/tree/dev";
     const treeWrapper = mountPage(RepoTreePage);
     expect(treeWrapper.text()).toContain("space|aurora-labs|vision-set|files|release|");
+  });
+
+  it("normalizes catch-all tree paths before passing them to repo viewer", () => {
+    mocks.route.path = "/datasets/open-media-lab/demo/tree/main/catalog/section-01";
+    mocks.route.params = {
+      namespace: "open-media-lab",
+      name: "demo",
+      branch: "main",
+      path: ["catalog", "section-01"],
+    };
+
+    const wrapper = mountPage(RepoTreePathPage);
+    expect(wrapper.text()).toContain(
+      "dataset|open-media-lab|demo|files|main|catalog/section-01",
+    );
   });
 });

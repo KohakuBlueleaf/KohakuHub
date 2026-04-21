@@ -135,6 +135,7 @@ import { useRouter, useRoute, onBeforeRouteLeave } from "vue-router";
 import { ElMessage } from "element-plus";
 import CodeEditor from "@/components/common/CodeEditor.vue";
 import { repoAPI } from "@/utils/api";
+import { normalizeCatchAllParam } from "@/utils/repo-paths";
 import { useAuthStore } from "@/stores/auth";
 
 const route = useRoute();
@@ -152,7 +153,7 @@ const repoType = computed(() => {
 const namespace = computed(() => route.params.namespace);
 const name = computed(() => route.params.name);
 const branch = computed(() => route.params.branch || "main");
-const filePath = computed(() => route.params.file || "");
+const filePath = computed(() => normalizeCatchAllParam(route.params.file));
 
 // State
 const loading = ref(true);

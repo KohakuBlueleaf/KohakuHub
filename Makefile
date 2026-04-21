@@ -15,7 +15,8 @@ UI_ADMIN_TEST_ROOT ?= test/kohaku-hub-admin
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
 	backend seed-demo reset-local-data reset-and-seed ui admin status \
-	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-admin
+	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-admin \
+	verify-seed-demo
 
 help:
 	@echo "Local development targets:"
@@ -26,6 +27,7 @@ help:
 	@echo "  make infra-up         Start local Postgres/MinIO/LakeFS with persisted data"
 	@echo "  make infra-down       Stop local infra containers but keep persisted data"
 	@echo "  make seed-demo        Run migrations + first-run demo seed without starting uvicorn"
+	@echo "  make verify-seed-demo Verify the local demo seed fixtures without starting uvicorn"
 	@echo "  make reset-local-data Dangerously clear local KohakuHub dev data through the local reset helper"
 	@echo "  make reset-and-seed   Reset persisted local data, then bootstrap fresh demo data"
 	@echo "  make backend          Run FastAPI backend in reload mode"
@@ -77,6 +79,16 @@ backend: init-env
 seed-demo: infra-up
 	# Force the one-time local demo bootstrap even if auto-seed is disabled in .env.dev.
 	KOHAKU_HUB_DEV_AUTO_SEED=true ./scripts/dev/run_backend.sh --prepare-only
+	$(MAKE) verify-seed-demo
+
+verify-seed-demo: infra-up
+	@set -a; \
+	source ./.env.dev; \
+	if [[ -f ./hub-meta/dev/lakefs/credentials.env ]]; then \
+		source ./hub-meta/dev/lakefs/credentials.env; \
+	fi; \
+	set +a; \
+	PYTHONPATH="$(PWD)/src$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) ./scripts/dev/verify_seed_data.py
 
 reset-local-data:
 	./scripts/dev/reset_local_data.sh
