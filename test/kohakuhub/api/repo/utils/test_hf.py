@@ -205,3 +205,40 @@ async def test_collect_hf_siblings_accepts_list_payload_without_pagination(monke
     )
 
     assert siblings == [{"rfilename": "config.json", "size": 12}]
+
+
+@pytest.mark.asyncio
+async def test_collect_hf_siblings_stops_when_pagination_cursor_is_missing(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        async def list_objects(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "results": [
+                    {
+                        "path_type": "object",
+                        "path": "weights.bin",
+                        "size_bytes": 7,
+                        "checksum": "sha256:weights",
+                    }
+                ],
+                "pagination": {"has_more": True, "next_offset": None},
+            }
+
+    monkeypatch.setattr("kohakuhub.utils.lakefs.get_lakefs_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        "kohakuhub.utils.lakefs.lakefs_repo_name",
+        lambda repo_type, repo_id: f"{repo_type}:{repo_id}",
+    )
+    monkeypatch.setattr("kohakuhub.db_operations.should_use_lfs", lambda repo, path, size: False)
+
+    siblings = await hf_utils.collect_hf_siblings(
+        SimpleNamespace(),
+        "model",
+        "alice/demo",
+        "main",
+    )
+
+    assert len(calls) == 1
+    assert siblings == [{"rfilename": "weights.bin", "size": 7}]

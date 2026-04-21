@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 import pytest
 
 import kohakuhub.api.repo.routers.info as repo_info
@@ -336,6 +337,33 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
     assert info_without_sha["sha"] is None
     client.branch_error = None
 
+    repo_row.private = True
+
+    def _raise_unauthorized(repo, user):
+        raise HTTPException(status_code=401, detail="auth required")
+
+    monkeypatch.setattr(repo_info, "check_repo_read_permission", _raise_unauthorized)
+    hidden_private = await repo_info.get_repo_info.__wrapped__(
+        "alice",
+        "demo",
+        request=_request("/api/models/alice/demo"),
+        user=None,
+    )
+    assert hidden_private.status_code == 404
+
+    def _raise_conflict(repo, user):
+        raise HTTPException(status_code=409, detail="unexpected")
+
+    monkeypatch.setattr(repo_info, "check_repo_read_permission", _raise_conflict)
+    with pytest.raises(HTTPException) as propagated_error:
+        await repo_info.get_repo_info.__wrapped__(
+            "alice",
+            "demo",
+            request=_request("/api/models/alice/demo"),
+            user=None,
+        )
+    assert propagated_error.value.status_code == 409
+
 
 @pytest.mark.asyncio
 async def test_list_routes_cover_trending_invalid_path_and_user_repo_error_paths(
@@ -417,3 +445,17 @@ async def test_list_routes_cover_trending_invalid_path_and_user_repo_error_paths
             user=SimpleNamespace(username="alice"),
         )
         assert result["models"][0]["id"] == "alice/demo"
+
+    _FakeRepositoryModel.select_queries = [
+        _Query(items=[repo_row]),
+        _Query(items=[repo_row]),
+        _Query(items=[repo_row]),
+    ]
+    recent_result = await repo_info.list_user_repos.__wrapped__(
+        "alice",
+        request=None,
+        limit=10,
+        sort="recent",
+        user=SimpleNamespace(username="alice"),
+    )
+    assert recent_result["models"][0]["id"] == "alice/demo"

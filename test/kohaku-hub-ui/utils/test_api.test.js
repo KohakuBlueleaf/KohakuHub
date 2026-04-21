@@ -358,6 +358,107 @@ describe("frontend API client", () => {
     });
   });
 
+  it("keeps passthrough responses and fallback fields stable for HF normalization helpers", async () => {
+    const { apiClient, repoAPI, likesAPI } = await loadModules();
+
+    vi.spyOn(apiClient, "get")
+      .mockResolvedValueOnce({
+        data: { commits: [{ id: "legacy-1" }], hasMore: false, nextCursor: null },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "commit-2",
+            authors: ["plain-author"],
+          },
+        ],
+        headers: {
+          link: "<not-a-valid-url>; rel=\"next\"",
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { likers: [{ username: "legacy-user" }], total: 1 },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            username: "fallback-user",
+            full_name: "Fallback User",
+          },
+          {},
+        ],
+        headers: {},
+      });
+
+    const legacyCommitResponse = await repoAPI.listCommits(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      { limit: 1 },
+    );
+    const fallbackCommitResponse = await repoAPI.listCommits(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      { limit: 1 },
+    );
+    const legacyLikersResponse = await likesAPI.getLikers(
+      "model",
+      "alice",
+      "demo",
+      1,
+    );
+    const fallbackLikersResponse = await likesAPI.getLikers(
+      "model",
+      "alice",
+      "demo",
+      2,
+    );
+
+    expect(legacyCommitResponse.data).toEqual({
+      commits: [{ id: "legacy-1" }],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(fallbackCommitResponse.data).toEqual({
+      commits: [
+        {
+          id: "commit-2",
+          oid: "commit-2",
+          title: "",
+          message: "",
+          date: null,
+          author: "plain-author",
+          email: "",
+          parents: [],
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(legacyLikersResponse.data).toEqual({
+      likers: [{ username: "legacy-user" }],
+      total: 1,
+    });
+    expect(fallbackLikersResponse.data).toEqual({
+      likers: [
+        {
+          username: "fallback-user",
+          full_name: "Fallback User",
+        },
+        {
+          username: undefined,
+          full_name: undefined,
+        },
+      ],
+      total: 2,
+    });
+  });
+
   it("keeps captured HF-compatible fixture shapes aligned with the current backend", () => {
     expect(uiApiFixtures.auth.whoamiV2).toEqual(
       expect.objectContaining({
