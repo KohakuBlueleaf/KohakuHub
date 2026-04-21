@@ -8,16 +8,25 @@ import base64
 import hashlib
 import io
 import json
+import math
 import sys
+import tarfile
+import tempfile
 import textwrap
+from collections.abc import Callable, Iterable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urlsplit
 
 import httpx
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
+from hfutils import index as hf_index
+from safetensors.numpy import save as save_safetensors
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -28,7 +37,7 @@ from kohakuhub.config import cfg
 from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
-SEED_VERSION = "local-dev-demo-v1"
+SEED_VERSION = "local-dev-demo-v2"
 DEFAULT_PASSWORD = "KohakuDev123!"
 PRIMARY_USERNAME = "mai_lin"
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"
@@ -71,7 +80,13 @@ class OrganizationSeed:
 class CommitSeed:
     summary: str
     description: str
-    files: tuple[tuple[str, bytes], ...]
+    files: tuple["SeedFile", ...]
+
+
+@dataclass(frozen=True)
+class FileSeed:
+    path: str
+    content: bytes | Callable[[], bytes]
 
 
 @dataclass(frozen=True)
@@ -86,6 +101,20 @@ class RepoSeed:
     tag: str | None = None
     download_path: str | None = None
     download_sessions: int = 0
+
+
+SeedFile = tuple[str, bytes] | FileSeed
+
+
+@dataclass(frozen=True)
+class RemoteAsset:
+    cache_name: str
+    url: str
+    sha256: str
+    source_url: str
+
+
+SEED_ASSET_CACHE_DIR = ROOT_DIR / "hub-meta" / "cache" / "seed-assets"
 
 
 ACCOUNTS: tuple[AccountSeed, ...] = (
@@ -222,6 +251,288 @@ ORGANIZATIONS: tuple[OrganizationSeed, ...] = (
 )
 
 
+def build_scale_accounts() -> tuple[AccountSeed, ...]:
+    specs = (
+        (
+            "mila_zhou",
+            "Mila Zhou",
+            "Dataset release engineer focused on parquet validation, shard manifests, and large org operations.",
+            "mila-zhou-data",
+            "#4c1d95",
+            "#ede9fe",
+        ),
+        (
+            "ethan_reed",
+            "Ethan Reed",
+            "Model packaging owner who keeps tokenizer assets, shard indexes, and release notes tidy.",
+            "ethan-reed-models",
+            "#0f766e",
+            "#ccfbf1",
+        ),
+        (
+            "olivia_hart",
+            "Olivia Hart",
+            "Benchmarks multimodal search pipelines and curates reproducible evaluation bundles.",
+            "olivia-hart-ai",
+            "#9a3412",
+            "#ffedd5",
+        ),
+        (
+            "liam_north",
+            "Liam North",
+            "Owns local demo QA for file-tree pagination, deep directory browsing, and download flows.",
+            "liam-north-labs",
+            "#1d4ed8",
+            "#dbeafe",
+        ),
+        (
+            "zoe_park",
+            "Zoe Park",
+            "Keeps audio, image, and video fixtures aligned with product demos and ingestion checks.",
+            "zoe-park-media",
+            "#065f46",
+            "#d1fae5",
+        ),
+        (
+            "owen_davis",
+            "Owen Davis",
+            "Maintains synthetic but structurally realistic model exports for offline smoke testing.",
+            "owen-davis-ml",
+            "#7c2d12",
+            "#fed7aa",
+        ),
+        (
+            "mia_cross",
+            "Mia Cross",
+            "Curates metadata-heavy datasets with stable labels and repeatable schema previews.",
+            "mia-cross-data",
+            "#be123c",
+            "#ffe4e6",
+        ),
+        (
+            "lucas_tan",
+            "Lucas Tan",
+            "Documents retrieval pipelines, indexed archives, and annotation workflows for the team.",
+            "lucas-tan-docs",
+            "#1e3a8a",
+            "#dbeafe",
+        ),
+        (
+            "ava_scott",
+            "Ava Scott",
+            "Runs browser-first QA against large org listings, search results, and activity views.",
+            "ava-scott-qa",
+            "#854d0e",
+            "#fef3c7",
+        ),
+        (
+            "jackson_liu",
+            "Jackson Liu",
+            "Tracks media indexing pipelines and long-tail file format regressions.",
+            "jackson-liu-index",
+            "#155e75",
+            "#cffafe",
+        ),
+        (
+            "grace_hill",
+            "Grace Hill",
+            "Handles org membership operations and permissions reviews for shared demo spaces.",
+            "grace-hill-ops",
+            "#6d28d9",
+            "#ede9fe",
+        ),
+        (
+            "henry_wu",
+            "Henry Wu",
+            "Maintains multilingual dataset snapshots and local release validation checklists.",
+            "henry-wu-data",
+            "#92400e",
+            "#fef3c7",
+        ),
+    )
+
+    return tuple(
+        AccountSeed(
+            username=username,
+            email=f"{username.replace('_', '.')}@kohakuhub.dev",
+            full_name=full_name,
+            bio=bio,
+            website=f"https://kohakuhub.local/{username.replace('_', '-')}",
+            social_media={
+                "github": github_handle,
+                "huggingface": github_handle,
+            },
+            avatar_bg=avatar_bg,
+            avatar_accent=avatar_accent,
+        )
+        for username, full_name, bio, github_handle, avatar_bg, avatar_accent in specs
+    )
+
+
+SCALE_ACCOUNTS = build_scale_accounts()
+ACCOUNTS = ACCOUNTS + SCALE_ACCOUNTS
+
+
+OPEN_MEDIA_MEMBERS: tuple[tuple[str, str], ...] = (
+    ("mai_lin", "super-admin"),
+    ("leo_park", "admin"),
+    ("sara_chen", "admin"),
+    ("ivy_ops", "admin"),
+    ("noah_kim", "member"),
+    ("mila_zhou", "admin"),
+    ("ethan_reed", "member"),
+    ("olivia_hart", "member"),
+    ("liam_north", "member"),
+    ("zoe_park", "member"),
+    ("owen_davis", "member"),
+    ("mia_cross", "member"),
+    ("lucas_tan", "member"),
+    ("ava_scott", "visitor"),
+    ("jackson_liu", "member"),
+    ("grace_hill", "visitor"),
+    ("henry_wu", "member"),
+)
+
+ORGANIZATIONS = ORGANIZATIONS + (
+    OrganizationSeed(
+        name="open-media-lab",
+        description=(
+            "Shared local-dev org packed with multimodal fixtures, large repo lists, "
+            "and high-member-count collaboration scenarios."
+        ),
+        bio=(
+            "Open Media Lab maintains reproducible multimodal assets for UI browsing, "
+            "download tracking, metadata QA, and repository management demos."
+        ),
+        website="https://open-media-lab.kohakuhub.local",
+        social_media={
+            "github": "open-media-lab",
+            "huggingface": "open-media-lab",
+        },
+        avatar_bg="#0f172a",
+        avatar_accent="#bae6fd",
+        members=OPEN_MEDIA_MEMBERS,
+    ),
+)
+
+
+SAFEBOORU_IMAGE_ASSETS: tuple[RemoteAsset, ...] = (
+    RemoteAsset(
+        cache_name="safebooru-canal-reflections.png",
+        url="https://cdn.donmai.us/original/79/a6/79a6c565714b36c5689131085d70a8a2.png",
+        sha256="4b0b07d9f6d2658346525326567f4db7aebeae8b2ade4facb0f56f9972bdb669",
+        source_url="https://safebooru.donmai.us/posts/11208212",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-mountain-church.jpg",
+        url="https://cdn.donmai.us/original/dc/d4/dcd4a809e6efc402363720a6714bc4f7.jpg",
+        sha256="a688df893449c757d979ff877aa1a3f006de649686ed0f5b101e807808e1dbc7",
+        source_url="https://safebooru.donmai.us/posts/11207803",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-sand-plain.jpg",
+        url="https://cdn.donmai.us/original/e8/20/e8201ebfcf9802fd5b74f126ae501406.jpg",
+        sha256="14420b7849ab8922914d2ccc5d32abbf25ae26642ea50dfbb15096a8d9e85503",
+        source_url="https://safebooru.donmai.us/posts/11207788",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-fence-field.jpg",
+        url="https://cdn.donmai.us/original/5d/28/5d2833c4731c2b8631eefe5f89cd2541.jpg",
+        sha256="e7eec10df1393ee661da300612b84cc4b0f8052d54aae4244cddaaaeb50a3d79",
+        source_url="https://safebooru.donmai.us/posts/11207775",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-forest-lake.jpg",
+        url="https://cdn.donmai.us/original/08/33/08330cb79116cd7dd1000f702b28c4f3.jpg",
+        sha256="565520f058666a04953a1cbc8db67b2687fde240bb26b29d9b1008f562d78aa6",
+        source_url="https://safebooru.donmai.us/posts/11207641",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-fantasy-castle.jpg",
+        url="https://cdn.donmai.us/original/31/45/3145abe70177f3d01150a8fa9aa692dc.jpg",
+        sha256="1d52643e22021364650176ff5c47e70ee101020f3329f9cd1f44b9aad739737a",
+        source_url="https://safebooru.donmai.us/posts/11207593",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-phainon-cyrene.jpg",
+        url=(
+            "https://cdn.donmai.us/original/29/82/"
+            "__phainon_and_cyrene_honkai_and_1_more_drawn_by_whyte_srsn__"
+            "298282d12b00b563a09bebb65cc11116.jpg"
+        ),
+        sha256="8c8e04d47dea6ba020c6f0ec96932aaf760101b1cd358ba6eb829aa908f52b2f",
+        source_url="https://safebooru.donmai.us/posts/9740876",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-sunflower-field.png",
+        url=(
+            "https://cdn.donmai.us/original/65/dd/"
+            "__shirakami_fubuki_hololive_drawn_by_hyde_tabakko__"
+            "65ddfa390ca539e6f9ed9658d65c77c4.png"
+        ),
+        sha256="c6a157e11758d8b1584502f772f1300c2a0b9e00ba7d9d883fd6b24b247181c0",
+        source_url="https://safebooru.donmai.us/posts/9779697",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-grass-wonder.jpg",
+        url=(
+            "https://cdn.donmai.us/original/f9/5f/"
+            "__grass_wonder_umamusume_and_1_more_drawn_by_fuuseppu__"
+            "f95f1c3cdc9e69d9f2de613dc8117df2.jpg"
+        ),
+        sha256="35d08757090287d2fa465cc7ab959829b3df03c18e254580fc6ecbb8dc1cb118",
+        source_url="https://safebooru.donmai.us/posts/9658576",
+    ),
+    RemoteAsset(
+        cache_name="safebooru-paper-boat.jpg",
+        url=(
+            "https://cdn.donmai.us/original/f2/66/"
+            "__sameko_saba_indie_virtual_youtuber_drawn_by_sky_above_me__"
+            "f2664dc9d6a90473cf49234a3f30bea1.jpg"
+        ),
+        sha256="ae20506f36504895708fe1c85979c1dede228571044457bd5e91daaa1415ce7e",
+        source_url="https://safebooru.donmai.us/posts/9599213",
+    ),
+)
+
+REMOTE_MEDIA_ASSETS: dict[str, RemoteAsset] = {
+    asset.cache_name: asset
+    for asset in (
+        *SAFEBOORU_IMAGE_ASSETS,
+        RemoteAsset(
+            cache_name="voices-speech.wav",
+            url=(
+                "https://download.pytorch.org/torchaudio/tutorial-assets/"
+                "Lab41-SRI-VOiCES-src-sp0307-ch127535-sg0042.wav"
+            ),
+            sha256="c65fcd726d6b08c82c1e5dc7558f863cd8d483e3ed2f4a7bcf271dc1865ada14",
+            source_url=(
+                "https://download.pytorch.org/torchaudio/tutorial-assets/"
+                "Lab41-SRI-VOiCES-src-sp0307-ch127535-sg0042.wav"
+            ),
+        ),
+        RemoteAsset(
+            cache_name="steam-train-whistle.wav",
+            url=(
+                "https://download.pytorch.org/torchaudio/tutorial-assets/"
+                "steam-train-whistle-daniel_simon.wav"
+            ),
+            sha256="762b6783be7f20aa8be03812eeb33184bb5b1497db7422607a70b5d441fc45e9",
+            source_url=(
+                "https://download.pytorch.org/torchaudio/tutorial-assets/"
+                "steam-train-whistle-daniel_simon.wav"
+            ),
+        ),
+        RemoteAsset(
+            cache_name="opencv-vtest.avi",
+            url="https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi",
+            sha256="45cddc9490be69345cbdab64ca583be65987e864ca408038e648db99e10516cf",
+            source_url="https://github.com/opencv/opencv/blob/4.x/samples/data/vtest.avi",
+        ),
+    )
+}
+
+
 def text_bytes(body: str) -> bytes:
     return (textwrap.dedent(body).strip() + "\n").encode("utf-8")
 
@@ -289,9 +600,235 @@ def profile_space_files(title: str, summary: str, accent: str) -> tuple[tuple[st
     )
 
 
-def lfs_blob(label: str) -> bytes:
-    header = f"SEED-LFS::{label}\n".encode("utf-8")
-    return header + (b"0123456789abcdef" * 64)
+def seed_file(path: str, content: bytes | Callable[[], bytes]) -> FileSeed:
+    return FileSeed(path=path, content=content)
+
+
+def materialize_seed_file(file_entry: SeedFile) -> tuple[str, bytes]:
+    if isinstance(file_entry, FileSeed):
+        content = file_entry.content() if callable(file_entry.content) else file_entry.content
+        return file_entry.path, content
+    return file_entry
+
+
+_ASSET_BYTES_CACHE: dict[str, bytes] = {}
+
+
+def patterned_bytes(label: str, size_bytes: int, *, header: bytes = b"") -> bytes:
+    if size_bytes <= len(header):
+        return header[:size_bytes]
+
+    pattern = bytearray()
+    counter = 0
+    while len(pattern) < 4096:
+        pattern.extend(hashlib.sha256(f"{label}:{counter}".encode("utf-8")).digest())
+        counter += 1
+
+    body_size = size_bytes - len(header)
+    repeated = (bytes(pattern) * math.ceil(body_size / len(pattern)))[:body_size]
+    return header + repeated
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def fetch_remote_asset(asset: RemoteAsset) -> bytes:
+    cached = _ASSET_BYTES_CACHE.get(asset.cache_name)
+    if cached is not None:
+        return cached
+
+    cache_path = SEED_ASSET_CACHE_DIR / asset.cache_name
+    if cache_path.is_file():
+        data = cache_path.read_bytes()
+        if sha256_hex(data) == asset.sha256:
+            _ASSET_BYTES_CACHE[asset.cache_name] = data
+            return data
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    response = requests.get(
+        asset.url,
+        timeout=180,
+        headers={"User-Agent": "KohakuHubLocalSeed/1.0"},
+    )
+    response.raise_for_status()
+    data = response.content
+    actual_sha256 = sha256_hex(data)
+    if actual_sha256 != asset.sha256:
+        raise SeedError(
+            f"Remote asset hash mismatch for {asset.cache_name}: "
+            f"expected {asset.sha256}, got {actual_sha256}"
+        )
+
+    tmp_path = cache_path.with_suffix(f"{cache_path.suffix}.part")
+    tmp_path.write_bytes(data)
+    tmp_path.replace(cache_path)
+    _ASSET_BYTES_CACHE[asset.cache_name] = data
+    return data
+
+
+def remote_asset_bytes(asset_name: str) -> bytes:
+    return fetch_remote_asset(REMOTE_MEDIA_ASSETS[asset_name])
+
+
+def make_realistic_float16_tensor(label: str, shape: tuple[int, ...]) -> np.ndarray:
+    element_count = math.prod(shape)
+    raw_values = np.frombuffer(patterned_bytes(label, element_count * 2), dtype="<u2").copy()
+    raw_values = (raw_values & np.uint16(0x03FF)) | np.uint16(0x3C00)
+    return np.ascontiguousarray(raw_values.view(np.float16).reshape(shape))
+
+
+def make_safetensors_bytes(
+    label: str,
+    tensor_specs: tuple[tuple[str, tuple[int, ...]], ...],
+    *,
+    metadata: dict[str, str] | None = None,
+) -> tuple[bytes, int]:
+    tensors: dict[str, np.ndarray] = {}
+    total_tensor_bytes = 0
+
+    for tensor_name, shape in tensor_specs:
+        tensor = make_realistic_float16_tensor(f"{label}:{tensor_name}", shape)
+        tensors[tensor_name] = tensor
+        total_tensor_bytes += tensor.nbytes
+
+    payload = save_safetensors(
+        tensors,
+        metadata={
+            "format": "pt",
+            "seed_label": label,
+            **(metadata or {}),
+        },
+    )
+    return payload, total_tensor_bytes
+
+
+def make_single_checkpoint_bytes(
+    label: str,
+    tensor_specs: tuple[tuple[str, tuple[int, ...]], ...],
+) -> bytes:
+    payload, _ = make_safetensors_bytes(label, tensor_specs)
+    return payload
+
+
+def make_parquet_bytes(
+    label: str,
+    *,
+    row_count: int = 12000,
+    payload_size: int = 2048,
+) -> bytes:
+    base_payload = patterned_bytes(f"{label}-payload", payload_size)
+    payloads = []
+    sample_ids = []
+    captions = []
+    durations = []
+    for row_index in range(row_count):
+        prefix = f"{label}:{row_index:05d}|".encode("utf-8")
+        payloads.append(prefix + base_payload[: payload_size - len(prefix)])
+        sample_ids.append(f"{label}_{row_index:05d}")
+        captions.append(
+            f"{label} multimodal benchmark row {row_index:05d} for local dataset preview checks."
+        )
+        durations.append(round(1.5 + (row_index % 11) * 0.25, 3))
+
+    table = pa.table(
+        {
+            "sample_id": pa.array(sample_ids, type=pa.string()),
+            "caption": pa.array(captions, type=pa.string()),
+            "duration_seconds": pa.array(durations, type=pa.float32()),
+            "payload": pa.array(payloads, type=pa.binary()),
+        }
+    )
+
+    buffer = io.BytesIO()
+    pq.write_table(
+        table,
+        buffer,
+        compression="NONE",
+        use_dictionary=False,
+        row_group_size=512,
+    )
+    return buffer.getvalue()
+
+
+def make_indexed_tar_bundle(
+    label: str,
+    files: tuple[tuple[str, bytes], ...],
+) -> tuple[bytes, bytes]:
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as handle:
+        for path, content in files:
+            info = tarfile.TarInfo(name=path)
+            info.size = len(content)
+            info.mode = 0o644
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            handle.addfile(info, io.BytesIO(content))
+
+    tar_bytes = tar_buffer.getvalue()
+    with tempfile.TemporaryDirectory(prefix="kohakuhub-seed-tar-") as tmp_dir:
+        tar_path = Path(tmp_dir) / f"{label}.tar"
+        tar_path.write_bytes(tar_bytes)
+        index_info = hf_index.tar_get_index_info(str(tar_path), silent=True)
+
+    index_bytes = json_bytes(index_info)
+    return tar_bytes, index_bytes
+
+
+def make_deep_tree_files(label: str) -> tuple[SeedFile, ...]:
+    files: list[SeedFile] = []
+    for section in range(1, 7):
+        for shard in range(1, 9):
+            for leaf in range(1, 7):
+                path = (
+                    f"catalog/section-{section:02d}/tier-{shard:02d}/"
+                    f"branch-{leaf:02d}/node-{section:02d}-{shard:02d}-{leaf:02d}/"
+                    f"entry-{section:02d}-{shard:02d}-{leaf:02d}.json"
+                )
+                files.append(
+                    (
+                        path,
+                        json_bytes(
+                            {
+                                "checksum": hashlib.sha256(path.encode("utf-8")).hexdigest(),
+                                "fixture": label,
+                                "leaf": leaf,
+                                "section": section,
+                                "shard": shard,
+                            }
+                        ),
+                    )
+                )
+
+    files.extend(
+        (
+            (
+                "README.md",
+                text_bytes(
+                    """
+                    # hierarchy-crawl-fixtures
+
+                    This repo intentionally contains many files and deep path nesting so
+                    local tree browsing, pagination, and search remain easy to exercise.
+                    """
+                ),
+            ),
+            (
+                "manifests/root-index.json",
+                json_bytes(
+                    {
+                        "depth": 4,
+                        "generated_files": len(files),
+                        "label": label,
+                    }
+                ),
+            ),
+        )
+    )
+    return tuple(files)
 
 
 def build_repo_seeds() -> tuple[RepoSeed, ...]:
@@ -362,9 +899,18 @@ def build_repo_seeds() -> tuple[RepoSeed, ...]:
                             ),
                         ),
                         ("examples/prompt.txt", text_bytes("Describe the icon, layout, and visible text.")),
-                        (
+                        seed_file(
                             "checkpoints/lineart-caption-base.safetensors",
-                            lfs_blob("lineart-caption-base"),
+                            lambda: make_single_checkpoint_bytes(
+                                "lineart-caption-base",
+                                (
+                                    (
+                                        "encoder.vision_model.embeddings.patch_embedding.weight",
+                                        (4096, 1024),
+                                    ),
+                                    ("decoder.model.embed_tokens.weight", (1024, 768)),
+                                ),
+                            ),
                         ),
                     ),
                 ),
@@ -766,9 +1312,15 @@ def build_repo_seeds() -> tuple[RepoSeed, ...]:
                                 """
                             ),
                         ),
-                        (
+                        seed_file(
                             "checkpoints/aurora-ocr-lite.safetensors",
-                            lfs_blob("aurora-ocr-lite"),
+                            lambda: make_single_checkpoint_bytes(
+                                "aurora-ocr-lite",
+                                (
+                                    ("encoder.patch_embed.proj.weight", (6144, 1024)),
+                                    ("decoder.model.embed_tokens.weight", (2048, 1024)),
+                                ),
+                            ),
                         ),
                     ),
                 ),
@@ -1083,9 +1635,15 @@ def build_repo_seeds() -> tuple[RepoSeed, ...]:
                                 }
                             ),
                         ),
-                        (
+                        seed_file(
                             "checkpoints/marine-seg-small.safetensors",
-                            lfs_blob("marine-seg-small"),
+                            lambda: make_single_checkpoint_bytes(
+                                "marine-seg-small",
+                                (
+                                    ("backbone.stem.conv1.weight", (4096, 1536)),
+                                    ("decode_head.classifier.weight", (1024, 1024)),
+                                ),
+                            ),
                         ),
                     ),
                 ),
@@ -1358,7 +1916,608 @@ def build_repo_seeds() -> tuple[RepoSeed, ...]:
     )
 
 
-REPO_SEEDS = build_repo_seeds()
+def build_open_media_core_repo_seeds() -> tuple[RepoSeed, ...]:
+    archive_cache: dict[str, tuple[bytes, bytes]] = {}
+    model_bundle_cache: dict[str, dict[str, bytes]] = {}
+
+    top_level_image_assets = (
+        SAFEBOORU_IMAGE_ASSETS[:4] + SAFEBOORU_IMAGE_ASSETS[-2:]
+    )
+    archive_image_assets = SAFEBOORU_IMAGE_ASSETS
+    top_level_media_entries = (
+        ("media/audio/voices-speech.wav", "voices-speech.wav"),
+        ("media/audio/steam-train-whistle.wav", "steam-train-whistle.wav"),
+        ("media/video/opencv-vtest.avi", "opencv-vtest.avi"),
+        *(
+            (f"media/images/{asset.cache_name}", asset.cache_name)
+            for asset in top_level_image_assets
+        ),
+    )
+
+    def archive_bundle() -> tuple[bytes, bytes]:
+        cached = archive_cache.get("bundle")
+        if cached is not None:
+            return cached
+
+        archived_files = tuple(
+            (f"images/{asset.cache_name}", remote_asset_bytes(asset.cache_name))
+            for asset in archive_image_assets
+        ) + (
+            (
+                "annotations/captions.jsonl",
+                jsonl_bytes(
+                    tuple(
+                        {
+                            "asset": f"images/{asset.cache_name}",
+                            "caption": f"SafeBooru fixture mirrored from {asset.source_url}.",
+                            "source_url": asset.source_url,
+                            "split": "train" if index < 6 else "validation",
+                        }
+                        for index, asset in enumerate(archive_image_assets)
+                    )
+                ),
+            ),
+            (
+                "metadata/source-assets.json",
+                json_bytes(
+                    {
+                        "assets": [
+                            {
+                                "path": f"images/{asset.cache_name}",
+                                "sha256": asset.sha256,
+                                "size": len(remote_asset_bytes(asset.cache_name)),
+                                "source_url": asset.source_url,
+                            }
+                            for asset in archive_image_assets
+                        ]
+                    }
+                ),
+            ),
+        )
+        cached = make_indexed_tar_bundle("open-media-archive", archived_files)
+        archive_cache["bundle"] = cached
+        return cached
+
+    def model_bundle() -> dict[str, bytes]:
+        cached = model_bundle_cache.get("bundle")
+        if cached is not None:
+            return cached
+
+        shard_specs = (
+            (
+                "model-00001-of-00003.safetensors",
+                (
+                    ("language_model.embed_tokens.weight", (7680, 4096)),
+                    ("language_model.layers.0.mlp.down_proj.weight", (4096, 2048)),
+                ),
+            ),
+            (
+                "model-00002-of-00003.safetensors",
+                (("language_model.layers.14.self_attn.q_proj.weight", (8192, 4096)),),
+            ),
+            (
+                "model-00003-of-00003.safetensors",
+                (
+                    ("language_model.layers.27.mlp.up_proj.weight", (8192, 4096)),
+                    ("vision_tower.vision_model.embeddings.class_embedding", (1, 1408)),
+                ),
+            ),
+        )
+
+        bundle: dict[str, bytes] = {}
+        total_tensor_bytes = 0
+        weight_map: dict[str, str] = {}
+        for filename, tensor_specs in shard_specs:
+            payload, tensor_bytes = make_safetensors_bytes(
+                f"vision-language-assistant-3b:{filename}",
+                tensor_specs,
+            )
+            bundle[filename] = payload
+            total_tensor_bytes += tensor_bytes
+            for tensor_name, _ in tensor_specs:
+                weight_map[tensor_name] = filename
+
+        bundle["model.safetensors.index.json"] = json_bytes(
+            {
+                "metadata": {"total_size": total_tensor_bytes},
+                "weight_map": weight_map,
+            }
+        )
+        model_bundle_cache["bundle"] = bundle
+        return bundle
+
+    multimodal_files: tuple[SeedFile, ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                ---
+                license: cc-by-4.0
+                pretty_name: Open Media Multimodal Suite
+                task_categories:
+                  - automatic-speech-recognition
+                  - image-to-text
+                  - video-classification
+                tags:
+                  - parquet
+                  - indexed-tar
+                  - multimodal
+                ---
+
+                # multimodal-benchmark-suite
+
+                Local benchmark dataset with real parquet shards, a hfutils.index-compatible
+                tar archive, a larger SafeBooru image set, torchaudio sample WAV files, and an
+                OpenCV sample video for frontend and admin demos.
+                """
+            ),
+        ),
+        (
+            "dataset_infos.json",
+            json_bytes(
+                {
+                    "default": {
+                        "config_name": "default",
+                        "features": {
+                            "caption": {"dtype": "string", "_type": "Value"},
+                            "duration_seconds": {"dtype": "float32", "_type": "Value"},
+                            "payload": {"dtype": "binary", "_type": "Value"},
+                            "sample_id": {"dtype": "string", "_type": "Value"},
+                        },
+                        "splits": {
+                            "train": {
+                                "name": "train",
+                                "num_examples": 12000,
+                            }
+                        },
+                    }
+                }
+            ),
+        ),
+        (
+            "metadata/feature-card.json",
+            json_bytes(
+                {
+                    "archive_index": "archives/raw-bundle-0000.json",
+                    "archive_tar": "archives/raw-bundle-0000.tar",
+                    "media_assets": [path for path, _ in top_level_media_entries],
+                    "parquet_train": "parquet/train-00000-of-00001.parquet",
+                }
+            ),
+        ),
+        (
+            "metadata/source-assets.json",
+            json_bytes(
+                {
+                    "assets": [
+                        {
+                            "path": path,
+                            "sha256": REMOTE_MEDIA_ASSETS[asset_name].sha256,
+                            "size": len(remote_asset_bytes(asset_name)),
+                            "source_url": REMOTE_MEDIA_ASSETS[asset_name].source_url,
+                        }
+                        for path, asset_name in top_level_media_entries
+                    ]
+                }
+            ),
+        ),
+        seed_file(
+            "parquet/train-00000-of-00001.parquet",
+            lambda: make_parquet_bytes("open-media-train", row_count=12000, payload_size=2048),
+        ),
+        seed_file(
+            "parquet/validation-00000-of-00001.parquet",
+            lambda: make_parquet_bytes("open-media-validation", row_count=1500, payload_size=1024),
+        ),
+        *(
+            seed_file(path, lambda asset_name=asset_name: remote_asset_bytes(asset_name))
+            for path, asset_name in top_level_media_entries
+        ),
+        seed_file("archives/raw-bundle-0000.tar", lambda: archive_bundle()[0]),
+        seed_file("archives/raw-bundle-0000.json", lambda: archive_bundle()[1]),
+    )
+
+    model_files: tuple[SeedFile, ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                ---
+                license: apache-2.0
+                library_name: transformers
+                pipeline_tag: image-text-to-text
+                tags:
+                  - multimodal
+                  - sharded-weights
+                  - local-dev
+                ---
+
+                # vision-language-assistant-3b
+
+                Local multimodal checkpoint with real sharded safetensors weights,
+                tokenizer assets, and processor configs.
+                """
+            ),
+        ),
+        (
+            "config.json",
+            json_bytes(
+                {
+                    "architectures": ["LlavaForConditionalGeneration"],
+                    "hidden_size": 3072,
+                    "max_position_embeddings": 8192,
+                    "model_type": "llava",
+                    "num_hidden_layers": 28,
+                    "torch_dtype": "bfloat16",
+                    "vocab_size": 128256,
+                }
+            ),
+        ),
+        (
+            "generation_config.json",
+            json_bytes(
+                {
+                    "do_sample": False,
+                    "max_new_tokens": 512,
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                }
+            ),
+        ),
+        (
+            "preprocessor_config.json",
+            json_bytes(
+                {
+                    "crop_size": 448,
+                    "do_center_crop": True,
+                    "do_normalize": True,
+                    "image_mean": [0.48145466, 0.4578275, 0.40821073],
+                    "image_std": [0.26862954, 0.26130258, 0.27577711],
+                }
+            ),
+        ),
+        (
+            "processor_config.json",
+            json_bytes(
+                {
+                    "chat_template": "chat_template.jinja",
+                    "image_processor_type": "CLIPImageProcessor",
+                    "processor_class": "AutoProcessor",
+                    "tokenizer_class": "PreTrainedTokenizerFast",
+                }
+            ),
+        ),
+        (
+            "special_tokens_map.json",
+            json_bytes(
+                {
+                    "bos_token": "<s>",
+                    "eos_token": "</s>",
+                    "image_token": "<image>",
+                    "pad_token": "<pad>",
+                }
+            ),
+        ),
+        (
+            "tokenizer_config.json",
+            json_bytes(
+                {
+                    "add_bos_token": True,
+                    "chat_template": "{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}{% endfor %}",
+                    "legacy": False,
+                    "model_max_length": 8192,
+                    "padding_side": "right",
+                }
+            ),
+        ),
+        (
+            "tokenizer.json",
+            json_bytes(
+                {
+                    "added_tokens": [{"content": "<image>", "id": 128000}],
+                    "normalizer": {"type": "NFKC"},
+                    "pre_tokenizer": {"type": "ByteLevel"},
+                    "version": "1.0",
+                }
+            ),
+        ),
+        (
+            "chat_template.jinja",
+            text_bytes(
+                "{{ bos_token }}{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}{% endfor %}{{ eos_token }}"
+            ),
+        ),
+        (
+            "README.weights.md",
+            text_bytes(
+                """
+                # Weight Layout
+
+                The checkpoint is intentionally sharded into valid safetensors files so
+                local LFS upload, download, and tree views can exercise a few hundred
+                megabytes of realistic model payloads.
+                """
+            ),
+        ),
+        seed_file(
+            "model.safetensors.index.json",
+            lambda: model_bundle()["model.safetensors.index.json"],
+        ),
+        seed_file(
+            "model-00001-of-00003.safetensors",
+            lambda: model_bundle()["model-00001-of-00003.safetensors"],
+        ),
+        seed_file(
+            "model-00002-of-00003.safetensors",
+            lambda: model_bundle()["model-00002-of-00003.safetensors"],
+        ),
+        seed_file(
+            "model-00003-of-00003.safetensors",
+            lambda: model_bundle()["model-00003-of-00003.safetensors"],
+        ),
+    )
+
+    return (
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="open-media-lab",
+            name="multimodal-benchmark-suite",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="Seed multimodal benchmark suite",
+                    description=(
+                        "Add a real parquet shard, indexed tar archive, and common media "
+                        "formats to exercise local dataset browsing and LFS flows."
+                    ),
+                    files=multimodal_files,
+                ),
+                CommitSeed(
+                    summary="Add archive notes and split manifest",
+                    description="Keep the multimodal dataset active with a second commit and metadata refresh.",
+                    files=(
+                        (
+                            "notes/archive-layout.md",
+                            text_bytes(
+                                """
+                                # Archive Layout
+
+                                The indexed tar bundle mirrors the hfutils.index layout so local
+                                demos can inspect offsets, file sizes, and per-member checksums.
+                                """
+                            ),
+                        ),
+                        (
+                            "metadata/splits.json",
+                            json_bytes(
+                                {
+                                    "train": "parquet/train-00000-of-00001.parquet",
+                                    "validation": "parquet/validation-00000-of-00001.parquet",
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            branch="curation-pass",
+            tag="v2026.04-media",
+            download_path="parquet/train-00000-of-00001.parquet",
+            download_sessions=6,
+        ),
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="open-media-lab",
+            name="vision-language-assistant-3b",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="Publish sharded multimodal assistant checkpoint",
+                    description=(
+                        "Add common Hugging Face model files and a few hundred megabytes "
+                        "of sharded safetensors weights."
+                    ),
+                    files=model_files,
+                ),
+                CommitSeed(
+                    summary="Add eval cards and prompt notes",
+                    description="Follow-up commit for model history, metadata, and release-note views.",
+                    files=(
+                        (
+                            "eval/benchmark.json",
+                            json_bytes(
+                                {
+                                    "chart_qa_em": 0.71,
+                                    "docvqa_anls": 0.63,
+                                    "latency_ms_p95": 186,
+                                }
+                            ),
+                        ),
+                        (
+                            "prompts/system.md",
+                            text_bytes(
+                                """
+                                # System Prompt Notes
+
+                                - prefer grounded answers over speculative OCR recovery
+                                - preserve visible numbers and units
+                                - mention image regions when ambiguity remains
+                                """
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            branch="eval-refresh",
+            tag="v0.9.0-local",
+            download_path="model-00001-of-00003.safetensors",
+            download_sessions=4,
+        ),
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="open-media-lab",
+            name="hierarchy-crawl-fixtures",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="Seed deeply nested tree fixtures",
+                    description=(
+                        "Generate a repo with many files and several levels of nested paths "
+                        "for tree navigation and search coverage."
+                    ),
+                    files=make_deep_tree_files("hierarchy-crawl"),
+                ),
+                CommitSeed(
+                    summary="Add tree smoke-test notes",
+                    description="Keep one extra commit so history and diff views remain non-trivial.",
+                    files=(
+                        (
+                            "notes/path-review.md",
+                            text_bytes(
+                                """
+                                # Path Review
+
+                                This repo exists to keep large tree browsing reproducible. When a
+                                pagination or sorting bug appears, use these fixtures first.
+                                """
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            branch="path-review",
+            tag="tree-fixtures-2026-04",
+            download_path=(
+                "catalog/section-06/tier-08/branch-06/node-06-08-06/"
+                "entry-06-08-06.json"
+            ),
+            download_sessions=2,
+        ),
+    )
+
+
+def build_open_media_showcase_repo_seeds() -> tuple[RepoSeed, ...]:
+    specs = (
+        ("model", "dock-caption-lite", False, "dock captioning smoke-test model"),
+        ("dataset", "quay-ops-snippets", False, "operations dataset for list and preview checks"),
+        ("space", "repo-browser-demo", False, "space used to pin org landing content"),
+        ("model", "layout-distill-small", False, "small layout parser release used for org pages"),
+        ("dataset", "table-scan-fixtures", False, "table extraction fixtures for repeated browsing"),
+        ("space", "taxonomy-review-room", True, "private review board for annotation changes"),
+        ("model", "invoice-embeddings-small", False, "embedding checkpoint metadata fixture"),
+        ("dataset", "ui-search-fixtures", False, "search and pagination samples"),
+        ("space", "annotation-hotfix-board", True, "private space for triage workflows"),
+        ("model", "signal-router-mini", False, "tiny routing model used in showcase cards"),
+    )
+
+    repos: list[RepoSeed] = []
+    for repo_type, name, private, summary in specs:
+        readme = text_bytes(
+            f"""
+            # {name}
+
+            {summary.capitalize()}.
+            This repository exists to give open-media-lab a realistic repo count in local dev.
+            """
+        )
+
+        if repo_type == "model":
+            files: tuple[SeedFile, ...] = (
+                ("README.md", readme),
+                (
+                    "config.json",
+                    json_bytes(
+                        {
+                            "hidden_size": 768,
+                            "model_type": name,
+                            "num_hidden_layers": 12,
+                        }
+                    ),
+                ),
+                seed_file(
+                    f"weights/{name}.safetensors",
+                    lambda name=name: make_single_checkpoint_bytes(
+                        name,
+                        (
+                            ("model.embed_tokens.weight", (2048, 1024)),
+                            ("model.layers.0.mlp.up_proj.weight", (1024, 512)),
+                        ),
+                    ),
+                ),
+            )
+            download_path = f"weights/{name}.safetensors"
+        elif repo_type == "dataset":
+            files = (
+                ("README.md", readme),
+                (
+                    "data/rows.jsonl",
+                    jsonl_bytes(
+                        (
+                            {"id": f"{name}-0001", "label": "alpha"},
+                            {"id": f"{name}-0002", "label": "beta"},
+                        )
+                    ),
+                ),
+                (
+                    "metadata/features.json",
+                    json_bytes({"id": "string", "label": "string"}),
+                ),
+            )
+            download_path = "data/rows.jsonl"
+        else:
+            files = (
+                ("README.md", readme),
+                (
+                    "app.py",
+                    text_bytes(
+                        f"""
+                        import gradio as gr
+
+                        demo = gr.Interface(
+                            fn=lambda text: "{name}: " + text.strip(),
+                            inputs=gr.Textbox(label="Input"),
+                            outputs=gr.Textbox(label="Output"),
+                            title="{name}",
+                        )
+
+                        if __name__ == "__main__":
+                            demo.launch()
+                        """
+                    ),
+                ),
+                ("requirements.txt", text_bytes("gradio>=4.44.0")),
+            )
+            download_path = "README.md"
+
+        repos.append(
+            RepoSeed(
+                actor="mai_lin",
+                repo_type=repo_type,
+                namespace="open-media-lab",
+                name=name,
+                private=private,
+                commits=(
+                    CommitSeed(
+                        summary=f"Seed {name}",
+                        description="Create a compact org repo so the listing page has real density.",
+                        files=files,
+                    ),
+                ),
+                download_path=download_path,
+                download_sessions=1 if not private else 0,
+            )
+        )
+
+    return tuple(repos)
+
+
+REPO_SEEDS = (
+    build_repo_seeds()
+    + build_open_media_core_repo_seeds()
+    + build_open_media_showcase_repo_seeds()
+)
 
 LIKES: tuple[tuple[str, str, str, str], ...] = (
     ("leo_park", "model", "mai_lin", "lineart-caption-base"),
@@ -1715,10 +2874,10 @@ async def commit_files(
     repo: RepoSeed,
     commit: CommitSeed,
 ) -> None:
+    materialized_files = [materialize_seed_file(file_entry) for file_entry in commit.files]
     metadata = []
-    payload_by_path = {}
 
-    for path, content in commit.files:
+    for path, content in materialized_files:
         sha256 = hashlib.sha256(content).hexdigest()
         metadata.append(
             {
@@ -1727,7 +2886,6 @@ async def commit_files(
                 "sha256": sha256,
             }
         )
-        payload_by_path[path] = content
 
     preupload_response = await client.post(
         f"/api/{repo.repo_type}s/{repo.namespace}/{repo.name}/preupload/main",
@@ -1751,7 +2909,7 @@ async def commit_files(
         }
     ]
 
-    for path, content in commit.files:
+    for path, content in materialized_files:
         mode = preupload_results[path]["uploadMode"]
 
         if preupload_results[path]["shouldIgnore"]:
