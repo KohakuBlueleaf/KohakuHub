@@ -2,9 +2,13 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { http, HttpResponse } from "@/testing/msw";
+import { http } from "@/testing/msw";
 import { ElementPlusStubs, RouterLinkStub } from "../helpers/vue";
-import repoInfo from "../fixtures/repo-info.json";
+import {
+  cloneFixture,
+  jsonResponse,
+  uiApiFixtures,
+} from "../helpers/api-fixtures";
 import { server } from "../setup/msw-server";
 
 const mocks = vi.hoisted(() => ({
@@ -12,26 +16,10 @@ const mocks = vi.hoisted(() => ({
     push: vi.fn(),
     back: vi.fn(),
   },
-  repoApi: {
-    getInfo: vi.fn(),
-    listTreeAll: vi.fn(),
-    getPathsInfo: vi.fn(),
-    listCommits: vi.fn(),
-  },
-  likesApi: {
-    checkLiked: vi.fn(),
-    like: vi.fn(),
-    unlike: vi.fn(),
-  },
 }));
 
 vi.mock("vue-router/auto", () => ({
   useRouter: () => mocks.router,
-}));
-
-vi.mock("@/utils/api", () => ({
-  repoAPI: mocks.repoApi,
-  likesAPI: mocks.likesApi,
 }));
 
 import RepoViewer from "@/components/repo/RepoViewer.vue";
@@ -47,29 +35,40 @@ function deferred() {
 }
 
 describe("RepoViewer path handling", () => {
+  const requests = {
+    pathsInfo: [],
+    tree: [],
+  };
+
+  function repoInfoFor(name) {
+    return {
+      ...cloneFixture(uiApiFixtures.repo.info),
+      id: `open-media-lab/${name}`,
+    };
+  }
+
+  function installBaseHandlers() {
+    requests.pathsInfo.length = 0;
+    requests.tree.length = 0;
+
+    server.use(
+      http.get("/api/users/open-media-lab/type", () =>
+        jsonResponse({ type: "org" }),
+      ),
+      http.get("/api/datasets/open-media-lab/:name", ({ params }) =>
+        jsonResponse(repoInfoFor(params.name)),
+      ),
+      http.get("/api/datasets/open-media-lab/:name/commits/main", () =>
+        jsonResponse(cloneFixture(uiApiFixtures.repo.commitsHf.page1)),
+      ),
+    );
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     setActivePinia(createPinia());
     vi.spyOn(console, "error").mockImplementation(() => {});
-
-    mocks.repoApi.getInfo.mockResolvedValue({
-      data: {
-        ...repoInfo,
-        id: "open-media-lab/hierarchy-crawl-fixtures",
-      },
-    });
-    mocks.repoApi.listCommits.mockResolvedValue({
-      data: {
-        commits: [],
-        hasMore: false,
-        nextCursor: null,
-      },
-    });
-    server.use(
-      http.get("/api/users/open-media-lab/type", () =>
-        HttpResponse.json({ type: "org" }),
-      ),
-    );
+    installBaseHandlers();
   });
 
   function mountViewer(props) {
@@ -98,51 +97,53 @@ describe("RepoViewer path handling", () => {
     });
   }
 
-  it("loads repo-root tree entries, merges expanded path info, and links commits", async () => {
-    mocks.repoApi.listTreeAll.mockResolvedValue([
-      {
-        type: "directory",
-        path: "catalog/section-01",
-        size: 0,
-        lastModified: "2026-04-21T13:53:12.000000Z",
-      },
-    ]);
-    mocks.repoApi.getPathsInfo.mockResolvedValue({
-      data: [
-        {
-          type: "directory",
-          path: "catalog/section-01",
-          size: 10,
-          lastCommit: {
-            id: "commit-1",
-            title: "Add section summary",
-            date: "2026-04-21T13:53:12.000000Z",
-          },
+  it("loads repo-root tree entries through the API client, merges expanded path info, and links commits", async () => {
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/catalog",
+        ({ request }) => {
+          const url = new URL(request.url);
+          requests.tree.push({
+            name: "hierarchy-crawl-fixtures",
+            path: "/catalog",
+            params: Object.fromEntries(url.searchParams.entries()),
+          });
+          return jsonResponse(cloneFixture(uiApiFixtures.repo.tree));
         },
-      ],
-    });
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        async ({ request }) => {
+          const form = new URLSearchParams(await request.clone().text());
+          requests.pathsInfo.push({
+            name: "hierarchy-crawl-fixtures",
+            paths: form.getAll("paths"),
+            expand: form.get("expand"),
+          });
+          return jsonResponse(cloneFixture(uiApiFixtures.repo.pathsInfo));
+        },
+      ),
+    );
 
     const wrapper = mountViewer({ currentPath: "catalog" });
 
     await flushPromises();
     await flushPromises();
 
-    expect(mocks.repoApi.listTreeAll).toHaveBeenCalledWith(
-      "dataset",
-      "open-media-lab",
-      "hierarchy-crawl-fixtures",
-      "main",
-      "/catalog",
-      { recursive: false },
-    );
-    expect(mocks.repoApi.getPathsInfo).toHaveBeenCalledWith(
-      "dataset",
-      "open-media-lab",
-      "hierarchy-crawl-fixtures",
-      "main",
-      ["catalog/section-01"],
-      true,
-    );
+    expect(requests.tree).toEqual([
+      {
+        name: "hierarchy-crawl-fixtures",
+        path: "/catalog",
+        params: { recursive: "false" },
+      },
+    ]);
+    expect(requests.pathsInfo).toEqual([
+      {
+        name: "hierarchy-crawl-fixtures",
+        paths: ["catalog/section-01"],
+        expand: "true",
+      },
+    ]);
 
     const row = wrapper
       .findAll('[class*="cursor-pointer"]')
@@ -167,33 +168,42 @@ describe("RepoViewer path handling", () => {
   });
 
   it("sorts directories before files and orders same-type paths alphabetically", async () => {
-    mocks.repoApi.listTreeAll.mockResolvedValue([
-      {
-        type: "file",
-        path: "catalog/z-last.txt",
-        size: 4,
-        lastModified: "2026-04-21T13:53:39.000000Z",
-      },
-      {
-        type: "directory",
-        path: "catalog/b-section",
-        size: 0,
-        lastModified: "2026-04-21T13:53:39.000000Z",
-      },
-      {
-        type: "file",
-        path: "catalog/a-first.txt",
-        size: 2,
-        lastModified: "2026-04-21T13:53:39.000000Z",
-      },
-      {
-        type: "directory",
-        path: "catalog/a-section",
-        size: 0,
-        lastModified: "2026-04-21T13:53:39.000000Z",
-      },
-    ]);
-    mocks.repoApi.getPathsInfo.mockResolvedValue({ data: [] });
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/catalog",
+        () =>
+          jsonResponse([
+            {
+              type: "file",
+              path: "catalog/z-last.txt",
+              size: 4,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+            {
+              type: "directory",
+              path: "catalog/b-section",
+              size: 0,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+            {
+              type: "file",
+              path: "catalog/a-first.txt",
+              size: 2,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+            {
+              type: "directory",
+              path: "catalog/a-section",
+              size: 0,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+          ]),
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        () => jsonResponse([]),
+      ),
+    );
 
     const wrapper = mountViewer({ currentPath: "catalog" });
 
@@ -213,15 +223,24 @@ describe("RepoViewer path handling", () => {
   });
 
   it("keeps repo-root file navigation working when expanded path info fails", async () => {
-    mocks.repoApi.listTreeAll.mockResolvedValue([
-      {
-        type: "file",
-        path: "metadata/features.json",
-        size: 42,
-        lastModified: "2026-04-21T13:53:39.000000Z",
-      },
-    ]);
-    mocks.repoApi.getPathsInfo.mockRejectedValue(new Error("expand failed"));
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/table-scan-fixtures/tree/main/metadata",
+        () =>
+          jsonResponse([
+            {
+              type: "file",
+              path: "metadata/features.json",
+              size: 42,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+          ]),
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/table-scan-fixtures/paths-info/main",
+        () => jsonResponse({ detail: "expand failed" }, { status: 500 }),
+      ),
+    );
 
     const wrapper = mountViewer({
       name: "table-scan-fixtures",
@@ -244,9 +263,19 @@ describe("RepoViewer path handling", () => {
   });
 
   it("skips expanded path loading for empty trees and clears the tree when loading fails", async () => {
-    mocks.repoApi.listTreeAll
-      .mockResolvedValueOnce([])
-      .mockRejectedValueOnce(new Error("tree failed"));
+    let requestCount = 0;
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/:path",
+        ({ params }) => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return jsonResponse([]);
+        }
+        return jsonResponse({ detail: "tree failed" }, { status: 500 });
+        },
+      ),
+    );
 
     const emptyWrapper = mountViewer({ currentPath: "catalog" });
 
@@ -254,7 +283,7 @@ describe("RepoViewer path handling", () => {
     await flushPromises();
 
     expect(emptyWrapper.text()).toContain("No files found");
-    expect(mocks.repoApi.getPathsInfo).not.toHaveBeenCalled();
+    expect(requests.pathsInfo).toEqual([]);
 
     const failedWrapper = mountViewer({ currentPath: "catalog-next" });
 
@@ -262,27 +291,40 @@ describe("RepoViewer path handling", () => {
     await flushPromises();
 
     expect(failedWrapper.findAll('[class*="cursor-pointer"]')).toHaveLength(0);
-    expect(mocks.repoApi.getPathsInfo).not.toHaveBeenCalled();
+    expect(requests.pathsInfo).toEqual([]);
   });
 
   it("ignores stale tree responses after the current path changes", async () => {
     const firstTree = deferred();
     const secondTree = deferred();
 
-    mocks.repoApi.listTreeAll.mockImplementation(
-      (type, namespace, name, branch, path) => {
-        if (path === "/catalog") {
-          return firstTree.promise;
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/:path",
+        async ({ params }) => {
+        if (params.path === "catalog") {
+          const payload = await firstTree.promise;
+          return jsonResponse(payload);
         }
-        if (path === "/catalog-next") {
-          return secondTree.promise;
-        }
-        return Promise.resolve([]);
-      },
+        const payload = await secondTree.promise;
+        return jsonResponse(payload);
+        },
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        async ({ request }) => {
+          const form = new URLSearchParams(await request.clone().text());
+          requests.pathsInfo.push({
+            name: "hierarchy-crawl-fixtures",
+            paths: form.getAll("paths"),
+            expand: form.get("expand"),
+          });
+          return jsonResponse([
+            { type: "file", path: "catalog-next/new.txt", size: 1 },
+          ]);
+        },
+      ),
     );
-    mocks.repoApi.getPathsInfo.mockResolvedValue({
-      data: [{ type: "file", path: "catalog-next/new.txt", size: 1 }],
-    });
 
     const wrapper = mountViewer({ currentPath: "catalog" });
 
@@ -313,24 +355,24 @@ describe("RepoViewer path handling", () => {
 
     expect(wrapper.text()).toContain("new.txt");
     expect(wrapper.text()).not.toContain("old.txt");
-    expect(mocks.repoApi.getPathsInfo).toHaveBeenCalledTimes(1);
-    expect(mocks.repoApi.getPathsInfo).toHaveBeenCalledWith(
-      "dataset",
-      "open-media-lab",
-      "hierarchy-crawl-fixtures",
-      "main",
-      ["catalog-next/new.txt"],
-      true,
-    );
+    expect(requests.pathsInfo).toEqual([
+      {
+        name: "hierarchy-crawl-fixtures",
+        paths: ["catalog-next/new.txt"],
+        expand: "true",
+      },
+    ]);
   });
 
   it("ignores stale expanded path info responses after a newer request wins", async () => {
     const firstPathsInfo = deferred();
 
-    mocks.repoApi.listTreeAll.mockImplementation(
-      (type, namespace, name, branch, path) => {
-        if (path === "/catalog") {
-          return Promise.resolve([
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/:path",
+        ({ params }) => {
+        if (params.path === "catalog") {
+          return jsonResponse([
             {
               type: "file",
               path: "catalog/old.txt",
@@ -339,26 +381,26 @@ describe("RepoViewer path handling", () => {
             },
           ]);
         }
-        if (path === "/catalog-next") {
-          return Promise.resolve([
-            {
-              type: "file",
-              path: "catalog-next/new.txt",
-              size: 1,
-              lastModified: "2026-04-21T13:53:39.000000Z",
-            },
-          ]);
-        }
-        return Promise.resolve([]);
-      },
-    );
-    mocks.repoApi.getPathsInfo.mockImplementation(
-      (type, namespace, name, branch, paths) => {
-        if (paths[0] === "catalog/old.txt") {
-          return firstPathsInfo.promise;
-        }
-        return Promise.resolve({
-          data: [
+        return jsonResponse([
+          {
+            type: "file",
+            path: "catalog-next/new.txt",
+            size: 1,
+            lastModified: "2026-04-21T13:53:39.000000Z",
+          },
+        ]);
+        },
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        async ({ request }) => {
+          const form = new URLSearchParams(await request.clone().text());
+          const paths = form.getAll("paths");
+          if (paths[0] === "catalog/old.txt") {
+            const payload = await firstPathsInfo.promise;
+            return jsonResponse(payload);
+          }
+          return jsonResponse([
             {
               type: "file",
               path: "catalog-next/new.txt",
@@ -369,9 +411,9 @@ describe("RepoViewer path handling", () => {
                 date: "2026-04-21T13:53:39.000000Z",
               },
             },
-          ],
-        });
-      },
+          ]);
+        },
+      ),
     );
 
     const wrapper = mountViewer({ currentPath: "catalog" });
@@ -383,20 +425,18 @@ describe("RepoViewer path handling", () => {
     await flushPromises();
     await flushPromises();
 
-    firstPathsInfo.resolve({
-      data: [
-        {
-          type: "file",
-          path: "catalog/old.txt",
-          size: 99,
-          lastCommit: {
-            id: "commit-1",
-            title: "Old tree row",
-            date: "2026-04-21T13:53:39.000000Z",
-          },
+    firstPathsInfo.resolve([
+      {
+        type: "file",
+        path: "catalog/old.txt",
+        size: 99,
+        lastCommit: {
+          id: "commit-1",
+          title: "Old tree row",
+          date: "2026-04-21T13:53:39.000000Z",
         },
-      ],
-    });
+      },
+    ]);
     await flushPromises();
     await flushPromises();
 

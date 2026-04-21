@@ -12,7 +12,9 @@ async def test_like_check_and_unlike_repository(member_client):
 
     likers_response = await member_client.get("/api/models/owner/demo-model/likers")
     assert likers_response.status_code == 200
-    assert likers_response.json()["total"] == 2
+    likers = likers_response.json()
+    assert len(likers) == 2
+    assert {item["user"] for item in likers} == {"owner", "member"}
 
     check_after = await member_client.get("/api/models/owner/demo-model/like")
     assert check_after.json()["liked"] is True
@@ -28,8 +30,14 @@ async def test_list_user_likes_hides_private_repos_without_access(member_client,
 
     visible_response = await member_client.get("/api/users/member/likes")
     assert visible_response.status_code == 200
-    assert any(item["id"] == "acme-labs/private-dataset" for item in visible_response.json()["likes"])
+    assert any(
+        item["repo"]["name"] == "acme-labs/private-dataset"
+        for item in visible_response.json()
+    )
 
     hidden_response = await outsider_client.get("/api/users/member/likes")
     assert hidden_response.status_code == 200
-    assert all(item["id"] != "acme-labs/private-dataset" for item in hidden_response.json()["likes"])
+    assert all(
+        item["repo"]["name"] != "acme-labs/private-dataset"
+        for item in hidden_response.json()
+    )

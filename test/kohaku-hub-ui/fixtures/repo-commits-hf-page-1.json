@@ -1,0 +1,15 @@
+[
+  {
+    "id": "commit-1",
+    "title": "Add README",
+    "message": "Add README",
+    "date": "2026-04-21T10:00:00.000000Z",
+    "authors": [
+      {
+        "user": "alice",
+        "email": "alice@example.com"
+      }
+    ],
+    "parents": []
+  }
+]

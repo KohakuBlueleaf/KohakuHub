@@ -243,18 +243,26 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
     monkeypatch.setattr(repo_info, "lakefs_repo_name", lambda repo_type, repo_id: f"{repo_type}:{repo_id}")
     monkeypatch.setattr(repo_info, "get_lakefs_client", lambda: client)
     monkeypatch.setattr(repo_info, "format_hf_datetime", lambda value: "2024-01-02T00:00:00.000000Z")
-    monkeypatch.setattr(
-        repo_info,
-        "should_use_lfs",
-        lambda repo, path, size: path.endswith(".bin"),
-    )
-    monkeypatch.setattr(
-        repo_info,
-        "get_file",
-        lambda repo, path: (_ for _ in ()).throw(RuntimeError("db fail"))
-        if path == "broken.bin"
-        else SimpleNamespace(sha256="db-sha"),
-    )
+
+    async def fake_collect_hf_siblings(repo, repo_type, repo_id, revision):
+        if client.list_error:
+            raise client.list_error
+
+        return [
+            {"rfilename": "README.md", "size": 4},
+            {
+                "rfilename": "weights.bin",
+                "size": 8,
+                "lfs": {"sha256": "db-sha", "size": 8, "pointerSize": 134},
+            },
+            {
+                "rfilename": "broken.bin",
+                "size": 9,
+                "lfs": {"sha256": "sha256:broken", "size": 9, "pointerSize": 134},
+            },
+        ]
+
+    monkeypatch.setattr(repo_info, "collect_hf_siblings", fake_collect_hf_siblings)
 
     invalid_type = await repo_info.get_repo_info.__wrapped__(
         "alice",
@@ -286,21 +294,6 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
             "is_inheriting": False,
         },
     )
-    client.list_payloads = [
-        {
-            "results": [
-                {"path_type": "object", "path": "README.md", "size_bytes": 4, "checksum": "sha256:readme"},
-                {"path_type": "object", "path": "weights.bin", "size_bytes": 8, "checksum": "sha256:weights"},
-            ],
-            "pagination": {"has_more": True, "next_offset": "cursor-2"},
-        },
-        {
-            "results": [
-                {"path_type": "object", "path": "broken.bin", "size_bytes": 9, "checksum": "sha256:broken"},
-            ],
-            "pagination": {"has_more": False},
-        },
-    ]
     info = await repo_info.get_repo_info.__wrapped__(
         "alice",
         "demo",
@@ -314,7 +307,6 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
 
     client.commit_error = RuntimeError("commit fail")
     monkeypatch.setattr(repo_info, "get_repo_storage_info", lambda repo: (_ for _ in ()).throw(RuntimeError("quota fail")))
-    client.list_payloads = [{"results": [], "pagination": {"has_more": False}}]
     info_without_storage = await repo_info.get_repo_info.__wrapped__(
         "alice",
         "demo",
@@ -335,7 +327,6 @@ async def test_get_repo_info_covers_invalid_type_not_found_siblings_and_storage_
 
     client.branch_error = RuntimeError("missing branch")
     client.list_error = None
-    client.list_payloads = [{"results": [], "pagination": {"has_more": False}}]
     info_without_sha = await repo_info.get_repo_info.__wrapped__(
         "alice",
         "demo",

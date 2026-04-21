@@ -1,6 +1,7 @@
 """HuggingFace Hub API compatibility utilities.
 
-This module provides utilities for making Kohaku Hub compatible with HuggingFace Hub client.
+This module provides utilities for making Kohaku Hub compatible with
+`huggingface_hub` client behavior.
 """
 
 from typing import Optional
@@ -227,6 +228,88 @@ def hf_server_error(message: str, error_code: Optional[str] = None) -> Response:
         error_code or HFErrorCode.SERVER_ERROR,
         message,
     )
+
+
+async def collect_hf_siblings(
+    repo_row,
+    repo_type: str,
+    repo_id: str,
+    revision: str,
+) -> list[dict]:
+    """Collect repository files using the schema expected by `huggingface_hub`."""
+    from kohakuhub.db_operations import get_file, should_use_lfs
+    from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
+
+    lakefs_repo = lakefs_repo_name(repo_type, repo_id)
+    client = get_lakefs_client()
+    all_results = []
+    after = ""
+
+    while True:
+        result = await client.list_objects(
+            repository=lakefs_repo,
+            ref=revision,
+            prefix="",
+            delimiter="",
+            amount=1000,
+            after=after,
+        )
+
+        if isinstance(result, list):
+            all_results.extend(result)
+            break
+
+        all_results.extend(result.get("results", []))
+        pagination = result.get("pagination", {})
+        if not pagination.get("has_more"):
+            break
+
+        after = pagination.get("next_offset")
+        if not after:
+            break
+
+    file_objects = [obj for obj in all_results if obj.get("path_type") == "object"]
+    file_records = {}
+
+    for obj in file_objects:
+        path = obj["path"]
+        size = obj.get("size_bytes", 0)
+        if not should_use_lfs(repo_row, path, size):
+            continue
+
+        try:
+            record = get_file(repo_row, path)
+        except Exception:
+            record = None
+
+        if record is not None:
+            file_records[path] = record
+
+    siblings = []
+    for obj in file_objects:
+        path = obj["path"]
+        size = obj.get("size_bytes", 0)
+        sibling = {
+            "rfilename": path,
+            "size": size,
+        }
+
+        if should_use_lfs(repo_row, path, size):
+            file_record = file_records.get(path)
+            checksum = (
+                file_record.sha256
+                if file_record is not None and file_record.sha256
+                else obj.get("checksum", "")
+            )
+            sibling["lfs"] = {
+                "sha256": checksum,
+                "size": size,
+                "pointerSize": 134,
+            }
+
+        siblings.append(sibling)
+
+    return siblings
 
 
 def format_hf_datetime(dt) -> Optional[str]:

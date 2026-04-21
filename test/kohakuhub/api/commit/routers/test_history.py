@@ -23,7 +23,7 @@ async def test_list_commit_history_and_diff(owner_client):
 
     list_response = await owner_client.get("/api/models/owner/demo-model/commits/main")
     assert list_response.status_code == 200
-    commits = list_response.json()["commits"]
+    commits = list_response.json()
     assert any(commit["id"] == commit_id for commit in commits)
 
     detail_response = await owner_client.get(

@@ -1,17 +1,17 @@
-{
-  "likers": [
-    {
-      "username": "ivy_ops",
-      "full_name": "Ivy Ops"
-    },
-    {
-      "username": "sara_chen",
-      "full_name": "Sara Chen"
-    },
-    {
-      "username": "leo_park",
-      "full_name": "Leo Park"
-    }
-  ],
-  "total": 3
-}
+[
+  {
+    "user": "ivy_ops",
+    "fullname": "Ivy Ops",
+    "avatarUrl": null
+  },
+  {
+    "user": "sara_chen",
+    "fullname": "Sara Chen",
+    "avatarUrl": null
+  },
+  {
+    "user": "leo_park",
+    "fullname": "Leo Park",
+    "avatarUrl": null
+  }
+]

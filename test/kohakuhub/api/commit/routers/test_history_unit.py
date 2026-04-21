@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -128,7 +129,8 @@ async def test_list_commits_covers_not_found_empty_parse_failure_and_server_erro
     monkeypatch.setattr(commit_history, "get_repository", lambda repo_type, namespace, name: repo_row)
     client.log_result = None
     empty = await commit_history.list_commits("model", "alice", "demo", branch="main")
-    assert empty == {"commits": [], "hasMore": False, "nextCursor": None}
+    assert empty.status_code == 200
+    assert json.loads(empty.body) == []
 
     client.log_result = {
         "results": [
@@ -147,22 +149,16 @@ async def test_list_commits_covers_not_found_empty_parse_failure_and_server_erro
         "pagination": {"has_more": True, "next_offset": "cursor-2"},
     }
     parsed = await commit_history.list_commits("model", "alice", "demo", after="cursor-1")
-    assert parsed == {
-        "commits": [
-            {
-                "id": "good-1",
-                "oid": "good-1",
-                "title": "good commit",
-                "message": "good commit",
-                "date": 123,
-                "author": "alice",
-                "email": "alice@example.com",
-                "parents": ["parent"],
-            }
-        ],
-        "hasMore": True,
-        "nextCursor": "cursor-2",
-    }
+    assert parsed.status_code == 200
+    assert json.loads(parsed.body) == [
+        {
+            "id": "good-1",
+            "title": "good commit",
+            "message": "good commit",
+            "date": "1970-01-01T00:02:03.000000Z",
+            "authors": [{"user": "alice"}],
+        }
+    ]
 
     client.log_error = RuntimeError("lakefs boom")
     failure = await commit_history.list_commits("model", "alice", "demo")

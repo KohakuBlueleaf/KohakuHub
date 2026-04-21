@@ -1,10 +1,10 @@
 {
   "_id": 1,
-  "id": "mai_lin/lineart-caption-base",
-  "modelId": "mai_lin/lineart-caption-base",
-  "author": "mai_lin",
-  "sha": null,
-  "lastModified": null,
+  "id": "owner/demo-model",
+  "modelId": "owner/demo-model",
+  "author": "owner",
+  "sha": "4f2f9d5fbe2947a6c719509e98f8a34f8be404e9",
+  "lastModified": "2026-04-21T10:00:00.000000Z",
   "createdAt": "2026-04-20T08:47:31.616317Z",
   "private": false,
   "disabled": false,
@@ -21,6 +21,10 @@
     {
       "rfilename": "README.md",
       "size": 20
+    },
+    {
+      "rfilename": "config.json",
+      "size": 18
     },
     {
       "rfilename": "weights/model.safetensors",
