@@ -26,7 +26,6 @@ import httpx
 import pytest
 from huggingface_hub import (
     CommitOperationAdd,
-    CommitOperationCopy,
     CommitOperationDelete,
     HfApi,
     HfFileSystem,
@@ -34,11 +33,22 @@ from huggingface_hub import (
     hf_hub_url,
     snapshot_download,
 )
-from huggingface_hub.errors import (
+
+# `huggingface_hub.errors` landed around v0.22; v0.20.3 (still in the CI matrix)
+# keeps these exceptions under `huggingface_hub.utils`. The utils path is the
+# version-portable import that works against every client version we target.
+from huggingface_hub.utils import (
     EntryNotFoundError,
     HfHubHTTPError,
     RepositoryNotFoundError,
+    RevisionNotFoundError,
 )
+
+# `CommitOperationCopy` was added in v0.21.0 — older matrix pins do not ship it.
+try:
+    from huggingface_hub import CommitOperationCopy  # type: ignore[attr-defined]
+except ImportError:  # v0.20.3 and earlier
+    CommitOperationCopy = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +599,11 @@ async def test_create_commit_supports_copy_operation(
     ``api/commit/routers/operations.py:813``). Make sure the server-side
     code path is reachable via the huggingface_hub client shape.
     """
+    if CommitOperationCopy is None:
+        pytest.skip(
+            "CommitOperationCopy was added in huggingface_hub 0.21; the "
+            "installed client is older."
+        )
     api = _api(live_server_url, hf_api_token)
     repo_id = "owner/hf-deep-copy-op"
     await _run(api.create_repo, repo_id)
@@ -709,8 +724,6 @@ async def test_repo_info_revision_not_found_raises_named_error(
     """transformers / diffusers catch ``RevisionNotFoundError`` specifically
     to provide a better error message. The backend must surface
     ``X-Error-Code: RevisionNotFound`` so huggingface_hub maps it."""
-    from huggingface_hub.errors import RevisionNotFoundError
-
     api = _api(live_server_url, hf_api_token)
     with pytest.raises(RevisionNotFoundError):
         await _run(api.repo_info, "owner/demo-model", revision="no-such-revision")
