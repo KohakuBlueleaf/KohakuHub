@@ -24,6 +24,20 @@ async def _create_hf_token(client, name: str) -> str:
     return response.json()["token"]
 
 
+def _set_repo_private(api: HfApi, repo_id: str, private: bool) -> None:
+    update_settings = getattr(api, "update_repo_settings", None)
+    if callable(update_settings):
+        update_settings(repo_id, private=private)
+        return
+
+    update_visibility = getattr(api, "update_repo_visibility", None)
+    if callable(update_visibility):
+        update_visibility(repo_id, private=private)
+        return
+
+    pytest.skip("huggingface_hub does not expose repository visibility updates")
+
+
 @pytest.fixture
 async def member_hf_api_token(member_client):
     return await _create_hf_token(member_client, "hf-api-member")
@@ -358,10 +372,11 @@ async def test_hf_api_likes_visibility_move_delete_and_list_liked_repos(
         reliked = await asyncio.to_thread(lambda: api.list_liked_repos("owner"))
         assert "owner/demo-model" in reliked.models
 
-    update_visibility = getattr(api, "update_repo_visibility", None)
-    if callable(update_visibility):
+    if callable(getattr(api, "update_repo_settings", None)) or callable(
+        getattr(api, "update_repo_visibility", None)
+    ):
         await asyncio.to_thread(
-            lambda: update_visibility("owner/hf-lifecycle-compat", private=True)
+            lambda: _set_repo_private(api, "owner/hf-lifecycle-compat", True)
         )
         private_info = await asyncio.to_thread(
             lambda: api.repo_info("owner/hf-lifecycle-compat")
