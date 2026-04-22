@@ -873,9 +873,11 @@ async def test_create_commit_create_pr_flag_raises_readable_error(
     )
 
     # The forbidden commit must not have landed on main — if it did, the
-    # "silent commit to main" regression has recurred.
+    # "silent commit to main" regression has recurred. hf 0.20.3 returns
+    # `siblings=None` on empty repos instead of `[]`; normalize so the
+    # assertion reads uniformly on every matrix cell.
     info = await _run(api.repo_info, repo_id)
-    files_on_main = {sibling.rfilename for sibling in info.siblings}
+    files_on_main = {sibling.rfilename for sibling in (info.siblings or [])}
     assert "README.md" not in files_on_main, (
         "create_commit(create_pr=True) rejected at the API boundary but "
         "the file still reached main — the commit handler leaked past "
