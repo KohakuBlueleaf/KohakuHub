@@ -15,11 +15,23 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from huggingface_hub import constants as hf_constants
-from huggingface_hub.file_download import HfFileMetadata, _int_or_none, _normalize_etag
-from huggingface_hub.utils._xet import parse_xet_file_data_from_response
+# These tests lean on huggingface_hub's internal metadata parser, which
+# only gained the Xet module in huggingface_hub >= 1.0. Skip the whole
+# file cleanly on the older pins (0.20.3 / 0.30.2 / 0.36.2 in the matrix).
+pytest.importorskip(
+    "huggingface_hub.utils._xet",
+    reason="huggingface_hub.utils._xet is only present in huggingface_hub >= 1.0",
+)
 
-import kohakuhub.api.fallback.operations as fallback_ops
+from huggingface_hub import constants as hf_constants  # noqa: E402
+from huggingface_hub.file_download import (  # noqa: E402
+    HfFileMetadata,
+    _int_or_none,
+    _normalize_etag,
+)
+from huggingface_hub.utils._xet import parse_xet_file_data_from_response  # noqa: E402
+
+import kohakuhub.api.fallback.operations as fallback_ops  # noqa: E402
 
 from test.kohakuhub.api.fallback.test_operations import (  # noqa: E402
     AbsoluteHeadStub,
