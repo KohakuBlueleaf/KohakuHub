@@ -212,6 +212,132 @@ async def test_try_fallback_resolve_proxies_get_content_and_continues_after_get_
 
 
 @pytest.mark.asyncio
+async def test_try_fallback_resolve_head_rewrites_relative_location_to_upstream(monkeypatch):
+    """HEAD must not leak HF's relative redirect to KohakuHub — rewrite it to absolute."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.bin"
+    upstream_url = "https://hf.local/owner/demo/resolve/main/weights.bin"
+    relative_location = (
+        "/api/resolve-cache/models/owner/demo/abc123/weights.bin?etag=%22deadbeef%22"
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "HEAD",
+        path,
+        _content_response(
+            307,
+            headers={
+                "location": relative_location,
+                "etag": '"deadbeef"',
+                "x-repo-commit": "abc123",
+            },
+            url=upstream_url,
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model",
+        "owner",
+        "demo",
+        "main",
+        "weights.bin",
+        method="HEAD",
+    )
+
+    assert response.status_code == 307
+    assert (
+        response.headers["location"]
+        == "https://hf.local/api/resolve-cache/models/owner/demo/abc123/weights.bin?etag=%22deadbeef%22"
+    )
+    assert response.headers["etag"] == '"deadbeef"'
+    assert response.headers["X-Source"] == "HF"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_preserves_absolute_location(monkeypatch):
+    """HEAD with an already-absolute Location should pass it through untouched."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/datasets/owner/demo/resolve/main/data.parquet"
+    upstream_url = "https://hf.local/datasets/owner/demo/resolve/main/data.parquet"
+    absolute_location = (
+        "https://cdn-lfs.hf.local/owner/demo/sha256/deadbeef/data.parquet?token=xyz"
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "HEAD",
+        path,
+        _content_response(
+            302,
+            headers={"location": absolute_location},
+            url=upstream_url,
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "dataset",
+        "owner",
+        "demo",
+        "main",
+        "data.parquet",
+        method="HEAD",
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == absolute_location
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_without_location_is_unchanged(monkeypatch):
+    """A HEAD 200 without a Location header must not gain one or fail."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/config.json"
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "HEAD",
+        path,
+        _content_response(
+            200,
+            headers={"etag": '"feedface"'},
+            url="https://hf.local/owner/demo/resolve/main/config.json",
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model",
+        "owner",
+        "demo",
+        "main",
+        "config.json",
+        method="HEAD",
+    )
+
+    assert response.status_code == 200
+    assert "location" not in response.headers
+    assert response.headers["etag"] == '"feedface"'
+
+
+@pytest.mark.asyncio
 async def test_try_fallback_resolve_stops_on_non_retryable_status_and_handles_timeouts(monkeypatch):
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
     monkeypatch.setattr(

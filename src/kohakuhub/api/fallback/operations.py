@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Optional
+from urllib.parse import urljoin
 
 import httpx
 from fastapi.responses import RedirectResponse, Response
@@ -105,8 +106,16 @@ async def try_fallback_resolve(
                 )
 
                 if method == "HEAD":
-                    # For HEAD: Return response with original headers
+                    # For HEAD: Return response with original headers.
+                    # Rewrite any relative Location against the upstream request URL
+                    # so clients following a 3xx hit the upstream (e.g. huggingface.co)
+                    # instead of KohakuHub itself — HF's /api/resolve-cache/... path
+                    # exists only on the HF CDN.
                     resp_headers = dict(response.headers)
+                    location = resp_headers.get("location")
+                    if location:
+                        upstream_url = str(response.request.url)
+                        resp_headers["location"] = urljoin(upstream_url, location)
                     resp_headers.update(
                         add_source_headers(response, source["name"], source["url"])
                     )
