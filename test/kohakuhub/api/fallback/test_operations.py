@@ -26,12 +26,14 @@ def _content_response(
     *,
     headers: dict[str, str] | None = None,
     url: str = "https://source.local/file.bin",
+    history: list[httpx.Response] | None = None,
 ) -> httpx.Response:
     return httpx.Response(
         status_code,
         content=content,
         headers=headers,
         request=httpx.Request("GET", url),
+        history=history or [],
     )
 
 
@@ -89,6 +91,31 @@ class FakeFallbackClient:
 
     async def post(self, kohaku_path: str, repo_type: str, **kwargs) -> httpx.Response:
         return await self._dispatch("POST", kohaku_path, **kwargs)
+
+
+class AbsoluteHeadStub:
+    """Scripted replacement for httpx.AsyncClient.head used for extra-HEAD calls.
+
+    When patched in via `monkeypatch.setattr(httpx.AsyncClient, "head", stub)`
+    the bound-method descriptor drops the httpx-client self, so our call
+    signature only needs (url, **kwargs).
+    """
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.responses: list[object] = []
+
+    def queue(self, *results: object) -> None:
+        self.responses.extend(results)
+
+    async def __call__(self, url: str, **kwargs) -> httpx.Response:
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise AssertionError(f"No scripted response for absolute HEAD {url}")
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 @pytest.fixture(autouse=True)
@@ -209,6 +236,259 @@ async def test_try_fallback_resolve_proxies_get_content_and_continues_after_get_
     assert response.headers["content-length"] == "7"
     assert "transfer-encoding" not in response.headers
     assert response.headers["X-Source"] == "Second"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_rewrites_relative_location_to_absolute(monkeypatch):
+    """HEAD must not leak HF's relative /api/resolve-cache Location —
+    rewriting it to absolute steers the client back to the upstream for
+    the follow-up redirect."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    # LFS-shaped 307 (has X-Linked-Size) so no follow-up HEAD is issued.
+    path = "/models/owner/demo/resolve/main/weights.safetensors"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path,
+        _content_response(
+            307,
+            headers={
+                "location": "/api/resolve-cache/models/owner/demo/sha/weights.safetensors",
+                "content-length": "278",
+                "x-linked-size": "67840504",
+                "x-linked-etag": '"deadbeef"',
+                "x-repo-commit": "abc123",
+            },
+            url="https://hf.local/models/owner/demo/resolve/main/weights.safetensors",
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="HEAD",
+    )
+
+    assert response.status_code == 307
+    assert (
+        response.headers["location"]
+        == "https://hf.local/api/resolve-cache/models/owner/demo/sha/weights.safetensors"
+    )
+    # LFS metadata preserved; no extra HEAD fired (X-Linked-Size suffices).
+    assert response.headers["x-linked-size"] == "67840504"
+    assert response.headers["x-repo-commit"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_absolute_location_passes_through(monkeypatch):
+    """An already-absolute Location (typical of LFS → cas-bridge) is kept
+    verbatim — urljoin on an absolute target is a no-op."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    absolute = "https://cas-bridge.xethub.hf.co/shard/deadbeef?token=xyz"
+    path = "/datasets/owner/demo/resolve/main/data.parquet"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path,
+        _content_response(
+            302,
+            headers={
+                "location": absolute,
+                "x-linked-size": "1234567",
+            },
+            url="https://hf.local/datasets/owner/demo/resolve/main/data.parquet",
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "dataset", "owner", "demo", "main", "data.parquet", method="HEAD",
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == absolute
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_non_lfs_307_follows_for_content_length(monkeypatch):
+    """Non-LFS 3xx (no X-Linked-Size) needs one extra HEAD to the rewritten
+    Location to pick up the real Content-Length and ETag. This is the
+    imgutils selected_tags.csv fix."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/selected_tags.csv"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path,
+        _content_response(
+            307,
+            headers={
+                "location": "/api/resolve-cache/models/owner/demo/sha/selected_tags.csv",
+                "content-length": "278",           # 307 body length, wrong
+                "etag": '"placeholder"',
+                "x-repo-commit": "abc123",
+                "x-linked-etag": '"deadbeef"',
+            },
+            url="https://hf.local/models/owner/demo/resolve/main/selected_tags.csv",
+        ),
+    )
+    stub = AbsoluteHeadStub()
+    stub.queue(
+        _content_response(
+            200,
+            headers={"content-length": "308468", "etag": '"deadbeef"'},
+        ),
+    )
+    monkeypatch.setattr(httpx.AsyncClient, "head", stub.__call__)
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "selected_tags.csv", method="HEAD",
+    )
+
+    assert response.status_code == 307
+    assert (
+        response.headers["location"]
+        == "https://hf.local/api/resolve-cache/models/owner/demo/sha/selected_tags.csv"
+    )
+    # Content-Length / ETag replaced with the final hop's values.
+    assert response.headers["content-length"] == "308468"
+    assert response.headers["etag"] == '"deadbeef"'
+    # X-Repo-Commit / X-Linked-Etag kept from the initial 307.
+    assert response.headers["x-repo-commit"] == "abc123"
+    assert response.headers["x-linked-etag"] == '"deadbeef"'
+    # Exactly one extra HEAD, against the rewritten absolute URL.
+    assert len(stub.calls) == 1
+    assert stub.calls[0][0] == response.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_follow_error_falls_back_silently(monkeypatch):
+    """If the extra HEAD raises httpx.HTTPError, we keep the 307 response
+    we already had instead of failing the request."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/selected_tags.csv"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path,
+        _content_response(
+            307,
+            headers={
+                "location": "/api/resolve-cache/models/owner/demo/sha/selected_tags.csv",
+                "content-length": "278",
+                "x-repo-commit": "abc123",
+            },
+            url="https://hf.local/models/owner/demo/resolve/main/selected_tags.csv",
+        ),
+    )
+    stub = AbsoluteHeadStub()
+    stub.queue(httpx.ConnectError("boom"))
+    monkeypatch.setattr(httpx.AsyncClient, "head", stub.__call__)
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "selected_tags.csv", method="HEAD",
+    )
+
+    # Initial 307 headers preserved (content-length stale but still returned).
+    assert response.status_code == 307
+    assert response.headers["content-length"] == "278"
+    assert response.headers["x-repo-commit"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_head_strips_xet_signals(monkeypatch):
+    """Xet response headers must be removed so the client stays on the
+    classic LFS flow."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.safetensors"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path,
+        _content_response(
+            307,
+            headers={
+                "location": "https://cas-bridge.xethub.hf.co/shard",
+                "x-linked-size": "42",
+                "x-xet-hash": "SHOULD_BE_GONE",
+                "link": '<https://cas/auth>; rel="xet-auth", <https://next>; rel="next"',
+            },
+            url="https://hf.local/models/owner/demo/resolve/main/weights.safetensors",
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="HEAD",
+    )
+
+    lower = {k.lower() for k in response.headers.keys()}
+    assert not any(k.startswith("x-xet-") for k in lower)
+    assert "xet-auth" not in response.headers["link"].lower()
+    assert 'rel="next"' in response.headers["link"]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_get_strips_xet_signals(monkeypatch):
+    """GET proxying must also drop X-Xet-* headers so the client stays on classic LFS."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.safetensors"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path, _content_response(200),
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        path,
+        _content_response(
+            200,
+            b"fake-bytes",
+            headers={
+                "content-type": "application/octet-stream",
+                "x-xet-hash": "shardhash",
+                "x-xet-cas-url": "https://cas-bridge.xethub.hf.co",
+                "etag": '"deadbeef"',
+            },
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="GET",
+    )
+
+    assert response.status_code == 200
+    assert response.body == b"fake-bytes"
+    lower_headers = {k.lower() for k in response.headers.keys()}
+    assert not any(k.startswith("x-xet-") for k in lower_headers)
+    assert response.headers["etag"] == '"deadbeef"'
 
 
 @pytest.mark.asyncio
