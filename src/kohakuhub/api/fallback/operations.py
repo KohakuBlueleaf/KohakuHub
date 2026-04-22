@@ -107,16 +107,72 @@ async def try_fallback_resolve(
                 )
 
                 if method == "HEAD":
-                    # For HEAD: Return response with original headers.
-                    # Rewrite any relative Location against the upstream request URL
-                    # so clients following a 3xx hit the upstream (e.g. huggingface.co)
-                    # instead of KohakuHub itself — HF's /api/resolve-cache/... path
-                    # exists only on the HF CDN.
+                    # Rewrite any relative Location against the upstream
+                    # request URL so clients following a 3xx hit the
+                    # upstream (e.g. huggingface.co) instead of KohakuHub
+                    # itself — HF's /api/resolve-cache/... path lives only
+                    # on the HF origin.
                     resp_headers = dict(response.headers)
-                    location = resp_headers.get("location")
+                    location = resp_headers.get("location") or resp_headers.get(
+                        "Location"
+                    )
                     if location:
                         upstream_url = str(response.request.url)
-                        resp_headers["location"] = urljoin(upstream_url, location)
+                        absolute_location = urljoin(upstream_url, location)
+                        for k in list(resp_headers.keys()):
+                            if k.lower() == "location":
+                                resp_headers.pop(k, None)
+                        resp_headers["location"] = absolute_location
+
+                    # For non-LFS 3xx redirects (no X-Linked-Size), HF's 307
+                    # Content-Length is the redirect body length (~278B),
+                    # not the file size. Without X-Linked-Size the hf_hub
+                    # client takes that bogus value as expected_size and
+                    # fails its post-download consistency check
+                    # (observed in imgutils' get_wd14_tags on
+                    # selected_tags.csv). One extra HEAD to the rewritten
+                    # Location picks up the real Content-Length / ETag.
+                    # LFS files already carry X-Linked-Size; hf_hub prefers
+                    # it over Content-Length so we skip the follow.
+                    if (
+                        300 <= response.status_code < 400
+                        and location
+                        and not any(
+                            k.lower() == "x-linked-size" for k in resp_headers
+                        )
+                    ):
+                        try:
+                            async with httpx.AsyncClient(
+                                timeout=client.timeout
+                            ) as hc:
+                                # `identity` asks HF not to gzip the
+                                # (empty) HEAD body; otherwise httpx's
+                                # auto-decoding strips Content-Length from
+                                # the response and we lose the size we
+                                # came here to fetch.
+                                extra_headers = {"Accept-Encoding": "identity"}
+                                if client.token:
+                                    extra_headers["Authorization"] = (
+                                        f"Bearer {client.token}"
+                                    )
+                                follow_resp = await hc.head(
+                                    resp_headers["location"],
+                                    headers=extra_headers,
+                                    follow_redirects=False,
+                                )
+                            for k in [
+                                k for k in list(resp_headers)
+                                if k.lower() in ("content-length", "etag")
+                            ]:
+                                resp_headers.pop(k)
+                            for k, v in follow_resp.headers.items():
+                                if k.lower() in ("content-length", "etag"):
+                                    resp_headers[k] = v
+                        except httpx.HTTPError:
+                            # Extra HEAD failed — return what we have; no
+                            # worse than the original PR#21 behavior.
+                            pass
+
                     strip_xet_response_headers(resp_headers)
                     resp_headers.update(
                         add_source_headers(response, source["name"], source["url"])
