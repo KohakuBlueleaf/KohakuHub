@@ -14,7 +14,11 @@ from kohakuhub.auth.permissions import (
     check_repo_read_permission,
     check_repo_write_permission,
 )
-from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
+from kohakuhub.utils.lakefs import (
+    get_lakefs_client,
+    lakefs_repo_name,
+    resolve_revision,
+)
 from kohakuhub.api.repo.utils.gc import (
     check_commit_range_recoverability,
     check_lfs_recoverability,
@@ -81,20 +85,24 @@ async def create_branch(
     client = get_lakefs_client()
 
     try:
-        # Get source revision (default to main)
+        # Resolve source revision — accept branch name, tag, or commit sha
+        # (huggingface_hub.create_branch(revision=…) passes any of the three).
         source_ref = payload.revision or "main"
-
-        # Get commit ID from source ref
-        source_branch = await client.get_branch(
-            repository=lakefs_repo, branch=source_ref
-        )
-        source_commit = source_branch["commit_id"]
+        source_commit, _ = await resolve_revision(client, lakefs_repo, source_ref)
 
         # Create new branch
         await client.create_branch(
             repository=lakefs_repo,
             name=payload.branch,
             source=source_commit,
+        )
+    except ValueError as e:
+        # resolve_revision raises ValueError when the ref is neither branch
+        # nor commit — surface it as a 404 RevisionNotFound to the client.
+        return hf_error_response(
+            404,
+            HFErrorCode.REVISION_NOT_FOUND,
+            str(e),
         )
     except Exception as e:
         logger.exception("Failed to create branch", e)
@@ -265,20 +273,21 @@ async def create_tag(
     client = get_lakefs_client()
 
     try:
-        # Get source revision (default to main)
+        # Resolve source revision — accept branch, tag, or commit sha.
         source_ref = payload.revision or "main"
-
-        # Get commit ID from source ref
-        source_branch = await client.get_branch(
-            repository=lakefs_repo, branch=source_ref
-        )
-        source_commit = source_branch["commit_id"]
+        source_commit, _ = await resolve_revision(client, lakefs_repo, source_ref)
 
         # Create new tag
         await client.create_tag(
             repository=lakefs_repo,
             id=payload.tag,
             ref=source_commit,
+        )
+    except ValueError as e:
+        return hf_error_response(
+            404,
+            HFErrorCode.REVISION_NOT_FOUND,
+            str(e),
         )
     except Exception as e:
         return hf_server_error(f"Failed to create tag: {str(e)}")

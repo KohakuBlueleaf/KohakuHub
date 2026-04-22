@@ -42,3 +42,32 @@ async def test_whoami_v2_requires_auth_and_returns_orgs(app, owner_client):
     payload = authenticated_response.json()
     assert payload["name"] == "owner"
     assert any(org["name"] == "acme-labs" for org in payload["orgs"])
+
+
+async def test_whoami_v2_bearer_and_cookie_agree(app, owner_client, hf_api_token):
+    """A bearer-token caller and a cookie-session caller for the same user
+    must receive identical ``/api/whoami-v2`` payloads (at minimum:
+    ``name`` and the set of ``orgs``). Gradio deploys rely on the bearer
+    path; the web UI relies on the cookie path — both must stay in sync."""
+    cookie_response = await owner_client.get("/api/whoami-v2")
+    cookie_response.raise_for_status()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as bearer_client:
+        bearer_response = await bearer_client.get(
+            "/api/whoami-v2",
+            headers={"Authorization": f"Bearer {hf_api_token}"},
+        )
+    bearer_response.raise_for_status()
+
+    cookie_payload = cookie_response.json()
+    bearer_payload = bearer_response.json()
+    assert cookie_payload["name"] == bearer_payload["name"] == "owner"
+    assert (
+        {org["name"] for org in cookie_payload["orgs"]}
+        == {org["name"] for org in bearer_payload["orgs"]}
+    )
