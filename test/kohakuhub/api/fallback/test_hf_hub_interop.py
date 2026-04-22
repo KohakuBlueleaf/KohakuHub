@@ -1,35 +1,50 @@
-"""Integration tests: feed the HEAD response KohakuHub produces straight
-into huggingface_hub's own metadata parser and assert the resulting
+"""Integration tests: feed the response KohakuHub produces straight into
+huggingface_hub's real metadata parser and assert the resulting
 ``HfFileMetadata`` is well-formed.
 
-These tests fail if a regression breaks any of the client-side invariants
-that real downloads rely on — Content-Length → expected_size, ETag
-normalization, xet suppression, commit hash presence, etc. Unlike the
-pure-unit tests that check our response shape directly, these wire the
-response into huggingface_hub 1.x's real functions (the same ones
-``hf_hub_download`` uses) so any future hf_hub change that narrows the
-contract surfaces here immediately.
+Scenarios (mirrored from the /resolve redirect survey — 426 probes, 100
+repos on huggingface.co):
+
+    A. 307-rel-resolve-cache  (72.3% of probes)
+       Non-LFS text: HF returns 307 with a relative Location into
+       /api/resolve-cache/... Without a backfill, Content-Length is the
+       307 redirect-body length (~278B), not the file size.
+
+    B. 302-xet-cas-bridge     (22.1% of probes)
+       LFS blob: HF returns 302 with an absolute cas-bridge URL and an
+       X-Linked-Size header that gives the real file size.
+
+    C. direct-200             (3.5% of probes)
+       Some README / YAML files: HF serves the resolve directly, no
+       redirect at all. Content-Length is the real file size.
+
+Each pattern is exercised through both `method="HEAD"` and `method="GET"`
+on `try_fallback_resolve`, then fed back into huggingface_hub's real
+`HfFileMetadata`, `_normalize_etag`, `_int_or_none`, and (when available)
+`parse_xet_file_data_from_response`. Because those functions are unchanged
+across 0.20.3 / 0.30.2 / 0.36.2 / 1.0.1 / 1.6.0 / latest, the tests run on
+every cell in the CI matrix; xet-specific assertions are gated on the
+xet module being importable (added in hf_hub 1.0).
 """
 from __future__ import annotations
+
+import inspect
 
 import httpx
 import pytest
 
-# These tests lean on huggingface_hub's internal metadata parser, which
-# only gained the Xet module in huggingface_hub >= 1.0. Skip the whole
-# file cleanly on the older pins (0.20.3 / 0.30.2 / 0.36.2 in the matrix).
-pytest.importorskip(
-    "huggingface_hub.utils._xet",
-    reason="huggingface_hub.utils._xet is only present in huggingface_hub >= 1.0",
-)
+from huggingface_hub import constants as hf_constants
+from huggingface_hub.file_download import HfFileMetadata, _int_or_none, _normalize_etag
 
-from huggingface_hub import constants as hf_constants  # noqa: E402
-from huggingface_hub.file_download import (  # noqa: E402
-    HfFileMetadata,
-    _int_or_none,
-    _normalize_etag,
-)
-from huggingface_hub.utils._xet import parse_xet_file_data_from_response  # noqa: E402
+try:
+    from huggingface_hub.utils._xet import parse_xet_file_data_from_response
+
+    HAS_XET = True
+except ImportError:  # pre-1.0 hf_hub matrix cells
+    parse_xet_file_data_from_response = None  # type: ignore[assignment]
+    HAS_XET = False
+
+_HF_METADATA_FIELDS = set(inspect.signature(HfFileMetadata).parameters.keys())
 
 import kohakuhub.api.fallback.operations as fallback_ops  # noqa: E402
 
@@ -42,7 +57,8 @@ from test.kohakuhub.api.fallback.test_operations import (  # noqa: E402
 
 
 HF_ENDPOINT = "https://hf.local"
-REPO = "/models/owner/demo/resolve/main"
+KHUB_BASE = "http://khub.local"
+REPO_PREFIX = "/models/owner/demo/resolve/main"
 
 
 @pytest.fixture(autouse=True)
@@ -52,47 +68,72 @@ def _reset_fallback_env(monkeypatch):
     monkeypatch.setattr(fallback_ops, "FallbackClient", FakeFallbackClient)
 
 
-def _to_httpx_response(
-    fastapi_response,
-    *,
-    request_url: str,
-) -> httpx.Response:
-    """Re-wrap a FastAPI ``Response`` as an httpx ``Response`` so we can
-    hand it off to hf_hub's parsing routines unmodified."""
-    raw_headers = fastapi_response.raw_headers  # list[tuple[bytes, bytes]]
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_httpx(response, *, request_url: str) -> httpx.Response:
+    """Rehydrate a FastAPI ``Response`` as an httpx ``Response`` so it can
+    flow straight into hf_hub's parsers without any further adaptation."""
+    raw_headers = response.raw_headers  # list[tuple[bytes, bytes]]
     headers = httpx.Headers(
         [(k.decode("latin-1"), v.decode("latin-1")) for k, v in raw_headers]
     )
     return httpx.Response(
-        status_code=fastapi_response.status_code,
+        status_code=response.status_code,
         headers=headers,
-        content=fastapi_response.body or b"",
+        content=response.body or b"",
         request=httpx.Request("HEAD", request_url),
     )
 
 
-def _hf_metadata(httpx_response: httpx.Response, endpoint: str) -> HfFileMetadata:
-    """Call the same metadata-extraction logic hf_hub uses internally in
-    ``get_hf_file_metadata`` (see ``huggingface_hub/file_download.py:1597``)."""
-    return HfFileMetadata(
-        commit_hash=httpx_response.headers.get(
-            hf_constants.HUGGINGFACE_HEADER_X_REPO_COMMIT
-        ),
+def _hf_metadata(hx: httpx.Response) -> HfFileMetadata:
+    """Construct HfFileMetadata using hf_hub's own header conventions.
+
+    Mirrors the real call in `get_hf_file_metadata` at
+    huggingface_hub/file_download.py. Works on every matrix pin because
+    pre-1.0 `HfFileMetadata` lacks the `xet_file_data` field — we only
+    pass it when present in the dataclass signature.
+    """
+    kwargs = dict(
+        commit_hash=hx.headers.get(hf_constants.HUGGINGFACE_HEADER_X_REPO_COMMIT),
         etag=_normalize_etag(
-            httpx_response.headers.get(hf_constants.HUGGINGFACE_HEADER_X_LINKED_ETAG)
-            or httpx_response.headers.get("ETag")
+            hx.headers.get(hf_constants.HUGGINGFACE_HEADER_X_LINKED_ETAG)
+            or hx.headers.get("ETag")
         ),
-        location=httpx_response.headers.get("Location")
-        or str(httpx_response.request.url),
+        location=hx.headers.get("Location") or str(hx.request.url),
         size=_int_or_none(
-            httpx_response.headers.get(hf_constants.HUGGINGFACE_HEADER_X_LINKED_SIZE)
-            or httpx_response.headers.get("Content-Length")
+            hx.headers.get(hf_constants.HUGGINGFACE_HEADER_X_LINKED_SIZE)
+            or hx.headers.get("Content-Length")
         ),
-        xet_file_data=parse_xet_file_data_from_response(httpx_response),
     )
+    if HAS_XET and "xet_file_data" in _HF_METADATA_FIELDS:
+        kwargs["xet_file_data"] = parse_xet_file_data_from_response(hx)
+    return HfFileMetadata(**kwargs)
 
 
-def _configure(monkeypatch):
+def _assert_client_stays_on_classic_lfs(hx: httpx.Response) -> None:
+    """hf_hub switches to the Xet protocol when any of:
+      * `X-Xet-Hash` present
+      * Link header carries rel="xet-auth"
+      * `parse_xet_file_data_from_response` returns non-None
+    This helper asserts none of those would fire — the client stays on
+    the classic LFS / direct-HTTP path (which KohakuHub actually speaks)."""
+    lower = {k.lower() for k in hx.headers.keys()}
+    assert not any(k.startswith("x-xet-") for k in lower), hx.headers
+    link = hx.headers.get("link") or hx.headers.get("Link") or ""
+    assert "xet-auth" not in link.lower(), link
+    if HAS_XET:
+        assert parse_xet_file_data_from_response(hx) is None
+
+
+# ---------------------------------------------------------------------------
+# Pattern A. 307 → relative /api/resolve-cache/... (non-LFS text)
+# ---------------------------------------------------------------------------
+
+
+def _setup_resolve_cache_source(monkeypatch):
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
     monkeypatch.setattr(
         fallback_ops,
@@ -104,23 +145,25 @@ def _configure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_metadata_non_lfs_307_has_real_content_length(monkeypatch):
-    """hf_hub must see the **real** 308468-byte size after khub's extra
-    HEAD — not the 278-byte redirect body length. This is the consistency
-    check bug that breaks get_wd14_tags."""
-    _configure(monkeypatch)
+async def test_pattern_A_resolve_cache_HEAD(monkeypatch):
+    """307 → /api/resolve-cache: HEAD returns 307 + absolute Location, the
+    extra HEAD backfills the real Content-Length so hf_hub's post-download
+    consistency check passes."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/selected_tags.csv"
+
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/selected_tags.csv",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
             307,
             headers={
-                "location": "/api/resolve-cache/models/owner/demo/sha/selected_tags.csv",
-                "content-length": "278",
+                "location": "/api/resolve-cache/models/owner/demo/abc123/selected_tags.csv",
+                "content-length": "278",      # redirect body — wrong for the file
                 "etag": 'W/"placeholder"',
                 "x-repo-commit": "abc123",
                 "x-linked-etag": '"deadbeef"',
             },
-            url=f"{HF_ENDPOINT}{REPO}/selected_tags.csv",
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/selected_tags.csv",
         ),
     )
     stub = AbsoluteHeadStub()
@@ -130,215 +173,272 @@ async def test_hf_hub_metadata_non_lfs_307_has_real_content_length(monkeypatch):
             headers={
                 "content-length": "308468",
                 "etag": '"deadbeef"',
+                "content-type": "text/plain; charset=utf-8",
             },
         ),
     )
     monkeypatch.setattr(httpx.AsyncClient, "head", stub.__call__)
 
-    khub_response = await fallback_ops.try_fallback_resolve(
+    resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "selected_tags.csv", method="HEAD",
     )
 
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/selected_tags.csv"
-    )
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
+    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/selected_tags.csv")
+    meta = _hf_metadata(hx)
 
-    assert meta.size == 308468, (
-        "hf_hub would otherwise use 278 (redirect-body length) as expected size "
-        "and fail the post-download consistency check"
-    )
-    assert meta.etag == "deadbeef"
-    assert meta.commit_hash == "abc123"
-    assert meta.xet_file_data is None
-    # Accept-Encoding: identity was passed to the upstream HEAD
+    # hf_hub sees the REAL size, not the 278-byte redirect body
+    assert meta.size == 308468
+    assert meta.etag == "deadbeef"            # from the final 200 hop
+    assert meta.commit_hash == "abc123"        # preserved from the 307
+    assert meta.location.startswith("https://hf.local/api/resolve-cache/")
+    _assert_client_stays_on_classic_lfs(hx)
+    # Exactly one extra HEAD was fired, with Accept-Encoding: identity
+    assert len(stub.calls) == 1
     assert stub.calls[0][1]["headers"]["Accept-Encoding"] == "identity"
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_metadata_lfs_307_uses_x_linked_size_directly(monkeypatch):
-    """LFS 3xx: hf_hub prefers X-Linked-Size, so no extra HEAD is needed
-    and meta.size is the real file size even though Content-Length is the
-    redirect-body length."""
-    _configure(monkeypatch)
+async def test_pattern_A_resolve_cache_GET(monkeypatch):
+    """307 → /api/resolve-cache: GET streams the file through khub (httpx
+    follows the 307 server-side) and hf_hub sees a 200 with the real body."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/selected_tags.csv"
+    # khub's HEAD probe happens first (inside try_fallback_resolve)
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/weights.safetensors",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
             307,
             headers={
-                "location": "https://cas-bridge.xethub.hf.co/shard/deadbeef",
-                "content-length": "1369",            # 307 body length
-                "x-linked-size": "67840504",         # real file size
-                "x-linked-etag": '"sha256-deadbeef"',
+                "location": "/api/resolve-cache/models/owner/demo/abc123/selected_tags.csv",
+                "content-length": "278",
+                "x-repo-commit": "abc123",
+                "x-linked-etag": '"deadbeef"',
+            },
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/selected_tags.csv",
+        ),
+    )
+    # Then the real GET — fake httpx as having followed the 307 already
+    fake_body = b"tag_id,name,category,count\n" + b"a,b,0,1\n" * 100_000
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "GET", path,
+        _content_response(
+            200,
+            content=fake_body,
+            headers={
+                "content-type": "text/plain; charset=utf-8",
+                "etag": '"deadbeef"',
                 "x-repo-commit": "abc123",
             },
-            url=f"{HF_ENDPOINT}{REPO}/weights.safetensors",
+            url=f"{HF_ENDPOINT}/api/resolve-cache/models/owner/demo/abc123/selected_tags.csv",
         ),
     )
 
-    khub_response = await fallback_ops.try_fallback_resolve(
-        "model", "owner", "demo", "main", "weights.safetensors", method="HEAD",
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "selected_tags.csv", method="GET",
     )
+    assert resp.status_code == 200
+    assert resp.body == fake_body
 
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/weights.safetensors"
-    )
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
 
-    assert meta.size == 67840504          # from X-Linked-Size
-    assert meta.etag == "sha256-deadbeef"  # from X-Linked-Etag, W/ stripped if any
-    assert meta.commit_hash == "abc123"
-    assert meta.xet_file_data is None       # no X-Xet-Hash
-    assert meta.location == "https://cas-bridge.xethub.hf.co/shard/deadbeef"
+# ---------------------------------------------------------------------------
+# Pattern B. 302 → absolute cas-bridge.xethub.hf.co (LFS-via-xet)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_xet_suppression_keeps_client_on_classic_lfs(monkeypatch):
-    """Any upstream X-Xet-* must be stripped, otherwise
-    parse_xet_file_data_from_response returns a XetFileData and hf_hub
-    jumps to the xet protocol (which we don't implement)."""
-    _configure(monkeypatch)
+async def test_pattern_B_xet_cas_bridge_HEAD(monkeypatch):
+    """302 → cas-bridge with X-Linked-Size. khub must: preserve the absolute
+    Location, forward X-Linked-Size as the real file size, and strip all
+    X-Xet-* headers so hf_hub stays on the classic LFS code path (the
+    fallback layer does not speak the Xet protocol)."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/weights.safetensors"
+
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/weights.safetensors",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
-            307,
+            302,
             headers={
-                "location": "https://cas-bridge.xethub.hf.co/shard/deadbeef",
+                "location": "https://cas-bridge.xethub.hf.co/shard/deadbeef?sig=xyz",
+                "content-length": "1369",
                 "x-linked-size": "67840504",
-                "x-linked-etag": '"deadbeef"',
+                "x-linked-etag": '"sha256-deadbeef"',
                 "x-repo-commit": "abc123",
-                "x-xet-hash": "shard-hash",
+                # Xet trap flags — must be dropped
+                "x-xet-hash": "shardhash",
                 "x-xet-refresh-route": (
                     "/api/models/owner/demo/xet-read-token/abc123"
                 ),
-                "link": '<https://cas-server/auth>; rel="xet-auth"',
+                "link": '<https://cas-server/auth>; rel="xet-auth", <https://next>; rel="next"',
             },
-            url=f"{HF_ENDPOINT}{REPO}/weights.safetensors",
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/weights.safetensors",
         ),
     )
 
-    khub_response = await fallback_ops.try_fallback_resolve(
+    resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "weights.safetensors", method="HEAD",
     )
+    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/weights.safetensors")
+    meta = _hf_metadata(hx)
 
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/weights.safetensors"
+    assert meta.size == 67840504                              # X-Linked-Size
+    assert meta.etag == "sha256-deadbeef"                      # X-Linked-Etag
+    assert meta.commit_hash == "abc123"
+    assert meta.location == (
+        "https://cas-bridge.xethub.hf.co/shard/deadbeef?sig=xyz"
     )
-    assert parse_xet_file_data_from_response(hx) is None
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
-    assert meta.xet_file_data is None
+    _assert_client_stays_on_classic_lfs(hx)
+    assert 'rel="next"' in hx.headers.get("link", "")
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_weak_etag_is_normalized(monkeypatch):
-    """hf_hub strips the W/ weak-etag marker; make sure whatever we
-    forward makes it through that helper intact. Covers both cases:
-    the initial 307 may carry a weak etag, the extra HEAD's 200 may
-    carry a strong one — whichever wins still needs to round-trip."""
-    _configure(monkeypatch)
+async def test_pattern_B_xet_cas_bridge_GET(monkeypatch):
+    """GET: for LFS blobs we don't proxy the body through khub — the client
+    takes metadata.location (cas-bridge URL) and goes direct. On the khub
+    side the only thing we verify is that the HEAD probe bookkeeping above
+    is consistent, and that a plain GET request still passes through the
+    xet-stripping logic."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/weights.safetensors"
+
+    # HEAD (sets cache)
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/selected_tags.csv",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
-            307,
-            headers={
-                "location": "/api/resolve-cache/models/owner/demo/sha/selected_tags.csv",
-                "content-length": "278",
-                "etag": 'W/"placeholder-weak"',
-                "x-repo-commit": "abc123",
-            },
-            url=f"{HF_ENDPOINT}{REPO}/selected_tags.csv",
+            200,
+            headers={"x-linked-size": "67840504", "x-repo-commit": "abc123"},
         ),
     )
-    stub = AbsoluteHeadStub()
-    stub.queue(
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "GET", path,
+        _content_response(
+            200,
+            content=b"safetensor-bytes-here",
+            headers={
+                "content-type": "application/octet-stream",
+                "x-repo-commit": "abc123",
+                "x-xet-hash": "should-be-stripped",
+            },
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/weights.safetensors",
+        ),
+    )
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="GET",
+    )
+    assert resp.status_code == 200
+    assert resp.body == b"safetensor-bytes-here"
+    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/weights.safetensors")
+    _assert_client_stays_on_classic_lfs(hx)
+
+
+# ---------------------------------------------------------------------------
+# Pattern C. direct 200 (no redirect)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pattern_C_direct_200_HEAD(monkeypatch):
+    """Some HF repos serve small text (e.g. README.md) directly with 200
+    and no redirect. There is no Location to rewrite and no X-Linked-Size
+    to back-fill — the first-hop Content-Length IS the real file size."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/README.md"
+
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
             200,
             headers={
-                "content-length": "308468",
-                "etag": 'W/"real-weak-etag"',   # final hop: weak
+                "content-length": "8421",
+                "etag": '"direct-etag"',
+                "x-repo-commit": "abc123",
+                "content-type": "text/markdown; charset=utf-8",
             },
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/README.md",
         ),
     )
-    monkeypatch.setattr(httpx.AsyncClient, "head", stub.__call__)
 
-    khub_response = await fallback_ops.try_fallback_resolve(
-        "model", "owner", "demo", "main", "selected_tags.csv", method="HEAD",
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "README.md", method="HEAD",
     )
+    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/README.md")
+    meta = _hf_metadata(hx)
 
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/selected_tags.csv"
-    )
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
-    # W/ marker stripped, size + commit preserved
-    assert meta.etag == "real-weak-etag"
-    assert meta.size == 308468
+    assert meta.size == 8421
+    assert meta.etag == "direct-etag"
     assert meta.commit_hash == "abc123"
+    # No Location means hf_hub uses request.url (khub) as metadata.location
+    assert "huggingface.co" not in meta.location
+    _assert_client_stays_on_classic_lfs(hx)
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_metadata_single_hop_200_no_redirect(monkeypatch):
-    """Some HF repos answer the initial /resolve HEAD with a straight 200
-    (non-LFS, no redirect). Make sure we don't break that baseline path."""
-    _configure(monkeypatch)
+async def test_pattern_C_direct_200_GET(monkeypatch):
+    """Direct-200 GET: body proxied through khub verbatim."""
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/README.md"
+    body = b"# KohakuHub\n\nHello world.\n" + b"line\n" * 500
+
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/config.json",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
             200,
-            headers={
-                "content-length": "512",
-                "etag": '"feedface"',
-                "x-repo-commit": "abc123",
-            },
-            url=f"{HF_ENDPOINT}{REPO}/config.json",
+            headers={"content-length": str(len(body)), "x-repo-commit": "abc123"},
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/README.md",
         ),
     )
-
-    khub_response = await fallback_ops.try_fallback_resolve(
-        "model", "owner", "demo", "main", "config.json", method="HEAD",
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "GET", path,
+        _content_response(
+            200,
+            content=body,
+            headers={
+                "content-type": "text/markdown; charset=utf-8",
+                "etag": '"direct-etag"',
+                "x-repo-commit": "abc123",
+            },
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/README.md",
+        ),
     )
-
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/config.json"
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "README.md", method="GET",
     )
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
-    assert meta.size == 512
-    assert meta.etag == "feedface"
-    assert meta.commit_hash == "abc123"
-    assert meta.xet_file_data is None
+    assert resp.status_code == 200
+    assert resp.body == body
+
+
+# ---------------------------------------------------------------------------
+# Extra: graceful degradation when the backfill HEAD fails
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_hf_hub_metadata_when_follow_fails_degrades_but_stays_parsable(monkeypatch):
-    """If the extra HEAD fails, we still produce a response hf_hub can
-    parse — metadata.size ends up as the 307 body length (stale), but
-    commit_hash and etag are intact so downloads can still be attempted."""
-    _configure(monkeypatch)
+async def test_pattern_A_resolve_cache_HEAD_fallback_on_error(monkeypatch):
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/selected_tags.csv"
     FakeFallbackClient.queue(
-        HF_ENDPOINT, "HEAD", f"{REPO}/selected_tags.csv",
+        HF_ENDPOINT, "HEAD", path,
         _content_response(
             307,
             headers={
-                "location": "/api/resolve-cache/models/owner/demo/sha/selected_tags.csv",
+                "location": "/api/resolve-cache/abc",
                 "content-length": "278",
-                "etag": '"placeholder"',
                 "x-repo-commit": "abc123",
                 "x-linked-etag": '"deadbeef"',
             },
-            url=f"{HF_ENDPOINT}{REPO}/selected_tags.csv",
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/selected_tags.csv",
         ),
     )
     stub = AbsoluteHeadStub()
-    stub.queue(httpx.ConnectError("upstream gone"))
+    stub.queue(httpx.ConnectError("upstream 502"))
     monkeypatch.setattr(httpx.AsyncClient, "head", stub.__call__)
 
-    khub_response = await fallback_ops.try_fallback_resolve(
+    resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "selected_tags.csv", method="HEAD",
     )
-
-    hx = _to_httpx_response(
-        khub_response, request_url=f"http://khub.local{REPO}/selected_tags.csv"
-    )
-    meta = _hf_metadata(hx, endpoint="http://khub.local")
+    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/selected_tags.csv")
+    meta = _hf_metadata(hx)
+    # Degrades to the 307 headers (size stale), but still parsable.
     assert meta.commit_hash == "abc123"
-    assert meta.etag == "deadbeef"     # X-Linked-Etag wins over "placeholder"
-    assert meta.size == 278             # stale but parsable
+    assert meta.etag == "deadbeef"
+    assert meta.size == 278
