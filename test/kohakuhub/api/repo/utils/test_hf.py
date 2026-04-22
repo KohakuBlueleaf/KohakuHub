@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
 
 import kohakuhub.api.repo.utils.hf as hf_utils
 
@@ -73,3 +76,169 @@ def test_format_hf_datetime_and_lakefs_error_classifiers(monkeypatch):
     assert hf_utils.is_lakefs_not_found_error(RuntimeError("permission denied")) is False
     assert hf_utils.is_lakefs_revision_error(RuntimeError("Unknown branch ref")) is True
     assert hf_utils.is_lakefs_revision_error(RuntimeError("totally different")) is False
+
+
+@pytest.mark.asyncio
+async def test_collect_hf_siblings_handles_pagination_and_lfs_metadata(monkeypatch):
+    repo_row = SimpleNamespace()
+    calls = []
+
+    class _FakeClient:
+        async def list_objects(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return {
+                    "results": [
+                        {
+                            "path_type": "object",
+                            "path": "README.md",
+                            "size_bytes": 4,
+                            "checksum": "sha256:readme",
+                        },
+                        {
+                            "path_type": "object",
+                            "path": "weights.bin",
+                            "size_bytes": 8,
+                            "checksum": "sha256:weights",
+                        },
+                    ],
+                    "pagination": {"has_more": True, "next_offset": "cursor-2"},
+                }
+
+            return {
+                "results": [
+                    {
+                        "path_type": "object",
+                        "path": "broken.bin",
+                        "size_bytes": 9,
+                        "checksum": "sha256:broken",
+                    },
+                    {
+                        "path_type": "common_prefix",
+                        "path": "subdir/",
+                    },
+                ],
+                "pagination": {"has_more": False},
+            }
+
+    monkeypatch.setattr("kohakuhub.utils.lakefs.get_lakefs_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        "kohakuhub.utils.lakefs.lakefs_repo_name",
+        lambda repo_type, repo_id: f"{repo_type}:{repo_id}",
+    )
+    monkeypatch.setattr(
+        "kohakuhub.db_operations.should_use_lfs",
+        lambda repo, path, size: path.endswith(".bin"),
+    )
+    monkeypatch.setattr(
+        "kohakuhub.db_operations.get_file",
+        lambda repo, path: (_ for _ in ()).throw(RuntimeError("db fail"))
+        if path == "broken.bin"
+        else SimpleNamespace(sha256="db-sha"),
+    )
+
+    siblings = await hf_utils.collect_hf_siblings(
+        repo_row,
+        "model",
+        "alice/demo",
+        "main",
+    )
+
+    assert calls == [
+        {
+            "repository": "model:alice/demo",
+            "ref": "main",
+            "prefix": "",
+            "delimiter": "",
+            "amount": 1000,
+            "after": "",
+        },
+        {
+            "repository": "model:alice/demo",
+            "ref": "main",
+            "prefix": "",
+            "delimiter": "",
+            "amount": 1000,
+            "after": "cursor-2",
+        },
+    ]
+    assert siblings == [
+        {"rfilename": "README.md", "size": 4},
+        {
+            "rfilename": "weights.bin",
+            "size": 8,
+            "lfs": {"sha256": "db-sha", "size": 8, "pointerSize": 134},
+        },
+        {
+            "rfilename": "broken.bin",
+            "size": 9,
+            "lfs": {"sha256": "sha256:broken", "size": 9, "pointerSize": 134},
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_collect_hf_siblings_accepts_list_payload_without_pagination(monkeypatch):
+    class _FakeClient:
+        async def list_objects(self, **kwargs):
+            return [
+                {
+                    "path_type": "object",
+                    "path": "config.json",
+                    "size_bytes": 12,
+                    "checksum": "sha256:config",
+                }
+            ]
+
+    monkeypatch.setattr("kohakuhub.utils.lakefs.get_lakefs_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        "kohakuhub.utils.lakefs.lakefs_repo_name",
+        lambda repo_type, repo_id: f"{repo_type}:{repo_id}",
+    )
+    monkeypatch.setattr("kohakuhub.db_operations.should_use_lfs", lambda repo, path, size: False)
+
+    siblings = await hf_utils.collect_hf_siblings(
+        SimpleNamespace(),
+        "dataset",
+        "alice/data",
+        "dev",
+    )
+
+    assert siblings == [{"rfilename": "config.json", "size": 12}]
+
+
+@pytest.mark.asyncio
+async def test_collect_hf_siblings_stops_when_pagination_cursor_is_missing(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        async def list_objects(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "results": [
+                    {
+                        "path_type": "object",
+                        "path": "weights.bin",
+                        "size_bytes": 7,
+                        "checksum": "sha256:weights",
+                    }
+                ],
+                "pagination": {"has_more": True, "next_offset": None},
+            }
+
+    monkeypatch.setattr("kohakuhub.utils.lakefs.get_lakefs_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        "kohakuhub.utils.lakefs.lakefs_repo_name",
+        lambda repo_type, repo_id: f"{repo_type}:{repo_id}",
+    )
+    monkeypatch.setattr("kohakuhub.db_operations.should_use_lfs", lambda repo, path, size: False)
+
+    siblings = await hf_utils.collect_hf_siblings(
+        SimpleNamespace(),
+        "model",
+        "alice/demo",
+        "main",
+    )
+
+    assert len(calls) == 1
+    assert siblings == [{"rfilename": "weights.bin", "size": 7}]

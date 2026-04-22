@@ -2,26 +2,41 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { http } from "@/testing/msw";
 import { ElementPlusStubs, InvalidElFormStub } from "../helpers/vue";
+import {
+  cloneFixture,
+  jsonResponse,
+  readJsonBody,
+  uiApiFixtures,
+} from "../helpers/api-fixtures";
+import { server } from "../setup/msw-server";
 import { createMemoryHistory, createRouter } from "@/testing/router";
-
-const mocks = vi.hoisted(() => ({
-  repoApi: {
-    create: vi.fn(),
-  },
-}));
-
-vi.mock("@/utils/api", () => ({
-  repoAPI: mocks.repoApi,
-}));
 
 import { useAuthStore } from "@/stores/auth";
 import NewRepoPage from "@/pages/new.vue";
 
 describe("new repository page", () => {
+  const createRequests = [];
+
+  function installHandlers({
+    createStatus = 200,
+    createResponse = cloneFixture(uiApiFixtures.repo.create),
+  } = {}) {
+    createRequests.length = 0;
+
+    server.use(
+      http.post("/api/repos/create", async ({ request }) => {
+        createRequests.push(await readJsonBody(request));
+        return jsonResponse(createResponse, { status: createStatus });
+      }),
+    );
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     setActivePinia(createPinia());
+    installHandlers();
   });
 
   async function createTestRouter(initialPath) {
@@ -50,15 +65,12 @@ describe("new repository page", () => {
     });
   }
 
-  it("creates repositories for organizations and navigates to the new repo", async () => {
+  it("creates repositories for organizations through the API client and navigates to the new repo", async () => {
     const router = await createTestRouter("/new?type=dataset");
     const pushSpy = vi.spyOn(router, "push");
     const authStore = useAuthStore();
     authStore.user = { username: "mai_lin" };
     authStore.userOrganizations = [{ name: "aurora-labs" }];
-    mocks.repoApi.create.mockResolvedValue({
-      data: { repo_id: "aurora-labs/vision-set" },
-    });
 
     const wrapper = mountPage(router);
     await wrapper.find('select[data-el-select="true"]').setValue("aurora-labs");
@@ -71,26 +83,30 @@ describe("new repository page", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "dataset",
-      name: "vision-set",
-      organization: "aurora-labs",
-      private: false,
-    });
-    expect(pushSpy).toHaveBeenCalledWith("/datasets/aurora-labs/vision-set");
+    expect(createRequests).toEqual([
+      {
+        type: "dataset",
+        name: "vision-set",
+        organization: "aurora-labs",
+        private: false,
+      },
+    ]);
+    expect(pushSpy).toHaveBeenCalledWith("/datasets/acme/fresh-model");
   });
 
   it("keeps the personal namespace null and stays on the page after failures", async () => {
+    installHandlers({
+      createStatus: 400,
+      createResponse: {
+        detail: "Name already exists",
+      },
+    });
+
     const router = await createTestRouter("/new?type=space");
     const pushSpy = vi.spyOn(router, "push");
     const authStore = useAuthStore();
     authStore.user = { username: "mai_lin" };
     authStore.userOrganizations = [];
-    mocks.repoApi.create.mockRejectedValue({
-      response: {
-        data: { detail: "Name already exists" },
-      },
-    });
 
     const wrapper = mountPage(router);
     await wrapper
@@ -102,24 +118,27 @@ describe("new repository page", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "space",
-      name: "my-demo",
-      organization: null,
-      private: false,
-    });
+    expect(createRequests).toEqual([
+      {
+        type: "space",
+        name: "my-demo",
+        organization: null,
+        private: false,
+      },
+    ]);
     expect(pushSpy).not.toHaveBeenCalled();
   });
 
   it("falls back to the current username when the backend omits repo_id", async () => {
+    installHandlers({
+      createResponse: cloneFixture(uiApiFixtures.repo.createWithoutId),
+    });
+
     const router = await createTestRouter("/new");
     const pushSpy = vi.spyOn(router, "push");
     const authStore = useAuthStore();
     authStore.user = { username: "mai_lin" };
     authStore.userOrganizations = [];
-    mocks.repoApi.create.mockResolvedValue({
-      data: {},
-    });
 
     const wrapper = mountPage(router);
     await wrapper
@@ -131,12 +150,14 @@ describe("new repository page", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "model",
-      name: "fresh-model",
-      organization: null,
-      private: false,
-    });
+    expect(createRequests).toEqual([
+      {
+        type: "model",
+        name: "fresh-model",
+        organization: null,
+        private: false,
+      },
+    ]);
     expect(pushSpy).toHaveBeenCalledWith("/models/mai_lin/fresh-model");
   });
 
@@ -155,11 +176,17 @@ describe("new repository page", () => {
   });
 
   it("stops invalid submissions and handles fallback create errors", async () => {
+    installHandlers({
+      createStatus: 500,
+      createResponse: {
+        detail: "boom",
+      },
+    });
+
     const router = await createTestRouter("/new");
     const authStore = useAuthStore();
     authStore.user = { username: "mai_lin" };
     authStore.userOrganizations = [];
-    mocks.repoApi.create.mockRejectedValue(new Error("boom"));
 
     const invalidWrapper = mountPage(router, {
       ElForm: InvalidElFormStub,
@@ -170,7 +197,7 @@ describe("new repository page", () => {
       .find((button) => button.text().includes("Create Model"))
       .trigger("click");
     await flushPromises();
-    expect(mocks.repoApi.create).not.toHaveBeenCalled();
+    expect(createRequests).toEqual([]);
 
     const wrapper = mountPage(router);
     await wrapper
@@ -182,11 +209,13 @@ describe("new repository page", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "model",
-      name: "fresh-model",
-      organization: null,
-      private: false,
-    });
+    expect(createRequests).toEqual([
+      {
+        type: "model",
+        name: "fresh-model",
+        organization: null,
+        private: false,
+      },
+    ]);
   });
 });

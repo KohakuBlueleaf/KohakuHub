@@ -93,8 +93,12 @@ class _FakeFileModel:
 
 
 class _FakeRequest:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, query_params: dict | None = None):
         self._body = body
+        # Real ``starlette.Request.query_params`` is a QueryParams object,
+        # but everything the commit handler does with it goes through
+        # ``.get(...)`` — a plain dict suffices for unit tests.
+        self.query_params = query_params or {}
 
     async def body(self):
         return self._body

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 import pytest
 
 import kohakuhub.api.commit.routers.history as commit_history
@@ -128,7 +130,8 @@ async def test_list_commits_covers_not_found_empty_parse_failure_and_server_erro
     monkeypatch.setattr(commit_history, "get_repository", lambda repo_type, namespace, name: repo_row)
     client.log_result = None
     empty = await commit_history.list_commits("model", "alice", "demo", branch="main")
-    assert empty == {"commits": [], "hasMore": False, "nextCursor": None}
+    assert empty.status_code == 200
+    assert json.loads(empty.body) == []
 
     client.log_result = {
         "results": [
@@ -147,26 +150,136 @@ async def test_list_commits_covers_not_found_empty_parse_failure_and_server_erro
         "pagination": {"has_more": True, "next_offset": "cursor-2"},
     }
     parsed = await commit_history.list_commits("model", "alice", "demo", after="cursor-1")
-    assert parsed == {
-        "commits": [
-            {
-                "id": "good-1",
-                "oid": "good-1",
-                "title": "good commit",
-                "message": "good commit",
-                "date": 123,
-                "author": "alice",
-                "email": "alice@example.com",
-                "parents": ["parent"],
-            }
-        ],
-        "hasMore": True,
-        "nextCursor": "cursor-2",
-    }
+    assert parsed.status_code == 200
+    assert json.loads(parsed.body) == [
+        {
+            "id": "good-1",
+            "title": "good commit",
+            "message": "good commit",
+            "date": "1970-01-01T00:02:03.000000Z",
+            "authors": [{"user": "alice"}],
+        }
+    ]
 
     client.log_error = RuntimeError("lakefs boom")
     failure = await commit_history.list_commits("model", "alice", "demo")
     assert failure.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_list_commits_sets_link_header_and_formatted_expand(monkeypatch):
+    client = _FakeClient()
+    repo_row = _repo_with_backrefs(
+        commits=[
+            SimpleNamespace(
+                commit_id="good-1",
+                author=SimpleNamespace(username="alice"),
+            ),
+        ]
+    )
+
+    class _RequestURL:
+        def __init__(self):
+            self.params = {}
+
+        def include_query_params(self, **kwargs):
+            merged = dict(self.params)
+            merged.update(kwargs)
+            query = "&".join(f"{key}={value}" for key, value in merged.items())
+            return f"https://hub.local/api/models/alice/demo/commits/main?{query}"
+
+    request = SimpleNamespace(
+        url=_RequestURL(),
+        query_params=SimpleNamespace(getlist=lambda key: ["formatted"] if key == "expand[]" else []),
+    )
+
+    monkeypatch.setattr(commit_history, "check_repo_read_permission", lambda repo, user: None)
+    monkeypatch.setattr(commit_history, "lakefs_repo_name", lambda repo_type, repo_id: f"{repo_type}:{repo_id}")
+    monkeypatch.setattr(commit_history, "get_lakefs_rest_client", lambda: client)
+    monkeypatch.setattr(commit_history, "get_repository", lambda repo_type, namespace, name: repo_row)
+
+    client.log_result = {
+        "results": [
+            {
+                "id": "good-1",
+                "title": "Add README title",
+                "message": "Add README title\n\nbody",
+                "creation_date": "2026-04-21T10:00:00.000000Z",
+                "metadata": {"email": "alice@example.com"},
+                "parents": ["parent"],
+            }
+        ],
+        "pagination": {"has_more": True, "next_offset": "cursor-2"},
+    }
+
+    response = await commit_history.list_commits(
+        "model",
+        "alice",
+        "demo",
+        branch="main",
+        request=request,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["link"] == (
+        '<https://hub.local/api/models/alice/demo/commits/main?after=cursor-2>; rel="next"'
+    )
+    assert json.loads(response.body) == [
+        {
+            "id": "good-1",
+            "title": "Add README title",
+            "message": "Add README title\n\nbody",
+            "date": "2026-04-21T10:00:00.000000Z",
+            "authors": [{"user": "alice"}],
+            "formatted": {
+                "title": "Add README title",
+                "message": "Add README title\n\nbody",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_commits_skips_link_when_cursor_missing_and_propagates_read_errors(
+    monkeypatch,
+):
+    client = _FakeClient()
+    repo_row = _repo_with_backrefs(
+        commits=[
+            SimpleNamespace(
+                commit_id="good-1",
+                author=SimpleNamespace(username="alice"),
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(commit_history, "lakefs_repo_name", lambda repo_type, repo_id: f"{repo_type}:{repo_id}")
+    monkeypatch.setattr(commit_history, "get_lakefs_rest_client", lambda: client)
+    monkeypatch.setattr(commit_history, "get_repository", lambda repo_type, namespace, name: repo_row)
+
+    def _raise_forbidden(repo, user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    monkeypatch.setattr(commit_history, "check_repo_read_permission", _raise_forbidden)
+    with pytest.raises(HTTPException) as permission_error:
+        await commit_history.list_commits("model", "alice", "demo")
+    assert permission_error.value.status_code == 403
+
+    monkeypatch.setattr(commit_history, "check_repo_read_permission", lambda repo, user: None)
+    client.log_result = {
+        "results": [
+            {
+                "id": "good-1",
+                "message": "",
+                "creation_date": 123,
+            }
+        ],
+        "pagination": {"has_more": True, "next_offset": None},
+    }
+    response = await commit_history.list_commits("model", "alice", "demo")
+    assert response.status_code == 200
+    assert "link" not in response.headers
+    assert json.loads(response.body)[0]["authors"] == [{"user": "alice"}]
 
 
 @pytest.mark.asyncio

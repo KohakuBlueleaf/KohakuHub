@@ -2,9 +2,11 @@
 
 import asyncio
 import difflib
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
 
 from kohakuhub.config import cfg
 from kohakuhub.db import User
@@ -14,10 +16,40 @@ from kohakuhub.logger import get_logger
 from kohakuhub.auth.dependencies import get_optional_user
 from kohakuhub.auth.permissions import check_repo_read_permission
 from kohakuhub.utils.lakefs import lakefs_repo_name
-from kohakuhub.api.repo.utils.hf import hf_repo_not_found, hf_server_error
+from kohakuhub.api.repo.utils.hf import (
+    format_hf_datetime,
+    hf_repo_not_found,
+    hf_server_error,
+)
 
 logger = get_logger("COMMITS")
 router = APIRouter()
+
+
+def _to_hf_commit_response(commit: dict, include_formatted: bool) -> dict:
+    """Adapt the legacy commit payload to the format expected by `huggingface_hub`."""
+    message = commit.get("message") or ""
+    title = (commit.get("title") or message).splitlines()[0] if message else ""
+    created_at = commit.get("date")
+
+    if isinstance(created_at, (int, float)):
+        created_at = format_hf_datetime(
+            datetime.fromtimestamp(created_at, tz=timezone.utc)
+        )
+
+    payload = {
+        "id": commit["id"],
+        "title": title,
+        "message": message,
+        "date": created_at,
+        "authors": [{"user": commit.get("author") or "unknown"}],
+    }
+    if include_formatted:
+        payload["formatted"] = {
+            "title": title,
+            "message": message,
+        }
+    return payload
 
 
 @router.get("/{repo_type}s/{namespace}/{name}/commits/{branch}")
@@ -26,6 +58,7 @@ async def list_commits(
     namespace: str,
     name: str,
     branch: str = "main",
+    request: Request = None,
     limit: int = Query(20, ge=1, le=100),
     after: Optional[str] = None,
     user: User | None = Depends(get_optional_user),
@@ -81,11 +114,7 @@ async def list_commits(
 
         if not log_result or not log_result.get("results"):
             logger.warning(f"No commits found for {lakefs_repo}/{branch}")
-            return {
-                "commits": [],
-                "hasMore": False,
-                "nextCursor": None,
-            }
+            return JSONResponse(content=[])
 
         # Get all commit IDs to fetch user info from our database
         commit_ids = [c["id"] for c in log_result["results"]]
@@ -129,16 +158,23 @@ async def list_commits(
                 continue
 
         pagination = log_result.get("pagination", {})
-        response = {
-            "commits": commits,
-            "hasMore": pagination.get("has_more", False),
-            "nextCursor": (
-                pagination.get("next_offset") if pagination.get("has_more") else None
-            ),
-        }
-
         logger.success(f"Returned {len(commits)} commits for {repo_id}/{branch}")
-        return response
+        headers = {}
+        next_cursor = pagination.get("next_offset") if pagination.get("has_more") else None
+        if pagination.get("has_more") and next_cursor and request is not None:
+            next_url = str(request.url.include_query_params(after=next_cursor))
+            headers["Link"] = f"<{next_url}>; rel=\"next\""
+
+        include_formatted = (
+            request is not None and "formatted" in request.query_params.getlist("expand[]")
+        )
+        return JSONResponse(
+            content=[
+                _to_hf_commit_response(commit, include_formatted)
+                for commit in commits
+            ],
+            headers=headers,
+        )
 
     except Exception as e:
         logger.exception(f"Failed to list commits for {repo_id}/{branch}", e)

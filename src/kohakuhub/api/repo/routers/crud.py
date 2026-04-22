@@ -1,10 +1,12 @@
 """Repository CRUD operations (create, delete, move)."""
 
 import asyncio
+import json
 import uuid
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from kohakuhub.config import cfg
@@ -54,6 +56,39 @@ init_db()
 RepoType = Literal["model", "dataset", "space"]
 
 
+def _repo_exists_response(
+    repo_type: str,
+    full_id: str,
+    *,
+    message: Optional[str] = None,
+) -> Response:
+    """Build the 409 response emitted when a repo already exists.
+
+    `huggingface_hub.HfApi.create_repo(..., exist_ok=True)` swallows the 409 but
+    immediately calls `r.json()["url"]` to build the returned `RepoUrl`, so the
+    response body must be a JSON object containing a `url` field. The X-Error-*
+    headers are preserved so clients following HF's header-based error protocol
+    still get a structured error code.
+    """
+    body_message = message or f"Repository {full_id} already exists"
+    body = json.dumps(
+        {
+            "url": f"{cfg.app.base_url}/{repo_type}s/{full_id}",
+            "repo_id": full_id,
+            "error": body_message,
+        }
+    )
+    return Response(
+        status_code=409,
+        content=body,
+        media_type="application/json",
+        headers={
+            "X-Error-Code": HFErrorCode.REPO_EXISTS,
+            "X-Error-Message": body_message,
+        },
+    )
+
+
 class CreateRepoPayload(BaseModel):
     """Payload for repository creation."""
 
@@ -88,14 +123,16 @@ async def create_repo(
     full_id = f"{namespace}/{payload.name}"
     lakefs_repo = lakefs_repo_name(payload.type, full_id)
 
-    # Check for exact match
+    # Check for exact match.
+    # `huggingface_hub` only honors `exist_ok=True` when the server returns 409 (see
+    # HfApi.create_repo in huggingface_hub/hf_api.py). Additionally, after the 409 is
+    # caught the client unconditionally parses the response body as JSON to build the
+    # returned RepoUrl (`d = r.json(); RepoUrl(d["url"], ...)`), so the body cannot be
+    # empty — it must include a `url` field even though the error info also lives in
+    # X-Error-* headers per HF's header-based error protocol.
     existing_repo = get_repository(payload.type, namespace, payload.name)
     if existing_repo:
-        return hf_error_response(
-            400,
-            HFErrorCode.REPO_EXISTS,
-            f"Repository {full_id} already exists",
-        )
+        return _repo_exists_response(payload.type, full_id)
 
     # Check for normalized name conflicts
     normalized = normalize_name(payload.name)
@@ -104,10 +141,11 @@ async def create_repo(
     )
     for repo in all_repos:
         if normalize_name(repo.name) == normalized:
-            return hf_error_response(
-                400,
-                HFErrorCode.REPO_EXISTS,
-                f"Repository name conflicts with existing repository: {repo.name}",
+            conflict_full_id = f"{namespace}/{repo.name}"
+            return _repo_exists_response(
+                payload.type,
+                conflict_full_id,
+                message=f"Repository name conflicts with existing repository: {repo.name}",
             )
 
     # Create LakeFS repository
@@ -602,12 +640,11 @@ async def move_repo(
     check_repo_delete_permission(repo_row, user, is_admin=is_admin)
     check_namespace_permission(to_namespace, user, is_admin=is_admin)
 
-    # Check if destination already exists
+    # Check if destination already exists. See `_repo_exists_response` for why the
+    # response includes a JSON body as well as X-Error-* headers.
     existing = get_repository(repo_type, to_namespace, to_name)
     if existing:
-        return hf_error_response(
-            400, HFErrorCode.REPO_EXISTS, f"Repository {to_id} already exists"
-        )
+        return _repo_exists_response(repo_type, to_id)
 
     # Check storage quota (only for users, admin bypasses)
     repo_size = 0

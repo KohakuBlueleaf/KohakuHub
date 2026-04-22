@@ -2,9 +2,10 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { http } from "@/testing/msw";
 import { ElementPlusStubs, RouterLinkStub } from "../helpers/vue";
-import repoInfo from "../fixtures/repo-info.json";
-import userOverview from "../fixtures/user-overview.json";
+import { cloneFixture, jsonResponse, uiApiFixtures } from "../helpers/api-fixtures";
+import { server } from "../setup/msw-server";
 
 const mocks = vi.hoisted(() => ({
   router: {
@@ -14,9 +15,6 @@ const mocks = vi.hoisted(() => ({
   route: {
     params: {},
     query: {},
-  },
-  repoApi: {
-    listRepos: vi.fn(),
   },
   repoSortPreference: {
     getRepoSortPreference: vi.fn(),
@@ -32,10 +30,6 @@ vi.mock("vue-router/auto", () => ({
   useRoute: () => mocks.route,
 }));
 
-vi.mock("@/utils/api", () => ({
-  repoAPI: mocks.repoApi,
-}));
-
 vi.mock("@/utils/repoSortPreference", () => ({
   getRepoSortPreference: mocks.repoSortPreference.getRepoSortPreference,
   setRepoSortPreference: mocks.repoSortPreference.setRepoSortPreference,
@@ -48,16 +42,49 @@ vi.mock("element-plus", () => ({
 import HomePage from "@/pages/index.vue";
 
 describe("home page", () => {
+  const requests = [];
+
+  function installHandlers({
+    modelRepos = [cloneFixture(uiApiFixtures.repo.info)],
+    datasetRepos = cloneFixture(uiApiFixtures.userOverview.datasets),
+    spaceRepos = cloneFixture(uiApiFixtures.userOverview.spaces),
+  } = {}) {
+    requests.length = 0;
+
+    server.use(
+      http.get("/api/models", ({ request }) => {
+        const url = new URL(request.url);
+        requests.push({
+          type: "model",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(modelRepos);
+      }),
+      http.get("/api/datasets", ({ request }) => {
+        const url = new URL(request.url);
+        requests.push({
+          type: "dataset",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(datasetRepos);
+      }),
+      http.get("/api/spaces", ({ request }) => {
+        const url = new URL(request.url);
+        requests.push({
+          type: "space",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(spaceRepos);
+      }),
+    );
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     setActivePinia(createPinia());
     mocks.route.query = {};
     mocks.repoSortPreference.getRepoSortPreference.mockReturnValue("trending");
-    mocks.repoApi.listRepos.mockImplementation(async (type) => {
-      if (type === "model") return { data: [repoInfo] };
-      if (type === "dataset") return { data: userOverview.datasets };
-      return { data: userOverview.spaces };
-    });
+    installHandlers();
   });
 
   function mountPage() {
@@ -74,25 +101,36 @@ describe("home page", () => {
     });
   }
 
-  it("loads repo stats, routes hero and repo actions, and persists sort changes", async () => {
+  it("loads repo stats through the API client, routes hero actions, and persists sort changes", async () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(mocks.repoApi.listRepos).toHaveBeenNthCalledWith(1, "model", {
-      limit: 100,
-      sort: "trending",
-      fallback: false,
-    });
-    expect(mocks.repoApi.listRepos).toHaveBeenNthCalledWith(2, "dataset", {
-      limit: 100,
-      sort: "trending",
-      fallback: false,
-    });
-    expect(mocks.repoApi.listRepos).toHaveBeenNthCalledWith(3, "space", {
-      limit: 100,
-      sort: "trending",
-      fallback: false,
-    });
+    expect(requests).toEqual([
+      {
+        type: "model",
+        params: {
+          limit: "100",
+          sort: "trending",
+          fallback: "false",
+        },
+      },
+      {
+        type: "dataset",
+        params: {
+          limit: "100",
+          sort: "trending",
+          fallback: "false",
+        },
+      },
+      {
+        type: "space",
+        params: {
+          limit: "100",
+          sort: "trending",
+          fallback: "false",
+        },
+      },
+    ]);
 
     expect(wrapper.text()).toContain("Welcome to KohakuHub");
     expect(wrapper.text()).toContain("🔥 Trending");
@@ -164,17 +202,35 @@ describe("home page", () => {
     mocks.route.query = {
       error: "user_not_found",
     };
-    mocks.repoApi.listRepos.mockImplementation(async (type) => ({
-      data: [
+    installHandlers({
+      modelRepos: [
         {
-          ...repoInfo,
-          id: `mai_lin/${type}-demo`,
+          ...cloneFixture(uiApiFixtures.repo.info),
+          id: "mai_lin/model-demo",
           downloads: undefined,
           likes: undefined,
           lastModified: null,
         },
       ],
-    }));
+      datasetRepos: [
+        {
+          ...cloneFixture(uiApiFixtures.repo.info),
+          id: "mai_lin/dataset-demo",
+          downloads: undefined,
+          likes: undefined,
+          lastModified: null,
+        },
+      ],
+      spaceRepos: [
+        {
+          ...cloneFixture(uiApiFixtures.repo.info),
+          id: "mai_lin/space-demo",
+          downloads: undefined,
+          likes: undefined,
+          lastModified: null,
+        },
+      ],
+    });
 
     const wrapper = mountPage();
     await flushPromises();
@@ -188,7 +244,9 @@ describe("home page", () => {
     mocks.route.query = {
       error: "something_else",
     };
-    mocks.repoApi.listRepos.mockRejectedValue(new Error("boom"));
+    server.use(
+      http.get("/api/models", () => jsonResponse({ detail: "boom" }, { status: 500 })),
+    );
 
     const wrapper = mountPage();
     await flushPromises();

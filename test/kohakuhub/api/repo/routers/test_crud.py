@@ -13,9 +13,15 @@ async def test_create_repository_and_reject_normalized_duplicate(owner_client):
         "/api/repos/create",
         json={"type": "model", "name": "sandbox_repo", "private": False},
     )
-    assert duplicate_response.status_code == 400
+    # `huggingface_hub.HfApi.create_repo(..., exist_ok=True)` only accepts the
+    # 409 status code as "repo already exists"; see hf_api.py:4501. The body is
+    # JSON so the client can still build a RepoUrl from the response.
+    assert duplicate_response.status_code == 409
     assert duplicate_response.headers["x-error-code"] == "RepoExists"
     assert "conflicts" in duplicate_response.headers["x-error-message"]
+    body = duplicate_response.json()
+    assert body["url"].endswith("/models/owner/sandbox-repo")
+    assert body["repo_id"] == "owner/sandbox-repo"
 
 
 async def test_admin_can_delete_empty_org_repository(admin_client, owner_client):

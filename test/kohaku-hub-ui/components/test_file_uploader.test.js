@@ -1,20 +1,30 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { http, HttpResponse } from "@/testing/msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ElementPlusStubs } from "../helpers/vue";
+import {
+  cloneFixture,
+  jsonResponse,
+  readJsonBody,
+  readNdjsonBody,
+  uiApiFixtures,
+} from "../helpers/api-fixtures";
+import { server } from "../setup/msw-server";
 
 const mocks = vi.hoisted(() => ({
-  repoApi: {
-    uploadFiles: vi.fn(),
-  },
+  calculateSHA256: vi.fn(),
+  uploadLFSFile: vi.fn(),
   elMessage: {
     success: vi.fn(),
     error: vi.fn(),
   },
 }));
 
-vi.mock("@/utils/api", () => ({
-  repoAPI: mocks.repoApi,
+vi.mock("@/utils/lfs.js", () => ({
+  calculateSHA256: mocks.calculateSHA256,
+  uploadLFSFile: mocks.uploadLFSFile,
+  formatFileSize: (size) => `${size} B`,
 }));
 
 vi.mock("element-plus", () => ({
@@ -27,6 +37,23 @@ describe("FileUploader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+
+    vi.stubGlobal(
+      "FileReader",
+      class FakeFileReader {
+        onload = null;
+        onerror = null;
+
+        readAsDataURL(file) {
+          const type = file?.type || "application/octet-stream";
+          this.onload?.({
+            target: {
+              result: `data:${type};base64,aGVsbG8=`,
+            },
+          });
+        }
+      },
+    );
   });
 
   function mountUploader() {
@@ -52,19 +79,55 @@ describe("FileUploader", () => {
     await input.trigger("change");
   }
 
-  it("collects files, reports progress, uploads successfully, and clears the queue", async () => {
+  it("uploads files through fixture-backed API routes and clears the queue", async () => {
     vi.useFakeTimers();
+    mocks.calculateSHA256.mockImplementation(async (_file, onProgress) => {
+      onProgress?.(0.5);
+      onProgress?.(1);
+      return "fixture-sha";
+    });
 
-    mocks.repoApi.uploadFiles.mockImplementation(
-      async (_type, _namespace, _name, _branch, payload, callbacks) => {
-        expect(payload.message).toBe("Upload files via web interface");
-        expect(payload.files).toHaveLength(1);
-        callbacks.onHashProgress("notes.md", 0.25);
-        callbacks.onHashProgress("notes.md", 1);
-        callbacks.onUploadProgress("notes.md", 0.5);
-        callbacks.onUploadProgress("notes.md", 1);
-        return { data: { commitOid: "abc123" } };
-      },
+    server.use(
+      http.post("*/api/models/alice/demo/preupload/main", async ({ request }) => {
+        const body = await readJsonBody(request);
+        expect(body).toEqual({
+          files: [
+            {
+              path: "notes.md",
+              size: 5,
+              sha256: "fixture-sha",
+            },
+          ],
+        });
+
+        return jsonResponse(uiApiFixtures.repo.preuploadRegular);
+      }),
+      http.post("*/api/models/alice/demo/commit/main", async ({ request }) => {
+        expect(request.headers.get("content-type")).toContain(
+          "application/x-ndjson",
+        );
+
+        const body = await readNdjsonBody(request);
+        expect(body).toEqual([
+          {
+            key: "header",
+            value: {
+              summary: "Upload files via web interface",
+              description: "",
+            },
+          },
+          {
+            key: "file",
+            value: {
+              path: "notes.md",
+              content: "aGVsbG8=",
+              encoding: "base64",
+            },
+          },
+        ]);
+
+        return jsonResponse(uiApiFixtures.repo.commitCreated);
+      }),
     );
 
     const wrapper = mountUploader();
@@ -82,20 +145,8 @@ describe("FileUploader", () => {
     await uploadButton.trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.uploadFiles).toHaveBeenCalledWith(
-      "model",
-      "alice",
-      "demo",
-      "main",
-      expect.objectContaining({
-        description: "",
-        message: "Upload files via web interface",
-      }),
-      expect.objectContaining({
-        onHashProgress: expect.any(Function),
-        onUploadProgress: expect.any(Function),
-      }),
-    );
+    expect(mocks.calculateSHA256).toHaveBeenCalledTimes(1);
+    expect(mocks.uploadLFSFile).not.toHaveBeenCalled();
     expect(wrapper.emitted("upload-success")).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(1000);
@@ -104,14 +155,23 @@ describe("FileUploader", () => {
     expect(wrapper.text()).not.toContain("Files to Upload (1)");
   });
 
-  it("surfaces upload failures and supports clearing queued files", async () => {
-    mocks.repoApi.uploadFiles.mockRejectedValue({
-      response: {
-        data: {
-          detail: "Upload failed badly",
-        },
-      },
-    });
+  it("surfaces fixture-backed upload failures and supports clearing queued files", async () => {
+    mocks.calculateSHA256.mockResolvedValue("fixture-sha");
+
+    server.use(
+      http.post("*/api/models/alice/demo/preupload/main", async ({ request }) => {
+        const body = await readJsonBody(request);
+        const response = cloneFixture(uiApiFixtures.repo.preuploadRegular);
+        response.files[0].path = body.files[0].path;
+        return jsonResponse(response);
+      }),
+      http.post("*/api/models/alice/demo/commit/main", () =>
+        HttpResponse.json(
+          { detail: "Upload failed badly" },
+          { status: 500 },
+        ),
+      ),
+    );
 
     const wrapper = mountUploader();
     await selectFiles(
@@ -136,6 +196,7 @@ describe("FileUploader", () => {
     await uploadButton.trigger("click");
     await flushPromises();
 
+    expect(mocks.calculateSHA256).toHaveBeenCalledTimes(1);
     expect(wrapper.emitted("upload-error")).toHaveLength(1);
     expect(wrapper.text()).toContain("Upload Files");
   });

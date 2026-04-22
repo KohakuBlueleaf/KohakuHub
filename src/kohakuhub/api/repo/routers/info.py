@@ -3,18 +3,16 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from peewee import JOIN, fn
 
 from kohakuhub.config import cfg
 from kohakuhub.constants import DATETIME_FORMAT_ISO
 from kohakuhub.db import Commit, Repository, User, UserOrganization
 from kohakuhub.db_operations import (
-    get_file,
     get_organization,
     get_repository,
     get_user_by_username,
-    should_use_lfs,
 )
 from kohakuhub.logger import get_logger
 from kohakuhub.auth.dependencies import get_optional_user
@@ -32,6 +30,7 @@ from kohakuhub.api.quota.util import get_repo_storage_info
 from kohakuhub.utils.datetime_utils import safe_strftime
 from kohakuhub.api.repo.utils.hf import (
     HFErrorCode,
+    collect_hf_siblings,
     format_hf_datetime,
     hf_error_response,
     hf_repo_not_found,
@@ -132,8 +131,13 @@ async def get_repo_info(
     if not repo_row:
         return hf_repo_not_found(repo_id, repo_type)
 
-    # Check read permission for private repos
-    check_repo_read_permission(repo_row, user)
+    # Hugging Face Hub hides private repos from unauthorized users.
+    try:
+        check_repo_read_permission(repo_row, user)
+    except HTTPException as exc:
+        if repo_row.private and exc.status_code in {401, 403}:
+            return hf_repo_not_found(repo_id, repo_type)
+        raise
 
     # Get LakeFS info for default branch
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
@@ -161,78 +165,8 @@ async def get_repo_info(
             except Exception as ex:
                 logger.debug(f"Could not get commit info: {str(ex)}")
 
-        # Get all files in the repository for siblings field
-        # This is needed for transformers/diffusers with trust_remote_code
         try:
-            all_results = []
-            after = ""
-            has_more = True
-
-            # Fetch all files recursively from root
-            while has_more:
-                result = await client.list_objects(
-                    repository=lakefs_repo,
-                    ref="main",
-                    prefix="",
-                    delimiter="",  # No delimiter = recursive
-                    amount=1000,
-                    after=after,
-                )
-
-                all_results.extend(result["results"])
-
-                # Check pagination
-                if result.get("pagination") and result["pagination"].get("has_more"):
-                    after = result["pagination"]["next_offset"]
-                    has_more = True
-                else:
-                    has_more = False
-
-            # Filter only file objects
-            file_objects = [obj for obj in all_results if obj["path_type"] == "object"]
-
-            # Fetch all file records in parallel for LFS files (using repo-specific settings)
-            lfs_files = [
-                obj
-                for obj in file_objects
-                if should_use_lfs(repo_row, obj["path"], obj.get("size_bytes", 0))
-            ]
-
-            file_records = {}
-            if lfs_files:
-                # Fetch all file records sequentially (sync DB operations)
-                for obj in lfs_files:
-                    try:
-                        record = get_file(repo_row, obj["path"])
-                        if record:
-                            file_records[obj["path"]] = record
-                    except Exception:
-                        # Skip files that fail to fetch
-                        pass
-
-            # Convert to siblings format
-            for obj in file_objects:
-                sibling = {
-                    "rfilename": obj["path"],
-                    "size": obj.get("size_bytes", 0),
-                }
-
-                # Add LFS info if applicable (using repo-specific settings)
-                if should_use_lfs(repo_row, obj["path"], obj.get("size_bytes", 0)):
-                    file_record = file_records.get(obj["path"])
-                    checksum = (
-                        file_record.sha256
-                        if file_record and file_record.sha256
-                        else obj.get("checksum", "")
-                    )
-                    sibling["lfs"] = {
-                        "sha256": checksum,
-                        "size": obj["size_bytes"],
-                        "pointerSize": 134,
-                    }
-
-                siblings.append(sibling)
-
+            siblings = await collect_hf_siblings(repo_row, repo_type, repo_id, "main")
         except Exception as ex:
             logger.exception(
                 f"Could not fetch siblings for {lakefs_repo}: {str(ex)}", ex

@@ -41,3 +41,19 @@ async def test_list_repositories_and_user_repo_views_respect_visibility(
         repo["id"] == "acme-labs/private-dataset"
         for repo in owner_user_repos.json()["datasets"]
     )
+
+
+async def test_user_overview_endpoint_groups_by_type(owner_client):
+    """``repoAPI.getUserOverview`` in kohaku-hub-ui drives the user profile
+    page — one round trip must return models/datasets/spaces in a single
+    grouped payload. Uses a large ``limit`` so transient repos from sibling
+    tests do not push the baseline seed out of the ``recent`` window."""
+    response = await owner_client.get(
+        "/api/users/owner/repos", params={"sort": "recent", "limit": 200}
+    )
+    response.raise_for_status()
+    payload = response.json()
+    for key in ("models", "datasets", "spaces"):
+        assert key in payload, f"user overview must include {key!r}, got {payload!r}"
+        assert isinstance(payload[key], list)
+    assert any(repo["id"] == "owner/demo-model" for repo in payload["models"])

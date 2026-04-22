@@ -45,6 +45,63 @@ function getNextLinkFromHeader(linkHeader) {
   return match ? match[1] : null;
 }
 
+function getQueryParamFromUrl(url, key) {
+  if (!url) return null;
+  try {
+    return new URL(url, "http://localhost").searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCommitListResponse(response) {
+  if (!Array.isArray(response.data)) {
+    return response;
+  }
+
+  const nextLink = getNextLinkFromHeader(response.headers?.link);
+  const nextCursor = getQueryParamFromUrl(nextLink, "after");
+
+  return {
+    ...response,
+    data: {
+      commits: response.data.map((commit) => ({
+        id: commit.id,
+        oid: commit.oid || commit.id,
+        title: commit.title || "",
+        message: commit.message || "",
+        date: commit.date || null,
+        author:
+          commit.author ||
+          commit.authors?.[0]?.user ||
+          commit.authors?.[0] ||
+          "unknown",
+        email: commit.email || commit.authors?.[0]?.email || "",
+        parents: commit.parents || [],
+      })),
+      hasMore: Boolean(nextCursor),
+      nextCursor,
+    },
+  };
+}
+
+function normalizeLikersResponse(response) {
+  if (!Array.isArray(response.data)) {
+    return response;
+  }
+
+  return {
+    ...response,
+    data: {
+      likers: response.data.map((user) => ({
+        username: user.user || user.username,
+        full_name: user.fullname || user.full_name || user.user || user.username,
+      })),
+      total: response.data.length,
+    },
+  };
+}
+
 /**
  * Auth API
  */
@@ -480,7 +537,9 @@ export const repoAPI = {
    * @returns {Promise} - { commits: Array, hasMore: boolean, nextCursor: string }
    */
   listCommits: (type, namespace, name, branch, params) =>
-    api.get(`/api/${type}s/${namespace}/${name}/commits/${branch}`, { params }),
+    api
+      .get(`/api/${type}s/${namespace}/${name}/commits/${branch}`, { params })
+      .then(normalizeCommitListResponse),
 };
 
 /**
@@ -852,9 +911,11 @@ export const likesAPI = {
    * @returns {Promise} - { likers: Array, total: number }
    */
   getLikers: (repoType, namespace, name, limit = 50) =>
-    api.get(`/api/${repoType}s/${namespace}/${name}/likers`, {
-      params: { limit },
-    }),
+    api
+      .get(`/api/${repoType}s/${namespace}/${name}/likers`, {
+        params: { limit },
+      })
+      .then(normalizeLikersResponse),
 };
 
 /**

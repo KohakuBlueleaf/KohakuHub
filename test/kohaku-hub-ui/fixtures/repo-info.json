@@ -11,10 +11,27 @@
   "gated": false,
   "downloads": 4,
   "likes": 3,
-  "tags": [],
+  "tags": [
+    "vision",
+    "captioning"
+  ],
   "pipeline_tag": null,
   "library_name": null,
-  "siblings": [],
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 20
+    },
+    {
+      "rfilename": "weights/model.safetensors",
+      "size": 19,
+      "lfs": {
+        "sha256": "c33f4f3d7d50f8fd0ccf7d6515c08f5a7cb6805ae0eb9f992f8f4f7a5f912f54",
+        "size": 19,
+        "pointerSize": 132
+      }
+    }
+  ],
   "spaces": [],
   "models": [],
   "datasets": []

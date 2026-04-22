@@ -304,6 +304,16 @@ async def test_repo_settings_and_lfs_settings_cover_validation_quota_and_default
         )
     assert bad_suffix.value.status_code == 400
 
+    with pytest.raises(HTTPException) as bad_visibility:
+        await settings_api.update_repo_settings(
+            "model",
+            "alice",
+            "demo",
+            settings_api.UpdateRepoSettingsPayload(visibility="protected"),
+            user=SimpleNamespace(username="alice"),
+        )
+    assert bad_visibility.value.status_code == 400
+
     monkeypatch.setattr(
         settings_api,
         "calculate_repository_storage",
@@ -358,6 +368,17 @@ async def test_repo_settings_and_lfs_settings_cover_validation_quota_and_default
         "lfs_suffix_rules": '[".bin", ".pt"]',
         "private": True,
     }
+
+    repo_row.private = False
+    updated_visibility = await settings_api.update_repo_settings(
+        "model",
+        "alice",
+        "demo",
+        settings_api.UpdateRepoSettingsPayload(visibility="public"),
+        user=SimpleNamespace(username="alice"),
+    )
+    assert updated_visibility["success"] is True
+    assert update_calls[-1] == {"private": False}
 
     monkeypatch.setattr(settings_api, "get_repository", lambda repo_type, namespace, name: None)
     lfs_not_found = await settings_api.get_repo_lfs_settings(

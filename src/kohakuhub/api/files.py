@@ -38,6 +38,8 @@ from kohakuhub.api.utils.downloads import (
     track_download_async,
 )
 from kohakuhub.api.repo.utils.hf import (
+    HFErrorCode,
+    collect_hf_siblings,
     hf_repo_not_found,
     hf_revision_not_found,
     hf_server_error,
@@ -301,8 +303,13 @@ async def get_revision(
     if not repo_row:
         return hf_repo_not_found(repo_id, repo_type.value)
 
-    # Check read permission for private repos
-    check_repo_read_permission(repo_row, user)
+    # Hugging Face Hub hides private repos from unauthorized users.
+    try:
+        check_repo_read_permission(repo_row, user)
+    except HTTPException as exc:
+        if repo_row.private and exc.status_code in {401, 403}:
+            return hf_repo_not_found(repo_id, repo_type.value)
+        raise
 
     lakefs_repo = lakefs_repo_name(repo_type.value, repo_id)
     client = get_lakefs_client()
@@ -322,6 +329,17 @@ async def get_revision(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
 
+    siblings = []
+    try:
+        siblings = await collect_hf_siblings(
+            repo_row,
+            repo_type.value,
+            repo_id,
+            commit_id or revision,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to collect siblings for {repo_id}@{revision}: {e}")
+
     # Format created_at
     created_at = safe_strftime(repo_row.created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -332,9 +350,17 @@ async def get_revision(
         "lastModified": last_modified,
         "createdAt": created_at,
         "private": repo_row.private,
+        "disabled": False,
         "downloads": repo_row.downloads,
         "likes": repo_row.likes_count,
         "gated": False,
+        "tags": [],
+        "pipeline_tag": None,
+        "library_name": None,
+        "siblings": siblings,
+        "spaces": [],
+        "models": [],
+        "datasets": [],
         "files": [],  # Client will call /tree for file list
         "type": repo_type.value,
         "revision": revision,
@@ -362,8 +388,29 @@ async def _get_file_metadata(
 
     # Check repository exists and read permission
     repo_row = get_repository(repo_type, namespace, name)
-    if repo_row:
+    if repo_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Repository '{repo_id}' not found"},
+            headers={
+                "X-Error-Code": HFErrorCode.REPO_NOT_FOUND,
+                "X-Error-Message": f"Repository '{repo_id}' ({repo_type}) not found",
+            },
+        )
+
+    try:
         check_repo_read_permission(repo_row, user)
+    except HTTPException as exc:
+        if repo_row.private and exc.status_code in {401, 403}:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": f"Repository '{repo_id}' not found"},
+                headers={
+                    "X-Error-Code": HFErrorCode.REPO_NOT_FOUND,
+                    "X-Error-Message": f"Repository '{repo_id}' ({repo_type}) not found",
+                },
+            ) from exc
+        raise
 
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
     client = get_lakefs_client()
@@ -374,7 +421,17 @@ async def _get_file_metadata(
             repository=lakefs_repo, ref=revision, path=path
         )
     except Exception as e:
-        raise HTTPException(404, detail={"error": f"File not found: {e}"})
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"File '{path}' not found"},
+            headers={
+                "X-Error-Code": HFErrorCode.ENTRY_NOT_FOUND,
+                "X-Error-Message": (
+                    f"Entry '{path}' not found in repository '{repo_id}' "
+                    f"at revision '{revision}'"
+                ),
+            },
+        ) from e
 
     # Get commit hash for the revision
     try:

@@ -2,12 +2,19 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { http } from "@/testing/msw";
 import {
   ElementPlusStubs,
   InvalidElFormStub,
   RouterLinkStub,
 } from "../helpers/vue";
-import repoInfo from "../fixtures/repo-info.json";
+import {
+  cloneFixture,
+  jsonResponse,
+  readJsonBody,
+  uiApiFixtures,
+} from "../helpers/api-fixtures";
+import { server } from "../setup/msw-server";
 
 const mocks = vi.hoisted(() => ({
   router: {
@@ -16,13 +23,6 @@ const mocks = vi.hoisted(() => ({
   route: {
     params: {},
     query: {},
-  },
-  repoApi: {
-    listRepos: vi.fn(),
-    create: vi.fn(),
-  },
-  orgApi: {
-    getUserOrgs: vi.fn(),
   },
   repoSortPreference: {
     getRepoSortPreference: vi.fn(),
@@ -39,11 +39,6 @@ vi.mock("vue-router/auto", () => ({
   useRoute: () => mocks.route,
 }));
 
-vi.mock("@/utils/api", () => ({
-  repoAPI: mocks.repoApi,
-  orgAPI: mocks.orgApi,
-}));
-
 vi.mock("@/utils/repoSortPreference", () => ({
   getRepoSortPreference: mocks.repoSortPreference.getRepoSortPreference,
   setRepoSortPreference: mocks.repoSortPreference.setRepoSortPreference,
@@ -57,26 +52,81 @@ import RepoListPage from "@/components/pages/RepoListPage.vue";
 import { useAuthStore } from "@/stores/auth";
 
 describe("RepoListPage", () => {
+  const requests = {
+    create: [],
+    listRepos: [],
+    userOrgs: [],
+  };
+
+  function defaultModelRepos() {
+    return [
+      cloneFixture(uiApiFixtures.repo.info),
+      {
+        ...cloneFixture(uiApiFixtures.repo.info),
+        id: "alice/other-model",
+        author: "alice",
+      },
+    ];
+  }
+
+  function installHandlers({
+    modelRepos = defaultModelRepos(),
+    datasetRepos = cloneFixture(uiApiFixtures.userOverview.datasets),
+    spaceRepos = cloneFixture(uiApiFixtures.userOverview.spaces),
+    createStatus = 200,
+    createResponse = cloneFixture(uiApiFixtures.repo.create),
+    userOrgsStatus = 200,
+    userOrgsResponse = cloneFixture(uiApiFixtures.organizations.userOrgs),
+  } = {}) {
+    requests.create.length = 0;
+    requests.listRepos.length = 0;
+    requests.userOrgs.length = 0;
+
+    server.use(
+      http.get("/api/models", ({ request }) => {
+        const url = new URL(request.url);
+        requests.listRepos.push({
+          type: "model",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(modelRepos);
+      }),
+      http.get("/api/datasets", ({ request }) => {
+        const url = new URL(request.url);
+        requests.listRepos.push({
+          type: "dataset",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(datasetRepos);
+      }),
+      http.get("/api/spaces", ({ request }) => {
+        const url = new URL(request.url);
+        requests.listRepos.push({
+          type: "space",
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(spaceRepos);
+      }),
+      http.get("/org/users/:username/orgs", ({ request, params }) => {
+        const url = new URL(request.url);
+        requests.userOrgs.push({
+          username: params.username,
+          params: Object.fromEntries(url.searchParams.entries()),
+        });
+        return jsonResponse(userOrgsResponse, { status: userOrgsStatus });
+      }),
+      http.post("/api/repos/create", async ({ request }) => {
+        requests.create.push(await readJsonBody(request));
+        return jsonResponse(createResponse, { status: createStatus });
+      }),
+    );
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     setActivePinia(createPinia());
     mocks.repoSortPreference.getRepoSortPreference.mockReturnValue("likes");
-    mocks.repoApi.listRepos.mockResolvedValue({
-      data: [
-        repoInfo,
-        { ...repoInfo, id: "alice/other-model", author: "alice" },
-      ],
-    });
-    mocks.orgApi.getUserOrgs.mockResolvedValue({
-      data: {
-        organizations: [{ name: "acme" }],
-      },
-    });
-    mocks.repoApi.create.mockResolvedValue({
-      data: {
-        repo_id: "acme/fresh-model",
-      },
-    });
+    installHandlers();
   });
 
   function mountPage(repoType = "model", extraStubs = {}) {
@@ -94,7 +144,7 @@ describe("RepoListPage", () => {
     });
   }
 
-  it("loads repos, filters them, persists sort preference, and creates a new repo", async () => {
+  it("loads repos through the API client, filters them, persists sort preference, and creates a new repo", async () => {
     const authStore = useAuthStore();
     authStore.user = {
       username: "alice",
@@ -103,11 +153,16 @@ describe("RepoListPage", () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(mocks.repoApi.listRepos).toHaveBeenCalledWith("model", {
-      limit: 100,
-      sort: "likes",
-      fallback: false,
-    });
+    expect(requests.listRepos).toEqual([
+      {
+        type: "model",
+        params: {
+          limit: "100",
+          sort: "likes",
+          fallback: "false",
+        },
+      },
+    ]);
     expect(wrapper.text()).toContain("mai_lin/lineart-caption-base");
     expect(wrapper.text()).toContain("alice/other-model");
     expect(wrapper.text()).toContain("New Model");
@@ -128,10 +183,13 @@ describe("RepoListPage", () => {
         value: "recent",
       },
     );
-    expect(mocks.repoApi.listRepos).toHaveBeenLastCalledWith("model", {
-      limit: 100,
-      sort: "recent",
-      fallback: false,
+    expect(requests.listRepos.at(-1)).toEqual({
+      type: "model",
+      params: {
+        limit: "100",
+        sort: "recent",
+        fallback: "false",
+      },
     });
 
     const createButton = wrapper
@@ -156,18 +214,28 @@ describe("RepoListPage", () => {
     await createDialogButton.trigger("click");
     await flushPromises();
 
-    expect(mocks.orgApi.getUserOrgs).toHaveBeenCalledWith("alice");
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "model",
-      name: "fresh-model",
-      organization: "acme",
-      private: true,
-    });
+    expect(requests.userOrgs).toEqual([
+      {
+        username: "alice",
+        params: {},
+      },
+    ]);
+    expect(requests.create).toEqual([
+      {
+        type: "model",
+        name: "fresh-model",
+        organization: "acme",
+        private: true,
+      },
+    ]);
     expect(mocks.router.push).toHaveBeenCalledWith("/models/acme/fresh-model");
   });
 
   it("handles list loading failures and hides creation controls for visitors", async () => {
-    mocks.repoApi.listRepos.mockRejectedValue(new Error("boom"));
+    installHandlers({ modelRepos: { detail: "boom" }, createStatus: 200 });
+    server.use(
+      http.get("/api/models", () => jsonResponse({ detail: "boom" }, { status: 500 })),
+    );
 
     const wrapper = mountPage();
     await flushPromises();
@@ -176,12 +244,13 @@ describe("RepoListPage", () => {
   });
 
   it("falls back to the current user when the backend omits repo_id", async () => {
+    installHandlers({
+      createResponse: cloneFixture(uiApiFixtures.repo.createWithoutId),
+    });
+
     const authStore = useAuthStore();
     authStore.user = { username: "mai_lin" };
     authStore.userOrganizations = [];
-    mocks.repoApi.create.mockResolvedValue({
-      data: {},
-    });
 
     const wrapper = mountPage();
     await flushPromises();
@@ -199,12 +268,14 @@ describe("RepoListPage", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "model",
-      name: "fresh-model",
-      organization: null,
-      private: false,
-    });
+    expect(requests.create).toEqual([
+      {
+        type: "model",
+        name: "fresh-model",
+        organization: null,
+        private: false,
+      },
+    ]);
     expect(mocks.router.push).toHaveBeenCalledWith(
       "/models/mai_lin/fresh-model",
     );
@@ -219,21 +290,40 @@ describe("RepoListPage", () => {
     const wrapper = mountPage("space");
     await flushPromises();
 
+    expect(requests.listRepos).toEqual([
+      {
+        type: "space",
+        params: {
+          limit: "100",
+          sort: "likes",
+          fallback: "false",
+        },
+      },
+    ]);
     expect(wrapper.text()).toContain("Spaces");
     expect(wrapper.text()).toContain("Discover ML demos and applications");
     expect(wrapper.text()).toContain("New Space");
   });
 
   it("filters by author and reports organization or creation failures", async () => {
+    installHandlers({
+      modelRepos: [
+        {
+          ...cloneFixture(uiApiFixtures.repo.info),
+          id: "team/project",
+          author: "alice",
+        },
+      ],
+      userOrgsStatus: 500,
+      userOrgsResponse: {},
+      createStatus: 500,
+      createResponse: { detail: "boom" },
+    });
+
     const authStore = useAuthStore();
     authStore.user = {
       username: "alice",
     };
-    mocks.repoApi.listRepos.mockResolvedValue({
-      data: [{ ...repoInfo, id: "team/project", author: "alice" }],
-    });
-    mocks.orgApi.getUserOrgs.mockRejectedValue(new Error("boom"));
-    mocks.repoApi.create.mockRejectedValue(new Error("boom"));
 
     const wrapper = mountPage();
     await flushPromises();
@@ -249,7 +339,12 @@ describe("RepoListPage", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.orgApi.getUserOrgs).toHaveBeenCalledWith("alice");
+    expect(requests.userOrgs).toEqual([
+      {
+        username: "alice",
+        params: {},
+      },
+    ]);
 
     await wrapper.get('input[placeholder="my-model"]').setValue("broken-model");
     await wrapper
@@ -258,25 +353,28 @@ describe("RepoListPage", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.repoApi.create).toHaveBeenCalledWith({
-      type: "model",
-      name: "broken-model",
-      organization: null,
-      private: false,
-    });
+    expect(requests.create).toEqual([
+      {
+        type: "model",
+        name: "broken-model",
+        organization: null,
+        private: false,
+      },
+    ]);
     expect(mocks.router.push).not.toHaveBeenCalledWith(
       "/models/alice/broken-model",
     );
   });
 
   it("defaults missing organization payloads and stops invalid create submissions", async () => {
+    installHandlers({
+      userOrgsResponse: {},
+    });
+
     const authStore = useAuthStore();
     authStore.user = {
       username: "alice",
     };
-    mocks.orgApi.getUserOrgs.mockResolvedValue({
-      data: {},
-    });
 
     const wrapper = mountPage("model", {
       ElForm: InvalidElFormStub,
@@ -295,7 +393,12 @@ describe("RepoListPage", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(mocks.orgApi.getUserOrgs).toHaveBeenCalledWith("alice");
-    expect(mocks.repoApi.create).not.toHaveBeenCalled();
+    expect(requests.userOrgs).toEqual([
+      {
+        username: "alice",
+        params: {},
+      },
+    ]);
+    expect(requests.create).toEqual([]);
   });
 });

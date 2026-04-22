@@ -1,17 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const apiMocks = vi.hoisted(() => ({
-  verifyAdminToken: vi.fn(),
-}));
-
-vi.mock("@/utils/api", () => ({
-  verifyAdminToken: apiMocks.verifyAdminToken,
-}));
+import { http, HttpResponse } from "@/testing/msw";
+import { server } from "../setup/msw-server";
 
 describe("admin store", () => {
+  const requests = [];
+
+  function installHandlers({ status = 200 } = {}) {
+    requests.length = 0;
+
+    server.use(
+      http.get("/admin/api/stats", ({ request }) => {
+        requests.push(request.headers.get("X-Admin-Token"));
+
+        if (status === 200) {
+          return HttpResponse.json({ users: 1 });
+        }
+        if (status === 401) {
+          return HttpResponse.json({ detail: "unauthorized" }, { status: 401 });
+        }
+        return HttpResponse.json({ detail: "network" }, { status });
+      }),
+    );
+  }
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    installHandlers();
   });
 
   async function createStore() {
@@ -22,13 +38,11 @@ describe("admin store", () => {
   }
 
   it("stores the token in memory only after successful verification", async () => {
-    apiMocks.verifyAdminToken.mockResolvedValue(true);
-
     const store = await createStore();
     const result = await store.login("admin-secret");
 
     expect(result).toBe(true);
-    expect(apiMocks.verifyAdminToken).toHaveBeenCalledWith("admin-secret");
+    expect(requests).toEqual(["admin-secret"]);
     expect(store.token).toBe("admin-secret");
     expect(store.isAuthenticated).toBe(true);
     expect(store.hasToken).toBe(true);
@@ -36,7 +50,7 @@ describe("admin store", () => {
   });
 
   it("clears auth state when token verification fails", async () => {
-    apiMocks.verifyAdminToken.mockResolvedValue(false);
+    installHandlers({ status: 401 });
 
     const store = await createStore();
     store.token = "old-token";
@@ -45,17 +59,19 @@ describe("admin store", () => {
     const result = await store.login("bad-token");
 
     expect(result).toBe(false);
+    expect(requests).toEqual(["bad-token"]);
     expect(store.token).toBe("");
     expect(store.isAuthenticated).toBe(false);
     expect(store.hasToken).toBe(false);
   });
 
   it("clears auth state on errors and supports logout", async () => {
-    apiMocks.verifyAdminToken.mockRejectedValue(new Error("network"));
+    installHandlers({ status: 500 });
 
     const store = await createStore();
 
-    await expect(store.login("token")).rejects.toThrow("network");
+    await expect(store.login("token")).rejects.toBeDefined();
+    expect(requests).toEqual(["token"]);
     expect(store.token).toBe("");
     expect(store.isAuthenticated).toBe(false);
 

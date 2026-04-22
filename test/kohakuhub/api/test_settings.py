@@ -42,6 +42,18 @@ async def test_update_repo_lfs_settings_and_read_effective_values(owner_client):
     assert ".gguf" in payload["lfs_suffix_rules_effective"]
 
 
+async def test_update_repo_visibility_accepts_huggingface_settings_payload(owner_client):
+    update_response = await owner_client.put(
+        "/api/models/owner/demo-model/settings",
+        json={"visibility": "private"},
+    )
+    assert update_response.status_code == 200
+
+    info_response = await owner_client.get("/api/models/owner/demo-model")
+    assert info_response.status_code == 200
+    assert info_response.json()["private"] is True
+
+
 async def test_namespace_type_social_links_and_repo_setting_validation(owner_client):
     update_response = await owner_client.put(
         "/api/users/owner/settings",

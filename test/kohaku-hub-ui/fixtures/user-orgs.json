@@ -1,0 +1,10 @@
+{
+  "organizations": [
+    {
+      "name": "acme"
+    },
+    {
+      "name": "acme-labs"
+    }
+  ]
+}

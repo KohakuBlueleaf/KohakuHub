@@ -282,6 +282,37 @@ async def test_preupload_and_revision_cover_validation_quota_and_resolution_erro
     )
     assert failed_revision.status_code == 500
 
+    repo.private = True
+
+    def _raise_unauthorized(repo_row, user):
+        raise HTTPException(status_code=401, detail="auth required")
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_unauthorized)
+    hidden_private_revision = await files_api.get_revision.__wrapped__(
+        files_api.RepoType.model,
+        "alice",
+        "demo",
+        "main",
+        request=None,
+        user=None,
+    )
+    assert hidden_private_revision.status_code == 404
+
+    def _raise_conflict(repo_row, user):
+        raise HTTPException(status_code=409, detail="unexpected")
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_conflict)
+    with pytest.raises(HTTPException) as propagated_revision_error:
+        await files_api.get_revision.__wrapped__(
+            files_api.RepoType.model,
+            "alice",
+            "demo",
+            "main",
+            request=None,
+            user=None,
+        )
+    assert propagated_revision_error.value.status_code == 409
+
 
 @pytest.mark.asyncio
 async def test_metadata_and_resolve_routes_cover_storage_backend_fallback_and_xet_headers(
@@ -308,10 +339,41 @@ async def test_metadata_and_resolve_routes_cover_storage_backend_fallback_and_xe
     monkeypatch.setattr(files_api, "XET_ENABLE", True)
     monkeypatch.setattr(files_api.cfg.app, "base_url", "https://hub.example.com")
 
+    monkeypatch.setattr(files_api, "get_repository", lambda repo_type, namespace, name: None)
+    with pytest.raises(HTTPException) as missing_repo:
+        await files_api._get_file_metadata("model", "alice", "demo", "main", "file.txt", None)
+    assert missing_repo.value.status_code == 404
+    assert missing_repo.value.headers["X-Error-Code"] == files_api.HFErrorCode.REPO_NOT_FOUND
+
+    hidden_repo = SimpleNamespace(private=True)
+    monkeypatch.setattr(files_api, "get_repository", lambda repo_type, namespace, name: hidden_repo)
+
+    def _raise_forbidden(repo_row, user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_forbidden)
+    with pytest.raises(HTTPException) as hidden_private_repo:
+        await files_api._get_file_metadata("model", "alice", "demo", "main", "file.txt", None)
+    assert hidden_private_repo.value.status_code == 404
+    assert hidden_private_repo.value.headers["X-Error-Code"] == files_api.HFErrorCode.REPO_NOT_FOUND
+
+    def _raise_conflict(repo_row, user):
+        raise HTTPException(status_code=409, detail="unexpected")
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_conflict)
+    with pytest.raises(HTTPException) as propagated_permission_error:
+        await files_api._get_file_metadata("model", "alice", "demo", "main", "file.txt", None)
+    assert propagated_permission_error.value.status_code == 409
+
+    repo = SimpleNamespace(private=False)
+    monkeypatch.setattr(files_api, "get_repository", lambda repo_type, namespace, name: repo)
+    monkeypatch.setattr(files_api, "check_repo_read_permission", lambda repo_row, user: None)
+
     client.stat_error = RuntimeError("missing file")
     with pytest.raises(HTTPException) as missing_file:
         await files_api._get_file_metadata("model", "alice", "demo", "main", "file.txt", None)
     assert missing_file.value.status_code == 404
+    assert missing_file.value.headers["X-Error-Code"] == files_api.HFErrorCode.ENTRY_NOT_FOUND
 
     client.stat_error = None
     client.stat_result = {
@@ -409,3 +471,38 @@ async def test_metadata_and_resolve_routes_cover_storage_backend_fallback_and_xe
     assert "hf_download_session=anon-session" in redirect.headers["set-cookie"]
     await asyncio.sleep(0)
     assert tracked_downloads == [("anon-session", "file.txt")]
+
+    auth_tracked_downloads = []
+    async def _track_authenticated_download(**kwargs):
+        auth_tracked_downloads.append(
+            (kwargs["session_id"], kwargs["file_path"], kwargs["user"].username)
+        )
+
+    monkeypatch.setattr(files_api, "track_download_async", _track_authenticated_download)
+    authenticated_redirect = await files_api.resolve_file_get.__wrapped__(
+        "model",
+        "alice",
+        "demo",
+        "main",
+        "auth.txt",
+        request=_FakeRequest(cookies={"session_id": "auth-session"}),
+        user=SimpleNamespace(username="alice"),
+    )
+    assert authenticated_redirect.status_code == 302
+    assert authenticated_redirect.headers["location"] == "https://download.example.com/file"
+    assert "set-cookie" not in authenticated_redirect.headers
+    await asyncio.sleep(0)
+    assert auth_tracked_downloads == [("auth-session", "auth.txt", "alice")]
+
+    monkeypatch.setattr(files_api, "get_repository", lambda repo_type, namespace, name: None)
+    direct_redirect = await files_api.resolve_file_get.__wrapped__(
+        "model",
+        "alice",
+        "demo",
+        "main",
+        "untracked.txt",
+        request=_FakeRequest(cookies={}),
+        user=None,
+    )
+    assert direct_redirect.status_code == 302
+    assert direct_redirect.headers["location"] == "https://download.example.com/file"

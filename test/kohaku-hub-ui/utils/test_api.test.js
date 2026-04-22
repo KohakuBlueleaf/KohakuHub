@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { uiApiFixtures } from "../helpers/api-fixtures";
 
 describe("frontend API client", () => {
   async function loadModules() {
@@ -289,6 +290,233 @@ describe("frontend API client", () => {
     expect(getSpy).toHaveBeenCalledWith("/api/trending", {
       params: { repo_type: "space", days: 30, limit: 5 },
     });
+  });
+
+  it("normalizes HF-style commit and liker responses for the existing UI", async () => {
+    const { apiClient, repoAPI, likesAPI } = await loadModules();
+
+    const getSpy = vi
+      .spyOn(apiClient, "get")
+      .mockResolvedValueOnce({
+        data: uiApiFixtures.repo.commitsHf.page1,
+        headers: {
+          link: `<${uiApiFixtures.repo.commitsHf.nextLink}>; rel="next"`,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: uiApiFixtures.repo.likersHf,
+        headers: {},
+      });
+
+    const commitResponse = await repoAPI.listCommits(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      { limit: 20 },
+    );
+    const likersResponse = await likesAPI.getLikers("model", "alice", "demo", 10);
+
+    expect(getSpy).toHaveBeenNthCalledWith(
+      1,
+      "/api/models/alice/demo/commits/main",
+      { params: { limit: 20 } },
+    );
+    expect(commitResponse.data).toEqual({
+      commits: [
+        {
+          id: "commit-1",
+          oid: "commit-1",
+          title: "Add README",
+          message: "Add README",
+          date: "2026-04-21T10:00:00.000000Z",
+          author: "alice",
+          email: "alice@example.com",
+          parents: [],
+        },
+      ],
+      hasMore: true,
+      nextCursor: "cursor-2",
+    });
+
+    expect(likersResponse.data).toEqual({
+      likers: [
+        {
+          username: "ivy_ops",
+          full_name: "Ivy Ops",
+        },
+        {
+          username: "sara_chen",
+          full_name: "Sara Chen",
+        },
+        {
+          username: "leo_park",
+          full_name: "Leo Park",
+        },
+      ],
+      total: 3,
+    });
+  });
+
+  it("keeps passthrough responses and fallback fields stable for HF normalization helpers", async () => {
+    const { apiClient, repoAPI, likesAPI } = await loadModules();
+
+    vi.spyOn(apiClient, "get")
+      .mockResolvedValueOnce({
+        data: { commits: [{ id: "legacy-1" }], hasMore: false, nextCursor: null },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "commit-2",
+            authors: ["plain-author"],
+          },
+        ],
+        headers: {
+          link: "<not-a-valid-url>; rel=\"next\"",
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { likers: [{ username: "legacy-user" }], total: 1 },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            username: "fallback-user",
+            full_name: "Fallback User",
+          },
+          {},
+        ],
+        headers: {},
+      });
+
+    const legacyCommitResponse = await repoAPI.listCommits(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      { limit: 1 },
+    );
+    const fallbackCommitResponse = await repoAPI.listCommits(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      { limit: 1 },
+    );
+    const legacyLikersResponse = await likesAPI.getLikers(
+      "model",
+      "alice",
+      "demo",
+      1,
+    );
+    const fallbackLikersResponse = await likesAPI.getLikers(
+      "model",
+      "alice",
+      "demo",
+      2,
+    );
+
+    expect(legacyCommitResponse.data).toEqual({
+      commits: [{ id: "legacy-1" }],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(fallbackCommitResponse.data).toEqual({
+      commits: [
+        {
+          id: "commit-2",
+          oid: "commit-2",
+          title: "",
+          message: "",
+          date: null,
+          author: "plain-author",
+          email: "",
+          parents: [],
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(legacyLikersResponse.data).toEqual({
+      likers: [{ username: "legacy-user" }],
+      total: 1,
+    });
+    expect(fallbackLikersResponse.data).toEqual({
+      likers: [
+        {
+          username: "fallback-user",
+          full_name: "Fallback User",
+        },
+        {
+          username: undefined,
+          full_name: undefined,
+        },
+      ],
+      total: 2,
+    });
+  });
+
+  it("keeps captured HF-compatible fixture shapes aligned with the current backend", () => {
+    expect(uiApiFixtures.auth.whoamiV2).toEqual(
+      expect.objectContaining({
+        name: expect.any(String),
+        emailVerified: expect.any(Boolean),
+        orgs: expect.any(Array),
+      }),
+    );
+
+    expect(uiApiFixtures.repo.info).toEqual(
+      expect.objectContaining({
+        id: expect.any(String),
+        disabled: expect.any(Boolean),
+        tags: expect.any(Array),
+        siblings: expect.any(Array),
+      }),
+    );
+
+    expect(uiApiFixtures.repo.revisionHf).toEqual(
+      expect.objectContaining({
+        sha: expect.any(String),
+        tags: expect.any(Array),
+        siblings: expect.any(Array),
+        spaces: expect.any(Array),
+        models: expect.any(Array),
+        datasets: expect.any(Array),
+      }),
+    );
+
+    expect(uiApiFixtures.repo.commitsHf.page1).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          authors: expect.any(Array),
+        }),
+      ]),
+    );
+
+    expect(uiApiFixtures.repo.likersHf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          user: expect.any(String),
+          fullname: expect.any(String),
+        }),
+      ]),
+    );
+
+    expect(uiApiFixtures.repo.userLikedReposHf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          createdAt: expect.any(String),
+          repo: expect.objectContaining({
+            name: expect.any(String),
+            type: expect.stringMatching(/^(model|dataset|space)$/),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("follows paginated tree Link headers and submits expanded paths-info forms", async () => {

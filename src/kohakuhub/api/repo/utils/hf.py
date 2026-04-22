@@ -1,6 +1,7 @@
 """HuggingFace Hub API compatibility utilities.
 
-This module provides utilities for making Kohaku Hub compatible with HuggingFace Hub client.
+This module provides utilities for making Kohaku Hub compatible with
+`huggingface_hub` client behavior.
 """
 
 from typing import Optional
@@ -37,6 +38,10 @@ class HFErrorCode:
     INVALID_REPO_TYPE = "InvalidRepoType"
     INVALID_REPO_ID = "InvalidRepoId"
     SERVER_ERROR = "ServerError"
+    NOT_IMPLEMENTED = "NotImplemented"
+    UNAUTHORIZED = "Unauthorized"
+    FORBIDDEN = "Forbidden"
+    RANGE_NOT_SATISFIABLE = "RangeNotSatisfiable"
 
 
 def _sanitize_header_value(value: str) -> str:
@@ -227,6 +232,166 @@ def hf_server_error(message: str, error_code: Optional[str] = None) -> Response:
         error_code or HFErrorCode.SERVER_ERROR,
         message,
     )
+
+
+def hf_not_implemented(
+    feature: str,
+    reason: Optional[str] = None,
+) -> Response:
+    """Shortcut for "feature not supported" error (501).
+
+    HuggingFace's `hf_raise_for_status` does not special-case the `NotImplemented`
+    error code, so the client surfaces this as a plain `HfHubHTTPError`. The
+    `X-Error-Message` header drives the exception's `server_message` so the
+    user sees our reason text in their traceback — keep it specific and
+    actionable.
+
+    Args:
+        feature: Short name of the feature that was requested
+            (e.g. "create_pr", "discussions", "space runtime").
+        reason: Optional additional explanation to append to the message.
+
+    Returns:
+        501 response with ``X-Error-Code: NotImplemented``.
+    """
+    message = f"{feature} is not supported by KohakuHub"
+    if reason:
+        message = f"{message}. {reason}"
+
+    return hf_error_response(
+        501,
+        HFErrorCode.NOT_IMPLEMENTED,
+        message,
+    )
+
+
+def hf_unauthorized(message: str) -> Response:
+    """Shortcut for unauthenticated error (401)."""
+    return hf_error_response(
+        401,
+        HFErrorCode.UNAUTHORIZED,
+        message,
+    )
+
+
+def hf_forbidden(message: str) -> Response:
+    """Shortcut for forbidden error (403).
+
+    HuggingFace's client formats 403 responses as
+    ``"403 Forbidden: {error_message}."`` — the X-Error-Message string we
+    send is interpolated into that template verbatim, so keep it phrased as
+    a noun phrase (e.g. "write access required") rather than a sentence.
+    """
+    return hf_error_response(
+        403,
+        HFErrorCode.FORBIDDEN,
+        message,
+    )
+
+
+def hf_range_not_satisfiable(
+    total_size: int,
+    requested_range: Optional[str] = None,
+) -> Response:
+    """Shortcut for Range-not-satisfiable error (416).
+
+    HuggingFace's client reads ``Content-Range`` on 416 to enrich the
+    error message, so we must emit it here.
+    """
+    headers = {"Content-Range": f"bytes */{total_size}"}
+    detail = (
+        f"Requested range '{requested_range}' is not satisfiable"
+        if requested_range
+        else "Requested range is not satisfiable"
+    )
+    return hf_error_response(
+        416,
+        HFErrorCode.RANGE_NOT_SATISFIABLE,
+        detail,
+        headers=headers,
+    )
+
+
+async def collect_hf_siblings(
+    repo_row,
+    repo_type: str,
+    repo_id: str,
+    revision: str,
+) -> list[dict]:
+    """Collect repository files using the schema expected by `huggingface_hub`."""
+    from kohakuhub.db_operations import get_file, should_use_lfs
+    from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
+
+    lakefs_repo = lakefs_repo_name(repo_type, repo_id)
+    client = get_lakefs_client()
+    all_results = []
+    after = ""
+
+    while True:
+        result = await client.list_objects(
+            repository=lakefs_repo,
+            ref=revision,
+            prefix="",
+            delimiter="",
+            amount=1000,
+            after=after,
+        )
+
+        if isinstance(result, list):
+            all_results.extend(result)
+            break
+
+        all_results.extend(result.get("results", []))
+        pagination = result.get("pagination", {})
+        if not pagination.get("has_more"):
+            break
+
+        after = pagination.get("next_offset")
+        if not after:
+            break
+
+    file_objects = [obj for obj in all_results if obj.get("path_type") == "object"]
+    file_records = {}
+
+    for obj in file_objects:
+        path = obj["path"]
+        size = obj.get("size_bytes", 0)
+        if not should_use_lfs(repo_row, path, size):
+            continue
+
+        try:
+            record = get_file(repo_row, path)
+        except Exception:
+            record = None
+
+        if record is not None:
+            file_records[path] = record
+
+    siblings = []
+    for obj in file_objects:
+        path = obj["path"]
+        size = obj.get("size_bytes", 0)
+        sibling = {
+            "rfilename": path,
+            "size": size,
+        }
+
+        if should_use_lfs(repo_row, path, size):
+            file_record = file_records.get(path)
+            checksum = (
+                file_record.sha256
+                if file_record is not None and file_record.sha256
+                else obj.get("checksum", "")
+            )
+            sibling["lfs"] = {
+                "sha256": checksum,
+                "size": size,
+                "pointerSize": 134,
+            }
+
+        siblings.append(sibling)
+
+    return siblings
 
 
 def format_hf_datetime(dt) -> Optional[str]:
