@@ -820,17 +820,146 @@ async def test_whoami_rejects_missing_token(live_server_url):
     assert response.status_code == 401
 
 
-async def test_create_commit_create_pr_flag_does_not_pollute_main():
+async def test_create_commit_create_pr_flag_raises_readable_error(
+    live_server_url, hf_api_token
+):
     """``create_commit(create_pr=True)`` opens a PR branch on real HF Hub;
-    KohakuHub does not yet implement PR branches, so the backend must
-    either (a) commit to an isolated ref or (b) reject cleanly. Silent
-    commits to ``main`` are a compat-breaking surprise.
+    KohakuHub does not implement the discussions / pull-request
+    workflow, so the flag must be **actively rejected** rather than
+    silently dropped.
 
-    Until PR infrastructure lands, this test is a placeholder expressing
-    the expected post-support behavior.
+    Silent acceptance would be a compat-breaking surprise — the client
+    would get back a commit URL pointing at ``main`` while believing it
+    had opened a PR. Explicit rejection with a HF-compatible 501 +
+    ``X-Error-Code: NotImplemented`` surfaces a clear ``HfHubHTTPError``
+    in the user's traceback, with our ``X-Error-Message`` text explaining
+    that PR-style commits are not supported and they should target a
+    branch directly instead.
     """
-    pytest.skip(
-        "create_commit(create_pr=True) not yet supported by KohakuHub — "
-        "tracked separately. The current commit endpoint accepts the flag "
-        "silently; a follow-up PR must implement refs/pr/<N> isolation."
+    api = _api(live_server_url, hf_api_token)
+    repo_id = "owner/hf-deep-createpr-reject"
+    await _run(api.create_repo, repo_id)
+
+    with pytest.raises(HfHubHTTPError) as excinfo:
+        await _run(
+            api.create_commit,
+            repo_id=repo_id,
+            operations=[
+                CommitOperationAdd(
+                    path_in_repo="README.md",
+                    path_or_fileobj=b"should not land\n",
+                )
+            ],
+            commit_message="attempted PR commit",
+            create_pr=True,
+        )
+
+    # 501 is what the client sees on the wire; the HF client formats this
+    # as an HfHubHTTPError with the X-Error-Message embedded in
+    # server_message. Pin both the status and the text so users actually
+    # see the "pull-request workflow is not implemented" hint in their
+    # traceback.
+    assert excinfo.value.response.status_code == 501
+    server_msg = (excinfo.value.server_message or "").lower()
+    traceback_text = str(excinfo.value).lower()
+    assert "create_pr" in server_msg or "create_pr" in traceback_text, (
+        f"create_pr rejection must mention the flag by name so users can "
+        f"find it; got server_message={excinfo.value.server_message!r}, "
+        f"traceback={str(excinfo.value)[:300]!r}"
     )
+    assert "not supported" in server_msg or "not implemented" in server_msg, (
+        "Error text must say 'not supported' or 'not implemented'; got "
+        f"{excinfo.value.server_message!r}"
+    )
+
+    # The forbidden commit must not have landed on main — if it did, the
+    # "silent commit to main" regression has recurred.
+    info = await _run(api.repo_info, repo_id)
+    files_on_main = {sibling.rfilename for sibling in info.siblings}
+    assert "README.md" not in files_on_main, (
+        "create_commit(create_pr=True) rejected at the API boundary but "
+        "the file still reached main — the commit handler leaked past "
+        "the guard."
+    )
+
+
+async def test_like_endpoint_direct_http_end_to_end(
+    live_server_url, hf_api_token, outsider_hf_api_token
+):
+    """``HfApi.like`` was removed in huggingface_hub 1.x, so on those
+    matrix cells the existing hf-client-conditional test skips. The
+    underlying ``POST /api/{repo_type}s/{repo_id}/like`` endpoint still
+    has to work — downstream libraries and the KohakuHub UI both use it
+    directly. Exercise it over raw HTTP so every matrix cell verifies
+    the same end-to-end path regardless of which methods the installed
+    client version exposes.
+    """
+    import httpx  # local to keep the module-level imports unchanged
+
+    repo_id = "owner/hf-deep-like-direct"
+    api = _api(live_server_url, hf_api_token)
+    await _run(api.create_repo, repo_id)
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        like_response = await client.post(
+            f"{live_server_url}/api/models/{repo_id}/like",
+            headers={"Authorization": f"Bearer {outsider_hf_api_token}"},
+        )
+        assert like_response.status_code == 200, like_response.text
+
+        likers = await _run(api.list_repo_likers, repo_id)
+        liker_names = {user.username for user in likers}
+        assert "outsider" in liker_names, liker_names
+
+        unlike_response = await client.delete(
+            f"{live_server_url}/api/models/{repo_id}/like",
+            headers={"Authorization": f"Bearer {outsider_hf_api_token}"},
+        )
+        assert unlike_response.status_code == 200, unlike_response.text
+
+        likers_after = await _run(api.list_repo_likers, repo_id)
+        assert "outsider" not in {u.username for u in likers_after}
+
+
+async def test_update_repo_settings_legacy_private_field_end_to_end(
+    live_server_url, hf_api_token, outsider_hf_api_token
+):
+    """``HfApi.update_repo_visibility`` was removed in huggingface_hub
+    1.x; pre-1.x clients still send ``PUT .../settings`` with a legacy
+    ``{"private": true}`` body, while 1.x-and-up clients use
+    ``{"visibility": "private"}``. Exercise the legacy body shape
+    directly — this is the path the 0.20.3 / 0.30.2 / 0.36.2 matrix
+    cells take but which the hf-client-conditional test cannot reach
+    under 1.x cells."""
+    import httpx
+
+    repo_id = "owner/hf-deep-visibility-legacy"
+    api = _api(live_server_url, hf_api_token)
+    await _run(api.create_repo, repo_id)
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.put(
+            f"{live_server_url}/api/models/{repo_id}/settings",
+            json={"private": True},
+            headers={"Authorization": f"Bearer {hf_api_token}"},
+        )
+        assert response.status_code == 200, response.text
+
+    info_private = await _run(api.repo_info, repo_id)
+    assert info_private.private is True
+
+    # Outsider must no longer see the repo once it flipped private.
+    outsider_api = _api(live_server_url, outsider_hf_api_token)
+    assert await _run(outsider_api.repo_exists, repo_id) is False
+
+    # Flip back with the same legacy payload to pin the symmetric path.
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.put(
+            f"{live_server_url}/api/models/{repo_id}/settings",
+            json={"private": False},
+            headers={"Authorization": f"Bearer {hf_api_token}"},
+        )
+        assert response.status_code == 200, response.text
+
+    info_public = await _run(api.repo_info, repo_id)
+    assert info_public.private is False

@@ -38,6 +38,10 @@ class HFErrorCode:
     INVALID_REPO_TYPE = "InvalidRepoType"
     INVALID_REPO_ID = "InvalidRepoId"
     SERVER_ERROR = "ServerError"
+    NOT_IMPLEMENTED = "NotImplemented"
+    UNAUTHORIZED = "Unauthorized"
+    FORBIDDEN = "Forbidden"
+    RANGE_NOT_SATISFIABLE = "RangeNotSatisfiable"
 
 
 def _sanitize_header_value(value: str) -> str:
@@ -227,6 +231,84 @@ def hf_server_error(message: str, error_code: Optional[str] = None) -> Response:
         500,
         error_code or HFErrorCode.SERVER_ERROR,
         message,
+    )
+
+
+def hf_not_implemented(
+    feature: str,
+    reason: Optional[str] = None,
+) -> Response:
+    """Shortcut for "feature not supported" error (501).
+
+    HuggingFace's `hf_raise_for_status` does not special-case the `NotImplemented`
+    error code, so the client surfaces this as a plain `HfHubHTTPError`. The
+    `X-Error-Message` header drives the exception's `server_message` so the
+    user sees our reason text in their traceback — keep it specific and
+    actionable.
+
+    Args:
+        feature: Short name of the feature that was requested
+            (e.g. "create_pr", "discussions", "space runtime").
+        reason: Optional additional explanation to append to the message.
+
+    Returns:
+        501 response with ``X-Error-Code: NotImplemented``.
+    """
+    message = f"{feature} is not supported by KohakuHub"
+    if reason:
+        message = f"{message}. {reason}"
+
+    return hf_error_response(
+        501,
+        HFErrorCode.NOT_IMPLEMENTED,
+        message,
+    )
+
+
+def hf_unauthorized(message: str) -> Response:
+    """Shortcut for unauthenticated error (401)."""
+    return hf_error_response(
+        401,
+        HFErrorCode.UNAUTHORIZED,
+        message,
+    )
+
+
+def hf_forbidden(message: str) -> Response:
+    """Shortcut for forbidden error (403).
+
+    HuggingFace's client formats 403 responses as
+    ``"403 Forbidden: {error_message}."`` — the X-Error-Message string we
+    send is interpolated into that template verbatim, so keep it phrased as
+    a noun phrase (e.g. "write access required") rather than a sentence.
+    """
+    return hf_error_response(
+        403,
+        HFErrorCode.FORBIDDEN,
+        message,
+    )
+
+
+def hf_range_not_satisfiable(
+    total_size: int,
+    requested_range: Optional[str] = None,
+) -> Response:
+    """Shortcut for Range-not-satisfiable error (416).
+
+    HuggingFace's client reads ``Content-Range`` on 416 to enrich the
+    error message, so we must emit it here.
+    """
+    headers = {"Content-Range": f"bytes */{total_size}"}
+    detail = (
+        f"Requested range '{requested_range}' is not satisfiable"
+        if requested_range
+        else "Requested range is not satisfiable"
+    )
+    return hf_error_response(
+        416,
+        HFErrorCode.RANGE_NOT_SATISFIABLE,
+        detail,
+        headers=headers,
     )
 
 
