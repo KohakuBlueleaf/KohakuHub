@@ -250,8 +250,15 @@ async function handleSubmit() {
       const repoId = data.repo_id || `${form.owner}/${form.name}`;
       router.push(`/${form.type}s/${repoId}`);
     } catch (err) {
+      // `POST /api/repos/create` returns a 409 with a top-level `{url,
+      // repo_id, error}` body when the repo already exists (HF-compatible
+      // exist-ok contract). Read `.error` before falling back to the
+      // legacy `.detail` shape so the user sees the actual conflict
+      // message instead of a generic "Failed to create ..." toast.
       ElMessage.error(
-        err.response?.data?.detail || `Failed to create ${form.type}`,
+        err.response?.data?.error ||
+          err.response?.data?.detail ||
+          `Failed to create ${form.type}`,
       );
       console.error("Create repository error:", err);
     } finally {
