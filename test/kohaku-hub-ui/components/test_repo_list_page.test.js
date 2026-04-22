@@ -366,6 +366,48 @@ describe("RepoListPage", () => {
     );
   });
 
+  it("surfaces the backend 409 conflict message when the repo already exists", async () => {
+    // Backend PR #18 changed the exist-ok path from 400 `{detail}` to 409
+    // `{url, repo_id, error}`. RepoListPage's inline "New Model" dialog
+    // uses the same create call as the standalone /new page; pin the
+    // same error-surfacing contract here so the two paths stay aligned.
+    installHandlers({
+      createStatus: 409,
+      createResponse: {
+        url: "http://testserver/models/alice/fresh-model",
+        repo_id: "alice/fresh-model",
+        error: "Repository alice/fresh-model already exists",
+      },
+      userOrgsResponse: cloneFixture(uiApiFixtures.organizations.userOrgs),
+    });
+
+    const authStore = useAuthStore();
+    authStore.user = { username: "alice" };
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("New Model"))
+      .trigger("click");
+    await flushPromises();
+
+    await wrapper.get('input[placeholder="my-model"]').setValue("fresh-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.elMessage.error).toHaveBeenCalledWith(
+      "Repository alice/fresh-model already exists",
+    );
+    expect(mocks.router.push).not.toHaveBeenCalledWith(
+      "/models/alice/fresh-model",
+    );
+  });
+
   it("defaults missing organization payloads and stops invalid create submissions", async () => {
     installHandlers({
       userOrgsResponse: {},

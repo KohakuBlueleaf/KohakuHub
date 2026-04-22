@@ -40,8 +40,15 @@ export default defineConfig({
         uiNodeModules,
         "@vue/test-utils/dist/vue-test-utils.esm-bundler.mjs",
       ),
+      // Test files live outside `src/kohaku-hub-ui/` so bare imports of
+      // `element-plus` do not resolve from their location by default. That
+      // matters for `vi.mock("element-plus", ...)` — without a canonical
+      // alias, the mock and the component's real import resolve to
+      // different specifiers and the mock silently no-ops. Pinning the
+      // path here means both sides resolve to the same module id.
+      "element-plus": resolve(uiNodeModules, "element-plus"),
     },
-    dedupe: ["vue", "pinia"],
+    dedupe: ["vue", "pinia", "element-plus"],
     conditions: ["module", "browser", "development"],
   },
   server: {

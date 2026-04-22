@@ -13,6 +13,18 @@ import {
 import { server } from "../setup/msw-server";
 import { createMemoryHistory, createRouter } from "@/testing/router";
 
+const mocks = vi.hoisted(() => ({
+  elMessage: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+vi.mock("element-plus", () => ({
+  ElMessage: mocks.elMessage,
+}));
+
 import { useAuthStore } from "@/stores/auth";
 import NewRepoPage from "@/pages/new.vue";
 
@@ -173,6 +185,71 @@ describe("new repository page", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("Create Space");
+  });
+
+  it("surfaces the backend 409 conflict message when the repo already exists", async () => {
+    // Backend PR #18 changed the exist-ok path from 400 `{detail}` to 409
+    // `{url, repo_id, error}`. The UI must pick up the top-level `error`
+    // field so users see "Repository X already exists" instead of a
+    // generic "Failed to create ..." toast.
+    installHandlers({
+      createStatus: 409,
+      createResponse: {
+        url: "http://testserver/models/mai_lin/fresh-model",
+        repo_id: "mai_lin/fresh-model",
+        error: "Repository mai_lin/fresh-model already exists",
+      },
+    });
+
+    const router = await createTestRouter("/new");
+    const pushSpy = vi.spyOn(router, "push");
+    const authStore = useAuthStore();
+    authStore.user = { username: "mai_lin" };
+    authStore.userOrganizations = [];
+
+    const wrapper = mountPage(router);
+    await wrapper
+      .find('input[placeholder="my-awesome-model"]')
+      .setValue("fresh-model");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.elMessage.error).toHaveBeenCalledWith(
+      "Repository mai_lin/fresh-model already exists",
+    );
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to legacy detail-shaped error bodies", async () => {
+    // Older / non-HF-compat paths still use FastAPI's HTTPException body
+    // (`{detail: "..."}`). The UI must keep honoring that shape so the
+    // 409 fix in the previous test does not regress the legacy path.
+    installHandlers({
+      createStatus: 400,
+      createResponse: {
+        detail: "Invalid repository name",
+      },
+    });
+
+    const router = await createTestRouter("/new");
+    const authStore = useAuthStore();
+    authStore.user = { username: "mai_lin" };
+    authStore.userOrganizations = [];
+
+    const wrapper = mountPage(router);
+    await wrapper
+      .find('input[placeholder="my-awesome-model"]')
+      .setValue("bad-name");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Create Model"))
+      .trigger("click");
+    await flushPromises();
+
+    expect(mocks.elMessage.error).toHaveBeenCalledWith("Invalid repository name");
   });
 
   it("stops invalid submissions and handles fallback create errors", async () => {
