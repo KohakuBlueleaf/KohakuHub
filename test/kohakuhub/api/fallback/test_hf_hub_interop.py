@@ -88,9 +88,7 @@ def _hf_metadata(httpx_response: httpx.Response, endpoint: str) -> HfFileMetadat
             httpx_response.headers.get(hf_constants.HUGGINGFACE_HEADER_X_LINKED_SIZE)
             or httpx_response.headers.get("Content-Length")
         ),
-        xet_file_data=parse_xet_file_data_from_response(
-            httpx_response, endpoint=endpoint
-        ),
+        xet_file_data=parse_xet_file_data_from_response(httpx_response),
     )
 
 
@@ -226,7 +224,7 @@ async def test_hf_hub_xet_suppression_keeps_client_on_classic_lfs(monkeypatch):
     hx = _to_httpx_response(
         khub_response, request_url=f"http://khub.local{REPO}/weights.safetensors"
     )
-    assert parse_xet_file_data_from_response(hx, endpoint="http://khub.local") is None
+    assert parse_xet_file_data_from_response(hx) is None
     meta = _hf_metadata(hx, endpoint="http://khub.local")
     assert meta.xet_file_data is None
 
