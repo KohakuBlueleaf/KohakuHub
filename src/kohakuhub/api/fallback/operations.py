@@ -17,6 +17,7 @@ from kohakuhub.api.fallback.utils import (
     extract_error_message,
     is_not_found_error,
     should_retry_source,
+    strip_xet_response_headers,
 )
 
 logger = get_logger("FALLBACK_OPS")
@@ -116,6 +117,7 @@ async def try_fallback_resolve(
                     if location:
                         upstream_url = str(response.request.url)
                         resp_headers["location"] = urljoin(upstream_url, location)
+                    strip_xet_response_headers(resp_headers)
                     resp_headers.update(
                         add_source_headers(response, source["name"], source["url"])
                     )
@@ -143,6 +145,7 @@ async def try_fallback_resolve(
                         )  # Length may be wrong after decompression
                         resp_headers.pop("transfer-encoding", None)
 
+                        strip_xet_response_headers(resp_headers)
                         resp_headers.update(
                             add_source_headers(
                                 get_response, source["name"], source["url"]

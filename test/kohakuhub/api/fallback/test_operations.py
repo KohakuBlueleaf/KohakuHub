@@ -301,6 +301,98 @@ async def test_try_fallback_resolve_head_preserves_absolute_location(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_try_fallback_resolve_head_strips_xet_signals(monkeypatch):
+    """HEAD must drop X-Xet-* headers and Link rel=xet-auth so hf_hub falls back to classic LFS."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.safetensors"
+    upstream_url = "https://hf.local/owner/demo/resolve/main/weights.safetensors"
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "HEAD",
+        path,
+        _content_response(
+            307,
+            headers={
+                "location": "https://cas-bridge.xethub.hf.co/shard/deadbeef",
+                "etag": '"deadbeef"',
+                "x-repo-commit": "abc123",
+                "x-xet-hash": "shardhash",
+                "x-xet-refresh-route": "/api/models/owner/demo/xet-read-token/abc123",
+                "x-xet-cas-url": "https://cas-bridge.xethub.hf.co",
+                "link": '<https://cas-bridge/auth>; rel="xet-auth", <https://next>; rel="next"',
+            },
+            url=upstream_url,
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="HEAD",
+    )
+
+    assert response.status_code == 307
+    # Location intact (absolute URL passes through urljoin untouched)
+    assert response.headers["location"] == "https://cas-bridge.xethub.hf.co/shard/deadbeef"
+    # Xet headers stripped
+    lower_headers = {k.lower() for k in response.headers.keys()}
+    assert not any(k.startswith("x-xet-") for k in lower_headers)
+    # Link "xet-auth" relation stripped, "next" preserved
+    assert "xet-auth" not in response.headers["link"].lower()
+    assert 'rel="next"' in response.headers["link"]
+    # Non-xet metadata preserved
+    assert response.headers["etag"] == '"deadbeef"'
+    assert response.headers["x-repo-commit"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_get_strips_xet_signals(monkeypatch):
+    """GET proxying must also drop X-Xet-* headers so the client stays on classic LFS."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://hf.local", "name": "HF", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.safetensors"
+    FakeFallbackClient.queue(
+        "https://hf.local", "HEAD", path, _content_response(200),
+    )
+    FakeFallbackClient.queue(
+        "https://hf.local",
+        "GET",
+        path,
+        _content_response(
+            200,
+            b"fake-bytes",
+            headers={
+                "content-type": "application/octet-stream",
+                "x-xet-hash": "shardhash",
+                "x-xet-cas-url": "https://cas-bridge.xethub.hf.co",
+                "etag": '"deadbeef"',
+            },
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.safetensors", method="GET",
+    )
+
+    assert response.status_code == 200
+    assert response.body == b"fake-bytes"
+    lower_headers = {k.lower() for k in response.headers.keys()}
+    assert not any(k.startswith("x-xet-") for k in lower_headers)
+    assert response.headers["etag"] == '"deadbeef"'
+
+
+@pytest.mark.asyncio
 async def test_try_fallback_resolve_head_without_location_is_unchanged(monkeypatch):
     """A HEAD 200 without a Location header must not gain one or fail."""
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
