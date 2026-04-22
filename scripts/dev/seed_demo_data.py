@@ -37,7 +37,7 @@ from kohakuhub.config import cfg
 from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
-SEED_VERSION = "local-dev-demo-v2"
+SEED_VERSION = "local-dev-demo-v3"
 DEFAULT_PASSWORD = "KohakuDev123!"
 PRIMARY_USERNAME = "mai_lin"
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"
@@ -2537,6 +2537,20 @@ LIKES: tuple[tuple[str, str, str, str], ...] = (
     ("mai_lin", "dataset", "aurora-labs", "receipt-layout-bench"),
 )
 
+# Global fallback sources installed via the admin API so a fresh local seed can
+# resolve public HuggingFace repos out-of-the-box. Namespace "" = global scope.
+FALLBACK_SOURCE_SEEDS: tuple[dict, ...] = (
+    {
+        "namespace": "",
+        "url": "https://huggingface.co",
+        "token": None,
+        "priority": 1000,
+        "name": "HuggingFace",
+        "source_type": "huggingface",
+        "enabled": True,
+    },
+)
+
 
 def account_index() -> dict[str, AccountSeed]:
     return {account.username: account for account in ACCOUNTS}
@@ -2724,6 +2738,39 @@ async def configure_user_profile(client: httpx.AsyncClient, account: AccountSeed
         account.username,
         account.avatar_bg,
         account.avatar_accent,
+    )
+
+
+def admin_headers() -> dict[str, str]:
+    return {"X-Admin-Token": cfg.admin.secret_token}
+
+
+async def ensure_fallback_source(
+    client: httpx.AsyncClient, source: dict
+) -> None:
+    list_response = await client.get(
+        "/admin/api/fallback-sources",
+        params={"namespace": source["namespace"]},
+        headers=admin_headers(),
+    )
+    await ensure_response(
+        list_response,
+        f"list fallback sources for namespace={source['namespace']!r}",
+    )
+
+    normalized_url = source["url"].rstrip("/")
+    for existing in list_response.json():
+        if existing["url"].rstrip("/") == normalized_url:
+            return
+
+    create_response = await client.post(
+        "/admin/api/fallback-sources",
+        json=source,
+        headers=admin_headers(),
+    )
+    await ensure_response(
+        create_response,
+        f"create fallback source {source['name']} ({normalized_url})",
     )
 
 
@@ -3068,6 +3115,16 @@ def build_manifest() -> dict:
             }
             for repo in REPO_SEEDS
         ],
+        "fallback_sources": [
+            {
+                "namespace": source["namespace"],
+                "url": source["url"].rstrip("/"),
+                "name": source["name"],
+                "source_type": source["source_type"],
+                "priority": source["priority"],
+            }
+            for source in FALLBACK_SOURCE_SEEDS
+        ],
     }
 
 
@@ -3116,6 +3173,9 @@ async def seed_demo_data() -> None:
 
         for account in ACCOUNTS:
             await register_account(seed_client, account)
+
+        for fallback_source in FALLBACK_SOURCE_SEEDS:
+            await ensure_fallback_source(seed_client, fallback_source)
 
         authed_clients: dict[str, httpx.AsyncClient] = {}
         for account in ACCOUNTS:

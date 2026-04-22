@@ -21,7 +21,7 @@ from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"
-EXPECTED_SEED_VERSION = "local-dev-demo-v2"
+EXPECTED_SEED_VERSION = "local-dev-demo-v3"
 INTERNAL_BASE_URL = (
     getattr(cfg.app, "internal_base_url", None)
     or cfg.app.base_url
@@ -195,6 +195,27 @@ async def verify_seed_data() -> dict:
                 f"{deep_json!r}"
             )
         summary["verified_checks"].append("hierarchy-crawl deep JSON download")
+
+        expected_fallback_sources = {
+            (source["url"].rstrip("/"), source["name"])
+            for source in manifest.get("fallback_sources", [])
+            if source.get("namespace", "") == ""
+        }
+        if expected_fallback_sources:
+            available_sources = await get_json(
+                client, "/api/fallback-sources/available"
+            )
+            available = {
+                (entry.get("url", "").rstrip("/"), entry.get("name"))
+                for entry in available_sources
+            }
+            missing = expected_fallback_sources - available
+            if missing:
+                raise VerifyError(
+                    "Missing seeded fallback sources: "
+                    + ", ".join(sorted(f"{name} ({url})" for url, name in missing))
+                )
+            summary["verified_checks"].append("fallback sources available")
 
     return summary
 
