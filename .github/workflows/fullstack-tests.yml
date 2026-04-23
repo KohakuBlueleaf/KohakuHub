@@ -119,7 +119,7 @@ jobs:
           files: coverage.xml
           flags: backend,py${{ matrix.python-version }},hf${{ matrix.huggingface-hub-version }}
           name: backend-tests-py${{ matrix.python-version }}-hf${{ matrix.huggingface-hub-version }}
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           verbose: true
 
       - name: Upload backend coverage artifact
@@ -157,7 +157,7 @@ jobs:
           files: coverage-ui/cobertura-coverage.xml
           flags: frontend
           name: frontend-tests
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           verbose: true
 
       - name: Upload frontend coverage artifact
@@ -195,7 +195,7 @@ jobs:
           files: coverage-ui-admin/cobertura-coverage.xml
           flags: frontend-admin
           name: frontend-admin-tests
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           verbose: true
 
       - name: Upload admin frontend coverage artifact
