@@ -554,9 +554,24 @@ async def resolve_file_get(
     Returns 302 redirect to presigned S3 URL for actual download.
     Also tracks download in background for statistics.
     """
-    presigned_url, _ = await _get_file_metadata(
+    presigned_url, file_headers = await _get_file_metadata(
         repo_type, namespace, name, revision, path, user
     )
+
+    # Headers the huggingface_hub client reads off a 302 when
+    # ``allow_redirects=False`` — must match what HEAD returns so that
+    # any intermediary which surfaces this GET response to a HEAD caller
+    # (CDN HEAD-to-GET conversion, cached GET 302 replayed for HEAD)
+    # still hands the client a usable metadata set. Presigned URLs are
+    # per-user and time-limited, so no-store is mandatory to keep
+    # intermediaries from reusing this redirect.
+    def _apply_redirect_headers(resp: RedirectResponse) -> RedirectResponse:
+        for header in ("X-Repo-Commit", "X-Linked-Etag", "X-Linked-Size", "ETag"):
+            value = file_headers.get(header)
+            if value:
+                resp.headers[header] = value
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     # Get repository for download tracking
     repo_row = get_repository(repo_type, namespace, name)
@@ -584,7 +599,9 @@ async def resolve_file_get(
 
         # Set tracking cookie if created for anonymous user
         if response_cookies:
-            response = RedirectResponse(url=presigned_url, status_code=302)
+            response = _apply_redirect_headers(
+                RedirectResponse(url=presigned_url, status_code=302)
+            )
             cookie_data = response_cookies["hf_download_session"]
             response.set_cookie(
                 key="hf_download_session",
@@ -596,7 +613,6 @@ async def resolve_file_get(
             return response
 
     # Return 302 redirect to presigned S3 URL
-    return RedirectResponse(
-        url=presigned_url,
-        status_code=302,
+    return _apply_redirect_headers(
+        RedirectResponse(url=presigned_url, status_code=302)
     )
