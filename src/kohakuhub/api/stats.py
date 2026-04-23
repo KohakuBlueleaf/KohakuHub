@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from kohakuhub.db import DailyRepoStats, Repository, User
 from kohakuhub.db_operations import get_repository

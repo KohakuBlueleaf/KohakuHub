@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "name": "owner",
+  "email": "owner@example.com",
+  "emailVerified": true,
+  "orgs": [
+    {
+      "name": "acme-labs"
+    }
+  ]
+}

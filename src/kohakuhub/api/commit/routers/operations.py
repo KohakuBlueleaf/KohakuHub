@@ -28,6 +28,7 @@ from kohakuhub.utils.lakefs import get_lakefs_client, lakefs_repo_name
 from kohakuhub.utils.s3 import get_object_metadata, object_exists
 from kohakuhub.api.quota.util import update_namespace_storage, update_repository_storage
 from kohakuhub.api.repo.utils.gc import run_gc_for_file, track_lfs_object
+from kohakuhub.api.repo.utils.hf import HFErrorCode
 
 logger = get_logger("FILE")
 router = APIRouter()
@@ -39,6 +40,11 @@ class RepoType(str, Enum):
     model = "model"
     dataset = "dataset"
     space = "space"
+
+
+def build_public_repo_path(repo_type: RepoType, repo_id: str) -> str:
+    """Return the HF-compatible repository path used in commit responses."""
+    return f"{repo_type.value}s/{repo_id}"
 
 
 def calculate_git_blob_sha1(content: bytes) -> str:
@@ -693,6 +699,32 @@ async def commit(
     """
     repo_id = f"{namespace}/{name}"
 
+    # `create_pr=True` sends ``?create_pr=1`` on the commit endpoint. KohakuHub
+    # does not implement the discussions / pull-request workflow, and silently
+    # dropping the flag (as the old handler did) means the commit lands on the
+    # target branch instead of an isolated ``refs/pr/<N>`` — a compat-breaking
+    # surprise. Reject it up front with a HuggingFace-compatible 501 so the
+    # client surfaces a clear HfHubHTTPError carrying our X-Error-Message.
+    if request.query_params.get("create_pr") in ("1", "true", "True"):
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": (
+                    "create_commit(create_pr=True) is not supported by KohakuHub. "
+                    "Commit to a branch directly instead; the discussions / "
+                    "pull-request workflow is not implemented."
+                )
+            },
+            headers={
+                "X-Error-Code": HFErrorCode.NOT_IMPLEMENTED,
+                "X-Error-Message": (
+                    "create_commit(create_pr=True) is not supported by KohakuHub. "
+                    "Commit to a branch directly instead; the discussions / "
+                    "pull-request workflow is not implemented."
+                ),
+            },
+        )
+
     # Check repository exists and write permission
     repo_row = Repository.get_or_none(
         (Repository.full_id == repo_id) & (Repository.repo_type == repo_type.value)
@@ -825,7 +857,7 @@ async def commit(
         except Exception:
             commit_id = "no-changes"
 
-        commit_url = f"{cfg.app.base_url}/{repo_id}/commit/{commit_id}"
+        commit_url = f"{build_public_repo_path(repo_type, repo_id)}/commit/{commit_id}"
 
         return {
             "commitUrl": commit_url,
@@ -889,7 +921,9 @@ async def commit(
         # Don't fail the commit if DB recording fails
 
     # Generate commit URL
-    commit_url = f"{cfg.app.base_url}/{repo_id}/commit/{commit_result['id']}"
+    commit_url = (
+        f"{build_public_repo_path(repo_type, repo_id)}/commit/{commit_result['id']}"
+    )
     logger.success(f"Commit URL: {commit_url}")
 
     # Track LFS objects and run GC

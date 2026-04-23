@@ -1,6 +1,7 @@
 // src/kohaku-hub-ui/src/stores/auth.js
 import { defineStore } from "pinia";
 import { authAPI, settingsAPI } from "@/utils/api";
+import { clearRepoSortPreference } from "@/utils/repoSortPreference";
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
@@ -30,6 +31,7 @@ export const useAuthStore = defineStore("auth", {
       try {
         const { data } = await authAPI.login(credentials);
         // Session cookie is set automatically
+        clearRepoSortPreference();
         await this.fetchUserInfo();
         return data;
       } finally {
@@ -61,6 +63,7 @@ export const useAuthStore = defineStore("auth", {
         this.user = null;
         this.token = null;
         localStorage.removeItem("hf_token");
+        clearRepoSortPreference();
       }
     },
 
@@ -75,6 +78,7 @@ export const useAuthStore = defineStore("auth", {
       } catch (err) {
         this.user = null;
         this.userOrganizations = [];
+        clearRepoSortPreference();
         throw err;
       }
     },
@@ -96,6 +100,7 @@ export const useAuthStore = defineStore("auth", {
       } catch (err) {
         this.user = null;
         this.userOrganizations = [];
+        clearRepoSortPreference();
         throw err;
       }
     },
@@ -107,6 +112,7 @@ export const useAuthStore = defineStore("auth", {
     async setToken(token) {
       this.token = token;
       localStorage.setItem("hf_token", token);
+      clearRepoSortPreference();
       await this.fetchUserInfo();
     },
 
@@ -149,6 +155,7 @@ export const useAuthStore = defineStore("auth", {
         this.token = null;
         this.externalTokens = [];
         localStorage.removeItem("hf_token");
+        clearRepoSortPreference();
       }
     },
 

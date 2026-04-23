@@ -104,6 +104,44 @@ def should_retry_source(response: httpx.Response) -> bool:
     return False
 
 
+def strip_xet_response_headers(headers: dict) -> None:
+    """Remove Xet-protocol hints from a fallback response's headers in place.
+
+    KohakuHub does not natively speak the huggingface.co Xet protocol. When a
+    downstream client (`huggingface_hub >= 1.x`) sees `X-Xet-*` response
+    headers or a `Link: <...>; rel="xet-auth"` relation, it switches to the
+    Xet code path and calls endpoints we do not implement (`/api/models/...
+    /xet-read-token/...`) — breaking the entire download. Stripping these
+    signals puts the client back on the classic LFS path, which is served by
+    the fallback's standard 3xx Location redirect.
+
+    See `huggingface_hub.utils._xet.parse_xet_file_data_from_response` and
+    `huggingface_hub.constants.HUGGINGFACE_HEADER_X_XET_*` for the upstream
+    trigger list. This mutates `headers` in place and is a no-op for
+    responses that carry no Xet signals.
+    """
+    for key in list(headers.keys()):
+        if key.lower().startswith("x-xet-"):
+            headers.pop(key, None)
+
+    link_key = next(
+        (k for k in headers.keys() if k.lower() == "link"), None
+    )
+    if not link_key:
+        return
+
+    kept = []
+    for chunk in headers[link_key].split(","):
+        if 'rel="xet-auth"' in chunk.lower() or "rel=xet-auth" in chunk.lower():
+            continue
+        kept.append(chunk)
+    new_link = ",".join(kept).strip().strip(",").strip()
+    if new_link:
+        headers[link_key] = new_link
+    else:
+        headers.pop(link_key, None)
+
+
 def add_source_headers(
     response: httpx.Response, source_name: str, source_url: str
 ) -> dict:

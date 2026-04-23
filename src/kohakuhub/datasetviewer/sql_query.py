@@ -12,7 +12,9 @@ Key features:
 """
 
 import asyncio
+import base64
 import re
+from datetime import date, datetime, time
 from typing import Any
 
 import duckdb
@@ -29,10 +31,29 @@ class SQLQueryError(Exception):
     pass
 
 
-class SQLQueryError(Exception):
-    """SQL query execution error."""
+def _make_json_safe(value: Any) -> Any:
+    """Convert DuckDB values into JSON-safe primitives for API responses."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
 
-    pass
+    if isinstance(value, bytes):
+        return {
+            "__type__": "bytes",
+            "encoding": "base64",
+            "size": len(value),
+            "data": base64.b64encode(value).decode("ascii"),
+        }
+
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+
+    if isinstance(value, (list, tuple)):
+        return [_make_json_safe(item) for item in value]
+
+    if isinstance(value, dict):
+        return {str(key): _make_json_safe(item) for key, item in value.items()}
+
+    return str(value)
 
 
 def _execute_query_sync(url: str, query: str, file_format: str, max_rows: int):
@@ -104,7 +125,7 @@ def _execute_query_sync(url: str, query: str, file_format: str, max_rows: int):
 
     return {
         "columns": columns,
-        "rows": [list(row) for row in result],
+        "rows": [[_make_json_safe(value) for value in row] for row in result],
         "total_rows": total_rows,
         "truncated": total_rows >= max_rows,
         "query": actual_query,

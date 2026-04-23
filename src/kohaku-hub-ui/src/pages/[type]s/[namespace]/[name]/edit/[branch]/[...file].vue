@@ -3,15 +3,37 @@
   <div class="container-main">
     <!-- Breadcrumb -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${namespace}` }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s/${namespace}/${name}` }">
-        {{ name }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${namespace}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>
         <span class="text-gray-500">Edit:</span> {{ fileName }}
@@ -113,6 +135,7 @@ import { useRouter, useRoute, onBeforeRouteLeave } from "vue-router";
 import { ElMessage } from "element-plus";
 import CodeEditor from "@/components/common/CodeEditor.vue";
 import { repoAPI } from "@/utils/api";
+import { normalizeCatchAllParam } from "@/utils/repo-paths";
 import { useAuthStore } from "@/stores/auth";
 
 const route = useRoute();
@@ -130,7 +153,7 @@ const repoType = computed(() => {
 const namespace = computed(() => route.params.namespace);
 const name = computed(() => route.params.name);
 const branch = computed(() => route.params.branch || "main");
-const filePath = computed(() => route.params.file || "");
+const filePath = computed(() => normalizeCatchAllParam(route.params.file));
 
 // State
 const loading = ref(true);

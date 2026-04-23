@@ -62,6 +62,37 @@ class SetQuotaRequest(BaseModel):
     quota_bytes: int | None  # None = unlimited
 
 
+def _build_legacy_quota_info(
+    namespace: str, is_org: bool, info: dict[str, int | float | None]
+) -> QuotaInfo:
+    """Build a legacy single-quota view on top of split private/public quotas."""
+    private_quota = info["private_quota_bytes"]
+    public_quota = info["public_quota_bytes"]
+    quota_bytes = (
+        None
+        if private_quota is None or public_quota is None
+        else private_quota + public_quota
+    )
+    used_bytes = info["total_used_bytes"]
+    available_bytes = (
+        None if quota_bytes is None else max(0, quota_bytes - used_bytes)
+    )
+    percentage_used = (
+        None
+        if quota_bytes is None or quota_bytes == 0
+        else (used_bytes / quota_bytes * 100)
+    )
+
+    return QuotaInfo(
+        namespace=namespace,
+        is_organization=is_org,
+        quota_bytes=quota_bytes,
+        used_bytes=used_bytes,
+        available_bytes=available_bytes,
+        percentage_used=percentage_used,
+    )
+
+
 class RepoQuotaInfo(BaseModel):
     """Repository storage quota information."""
 
@@ -138,14 +169,7 @@ async def get_quota(
     # Get storage info
     info = get_storage_info(namespace, is_org)
 
-    return QuotaInfo(
-        namespace=namespace,
-        is_organization=is_org,
-        quota_bytes=info["quota_bytes"],
-        used_bytes=info["used_bytes"],
-        available_bytes=info["available_bytes"],
-        percentage_used=info["percentage_used"],
-    )
+    return _build_legacy_quota_info(namespace, is_org, info)
 
 
 @router.put("/api/quota/{namespace}")
@@ -194,16 +218,14 @@ async def update_quota(
             )
 
     # Set quota
-    info = set_quota(namespace, request.quota_bytes, is_org)
-
-    return QuotaInfo(
-        namespace=namespace,
-        is_organization=is_org,
-        quota_bytes=info["quota_bytes"],
-        used_bytes=info["used_bytes"],
-        available_bytes=info["available_bytes"],
-        percentage_used=info["percentage_used"],
+    info = set_quota(
+        namespace,
+        private_quota_bytes=request.quota_bytes,
+        public_quota_bytes=request.quota_bytes,
+        is_org=is_org,
     )
+
+    return _build_legacy_quota_info(namespace, is_org, info)
 
 
 @router.post("/api/quota/{namespace}/recalculate")
@@ -256,14 +278,7 @@ async def recalculate_storage(
     # Get updated info
     info = get_storage_info(namespace, is_org)
 
-    return QuotaInfo(
-        namespace=namespace,
-        is_organization=is_org,
-        quota_bytes=info["quota_bytes"],
-        used_bytes=info["used_bytes"],
-        available_bytes=info["available_bytes"],
-        percentage_used=info["percentage_used"],
-    )
+    return _build_legacy_quota_info(namespace, is_org, info)
 
 
 @router.get("/api/quota/{namespace}/public")

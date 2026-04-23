@@ -1,0 +1,38 @@
+{
+  "_id": 1,
+  "id": "mai_lin/lineart-caption-base",
+  "modelId": "mai_lin/lineart-caption-base",
+  "author": "mai_lin",
+  "sha": null,
+  "lastModified": null,
+  "createdAt": "2026-04-20T08:47:31.616317Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "downloads": 4,
+  "likes": 3,
+  "tags": [
+    "vision",
+    "captioning"
+  ],
+  "pipeline_tag": null,
+  "library_name": null,
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 20
+    },
+    {
+      "rfilename": "weights/model.safetensors",
+      "size": 19,
+      "lfs": {
+        "sha256": "c33f4f3d7d50f8fd0ccf7d6515c08f5a7cb6805ae0eb9f992f8f4f7a5f912f54",
+        "size": 19,
+        "pointerSize": 132
+      }
+    }
+  ],
+  "spaces": [],
+  "models": [],
+  "datasets": []
+}

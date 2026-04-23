@@ -1,0 +1,12 @@
+[
+  {
+    "type": "directory",
+    "path": "catalog/section-01",
+    "size": 10,
+    "lastCommit": {
+      "id": "commit-1",
+      "title": "Add section summary",
+      "date": "2026-04-21T13:53:12.000000Z"
+    }
+  }
+]

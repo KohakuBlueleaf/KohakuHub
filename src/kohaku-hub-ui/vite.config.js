@@ -32,7 +32,13 @@ export default defineConfig({
       imports: [
         'vue',
         'pinia',
-        'vue-router',
+        {
+          'vue-router': [
+            'onBeforeRouteLeave',
+            'onBeforeRouteUpdate',
+            'useLink'
+          ]
+        },
         {
           'vue-router/auto': ['useRoute', 'useRouter']
         }

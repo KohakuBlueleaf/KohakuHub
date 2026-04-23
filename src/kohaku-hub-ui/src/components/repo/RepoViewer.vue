@@ -2,14 +2,38 @@
 <template>
   <div class="container-main">
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: namespaceLink }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item>{{ name }}</el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="namespaceLink"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
+      </el-breadcrumb-item>
     </el-breadcrumb>
 
     <div v-if="loading" class="text-center py-20">
@@ -330,11 +354,11 @@
           <div
             class="mb-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3"
           >
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <el-select
                 v-model="currentBranch"
                 size="small"
-                class="w-full sm:w-37"
+                class="w-full min-w-28 sm:w-37 sm:min-w-37 sm:flex-none"
                 @change="handleBranchChange"
               >
                 <el-option label="main" value="main" />
@@ -427,20 +451,21 @@
             <template v-else>
               <!-- Header Row (desktop only) -->
               <div
-                class="hidden md:grid md:grid-cols-[auto_1fr_120px_150px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
+                class="hidden md:grid md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
               >
                 <div></div>
                 <!-- Icon column -->
                 <div>Name</div>
+                <div>Last Commit</div>
+                <div class="text-right">Updated</div>
                 <div class="text-right">Size</div>
-                <div class="text-right">Last Modified</div>
               </div>
 
               <!-- File Rows -->
               <div
                 v-for="file in filteredFiles"
                 :key="file.path"
-                class="py-3 grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_120px_150px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
+                class="py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
                 @click="handleFileClick(file)"
               >
                 <div
@@ -455,16 +480,52 @@
                   <div class="font-medium truncate">
                     {{ getFileName(file.path) }}
                   </div>
+                  <div
+                    class="mt-1 text-sm text-gray-500 dark:text-gray-400 truncate md:hidden"
+                  >
+                    <RouterLink
+                      v-if="file.lastCommit"
+                      :to="getCommitPath(file.lastCommit.id)"
+                      class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                      :title="file.lastCommit.title"
+                      @click.stop
+                    >
+                      {{ getEntryCommitTitle(file) }}
+                    </RouterLink>
+                    <span v-else>{{ getEntryCommitTitle(file) }}</span>
+                  </div>
+                  <div
+                    class="mt-1 text-xs text-gray-400 dark:text-gray-500 md:hidden"
+                  >
+                    {{ getEntryUpdatedAt(file) }}
+                    <span v-if="formatEntrySize(file) !== '-'">
+                      · {{ formatEntrySize(file) }}
+                    </span>
+                  </div>
                 </div>
                 <div
-                  class="text-sm text-gray-500 dark:text-gray-400 text-right"
+                  class="hidden md:block min-w-0 text-sm text-gray-500 dark:text-gray-400 truncate"
                 >
-                  {{ formatSize(file.size) }}
+                  <RouterLink
+                    v-if="file.lastCommit"
+                    :to="getCommitPath(file.lastCommit.id)"
+                    class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                    :title="file.lastCommit.title"
+                    @click.stop
+                  >
+                    {{ getEntryCommitTitle(file) }}
+                  </RouterLink>
+                  <span v-else>{{ getEntryCommitTitle(file) }}</span>
                 </div>
                 <div
                   class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
                 >
-                  {{ formatLastModified(file.lastModified) }}
+                  {{ getEntryUpdatedAt(file) }}
+                </div>
+                <div
+                  class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
+                >
+                  {{ formatEntrySize(file) }}
                 </div>
               </div>
 
@@ -529,10 +590,14 @@
                     class="i-carbon-commit text-2xl text-blue-500 flex-shrink-0 mt-1"
                   />
                   <div class="flex-1 min-w-0">
-                    <div
-                      class="font-medium text-sm mb-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                    >
-                      {{ commit.title }}
+                    <div class="font-medium text-sm mb-1">
+                      <RouterLink
+                        :to="getCommitPath(commit.id)"
+                        class="block text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                        @click.stop
+                      >
+                        {{ commit.title }}
+                      </RouterLink>
                     </div>
                     <div
                       class="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400"
@@ -780,22 +845,23 @@ huggingface-cli download {{ repoInfo?.id }}</pre
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  formatRelativeTime,
+  formatUnixRelativeTime,
+} from "@/utils/datetime";
 
 import { useAuthStore } from "@/stores/auth";
 import { copyToClipboard } from "@/utils/clipboard";
 import { parseYAMLFrontmatter, normalizeMetadata } from "@/utils/yaml-parser";
 import { parseTags } from "@/utils/tag-parser";
 import { likesAPI, repoAPI } from "@/utils/api";
+import { resolveRepoTreeEntryPath } from "@/utils/repo-paths";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import MetadataHeader from "@/components/repo/metadata/MetadataHeader.vue";
 import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPanel.vue";
 import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDatasetsCard.vue";
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
-
-dayjs.extend(relativeTime);
 
 /**
  * @typedef {Object} Props
@@ -838,8 +904,10 @@ const isLiked = ref(false);
 const likesCount = ref(0);
 const likingInProgress = ref(false);
 const deletingFolder = ref(false);
+const fileTreeRequestId = ref(0);
 
 const baseUrl = window.location.origin;
+const PATHS_INFO_BATCH_SIZE = 1000;
 
 // Computed
 const activeTab = computed(() => props.tab);
@@ -875,7 +943,6 @@ const pathSegments = computed(() => {
 });
 
 const filteredFiles = computed(() => {
-  // Backend now provides folder stats, so just filter
   if (!fileSearchQuery.value) return fileTree.value;
 
   const query = fileSearchQuery.value.toLowerCase();
@@ -966,7 +1033,7 @@ function openExternalRepo() {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "Unknown";
+  return formatRelativeTime(date, "Unknown");
 }
 
 function formatSize(bytes) {
@@ -978,18 +1045,37 @@ function formatSize(bytes) {
   return (bytes / (1000 * 1000 * 1000)).toFixed(1) + " GB";
 }
 
-function formatLastModified(dateString) {
-  if (!dateString) return "-";
-  try {
-    return dayjs(dateString).fromNow();
-  } catch (e) {
-    return "-";
-  }
+function formatEntrySize(file) {
+  return formatSize(file.size);
+}
+
+function getEntryCommitTitle(file) {
+  return file.lastCommit?.title || "-";
+}
+
+function getEntryUpdatedAt(file) {
+  return formatRelativeTime(file.lastCommit?.date || file.lastModified, "-");
 }
 
 function getFileName(path) {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
+}
+
+function sortFileEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type === "directory" && b.type !== "directory") return -1;
+    if (a.type !== "directory" && b.type === "directory") return 1;
+    return a.path.localeCompare(b.path);
+  });
+}
+
+function chunkPaths(paths, size) {
+  const chunks = [];
+  for (let index = 0; index < paths.length; index += size) {
+    chunks.push(paths.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function navigateToTab(tab) {
@@ -1031,10 +1117,12 @@ function navigateToUpload() {
   );
 }
 
+function getCommitPath(commitId) {
+  return `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`;
+}
+
 function viewCommit(commitId) {
-  router.push(
-    `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`,
-  );
+  router.push(getCommitPath(commitId));
 }
 
 function handleBranchChange() {
@@ -1139,8 +1227,13 @@ async function toggleLike() {
 
 async function loadFileTree() {
   filesLoading.value = true;
+  const requestId = fileTreeRequestId.value + 1;
+  fileTreeRequestId.value = requestId;
+
+  let sortedEntries = [];
+
   try {
-    const { data } = await repoAPI.listTree(
+    const data = await repoAPI.listTreeAll(
       props.repoType,
       props.namespace,
       props.name,
@@ -1149,16 +1242,60 @@ async function loadFileTree() {
       { recursive: false },
     );
 
-    fileTree.value = data.sort((a, b) => {
-      if (a.type === "directory" && b.type !== "directory") return -1;
-      if (a.type !== "directory" && b.type === "directory") return 1;
-      return a.path.localeCompare(b.path);
-    });
+    if (requestId !== fileTreeRequestId.value) return;
+
+    sortedEntries = sortFileEntries(data || []);
+    fileTree.value = sortedEntries;
+
+    if (sortedEntries.length === 0) {
+      return;
+    }
+
   } catch (err) {
     console.error("Failed to load file tree:", err);
-    fileTree.value = [];
+    if (requestId === fileTreeRequestId.value) {
+      fileTree.value = [];
+    }
   } finally {
-    filesLoading.value = false;
+    if (requestId === fileTreeRequestId.value) {
+      filesLoading.value = false;
+    }
+  }
+
+  if (sortedEntries.length === 0 || requestId !== fileTreeRequestId.value) {
+    return;
+  }
+
+  try {
+    const pathInfoByPath = new Map();
+    const pathBatches = chunkPaths(
+      sortedEntries.map((file) => file.path),
+      PATHS_INFO_BATCH_SIZE,
+    );
+
+    for (const pathBatch of pathBatches) {
+      const { data: expandedEntries } = await repoAPI.getPathsInfo(
+        props.repoType,
+        props.namespace,
+        props.name,
+        currentBranch.value,
+        pathBatch,
+        true,
+      );
+
+      if (requestId !== fileTreeRequestId.value) return;
+
+      for (const entry of expandedEntries || []) {
+        pathInfoByPath.set(entry.path, entry);
+      }
+    }
+
+    fileTree.value = sortedEntries.map((file) => ({
+      ...file,
+      ...(pathInfoByPath.get(file.path) || {}),
+    }));
+  } catch (err) {
+    console.error("Failed to load expanded path info:", err);
   }
 }
 
@@ -1241,21 +1378,15 @@ async function loadMoreCommits() {
 }
 
 function handleFileClick(file) {
+  const targetPath = resolveRepoTreeEntryPath(props.currentPath, file.path);
+
   if (file.type === "directory") {
-    // Navigate to folder using tree route
-    const newPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
     router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${newPath}`,
+      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${targetPath}`,
     );
   } else {
-    // Navigate to file viewer using blob route
-    const fullPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
     router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${fullPath}`,
+      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${targetPath}`,
     );
   }
 }
@@ -1265,8 +1396,7 @@ function downloadRepo() {
 }
 
 function formatCommitDate(timestamp) {
-  if (!timestamp) return "Unknown";
-  return dayjs.unix(timestamp).fromNow();
+  return formatUnixRelativeTime(timestamp, "Unknown");
 }
 
 function getProgressColor(percentage) {

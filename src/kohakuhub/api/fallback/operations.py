@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Optional
+from urllib.parse import urljoin
 
 import httpx
 from fastapi.responses import RedirectResponse, Response
@@ -16,6 +17,7 @@ from kohakuhub.api.fallback.utils import (
     extract_error_message,
     is_not_found_error,
     should_retry_source,
+    strip_xet_response_headers,
 )
 
 logger = get_logger("FALLBACK_OPS")
@@ -105,8 +107,73 @@ async def try_fallback_resolve(
                 )
 
                 if method == "HEAD":
-                    # For HEAD: Return response with original headers
+                    # Rewrite any relative Location against the upstream
+                    # request URL so clients following a 3xx hit the
+                    # upstream (e.g. huggingface.co) instead of KohakuHub
+                    # itself — HF's /api/resolve-cache/... path lives only
+                    # on the HF origin.
                     resp_headers = dict(response.headers)
+                    location = resp_headers.get("location") or resp_headers.get(
+                        "Location"
+                    )
+                    if location:
+                        upstream_url = str(response.request.url)
+                        absolute_location = urljoin(upstream_url, location)
+                        for k in list(resp_headers.keys()):
+                            if k.lower() == "location":
+                                resp_headers.pop(k, None)
+                        resp_headers["location"] = absolute_location
+
+                    # For non-LFS 3xx redirects (no X-Linked-Size), HF's 307
+                    # Content-Length is the redirect body length (~278B),
+                    # not the file size. Without X-Linked-Size the hf_hub
+                    # client takes that bogus value as expected_size and
+                    # fails its post-download consistency check
+                    # (observed in imgutils' get_wd14_tags on
+                    # selected_tags.csv). One extra HEAD to the rewritten
+                    # Location picks up the real Content-Length / ETag.
+                    # LFS files already carry X-Linked-Size; hf_hub prefers
+                    # it over Content-Length so we skip the follow.
+                    if (
+                        300 <= response.status_code < 400
+                        and location
+                        and not any(
+                            k.lower() == "x-linked-size" for k in resp_headers
+                        )
+                    ):
+                        try:
+                            async with httpx.AsyncClient(
+                                timeout=client.timeout
+                            ) as hc:
+                                # `identity` asks HF not to gzip the
+                                # (empty) HEAD body; otherwise httpx's
+                                # auto-decoding strips Content-Length from
+                                # the response and we lose the size we
+                                # came here to fetch.
+                                extra_headers = {"Accept-Encoding": "identity"}
+                                if client.token:
+                                    extra_headers["Authorization"] = (
+                                        f"Bearer {client.token}"
+                                    )
+                                follow_resp = await hc.head(
+                                    resp_headers["location"],
+                                    headers=extra_headers,
+                                    follow_redirects=False,
+                                )
+                            for k in [
+                                k for k in list(resp_headers)
+                                if k.lower() in ("content-length", "etag")
+                            ]:
+                                resp_headers.pop(k)
+                            for k, v in follow_resp.headers.items():
+                                if k.lower() in ("content-length", "etag"):
+                                    resp_headers[k] = v
+                        except httpx.HTTPError:
+                            # Extra HEAD failed — return what we have; no
+                            # worse than the original PR#21 behavior.
+                            pass
+
+                    strip_xet_response_headers(resp_headers)
                     resp_headers.update(
                         add_source_headers(response, source["name"], source["url"])
                     )
@@ -134,6 +201,7 @@ async def try_fallback_resolve(
                         )  # Length may be wrong after decompression
                         resp_headers.pop("transfer-encoding", None)
 
+                        strip_xet_response_headers(resp_headers)
                         resp_headers.update(
                             add_source_headers(
                                 get_response, source["name"], source["url"]
@@ -258,8 +326,12 @@ async def try_fallback_tree(
     name: str,
     revision: str,
     path: str = "",
+    recursive: bool = False,
+    expand: bool = False,
+    limit: int | None = None,
+    cursor: str | None = None,
     user_tokens: dict[str, str] | None = None,
-) -> Optional[list]:
+) -> Optional[Response]:
     """Try to get repository tree from fallback sources.
 
     Args:
@@ -271,7 +343,7 @@ async def try_fallback_tree(
         user_tokens: User-provided external tokens (overrides admin tokens)
 
     Returns:
-        List of file/folder objects or None if not found
+        JSON response or None if not found
     """
     sources = get_enabled_sources(namespace, user_tokens=user_tokens)
 
@@ -291,15 +363,30 @@ async def try_fallback_tree(
                 token=source.get("token"),
             )
 
-            response = await client.get(kohaku_path, repo_type)
+            params = {
+                "recursive": recursive,
+                "expand": expand,
+            }
+            if limit is not None:
+                params["limit"] = limit
+            if cursor:
+                params["cursor"] = cursor
+
+            response = await client.get(kohaku_path, repo_type, params=params)
 
             if response.status_code == 200:
-                data = response.json()
-
                 logger.info(
                     f"Fallback tree SUCCESS: {repo_type}/{namespace}/{name}/tree from {source['name']}"
                 )
-                return data
+                headers = {}
+                if response.headers.get("link"):
+                    headers["Link"] = response.headers["link"]
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
+                    headers=headers,
+                )
 
             elif not should_retry_source(response):
                 return None
@@ -317,6 +404,7 @@ async def try_fallback_paths_info(
     name: str,
     revision: str,
     paths: list[str],
+    expand: bool = False,
     user_tokens: dict[str, str] | None = None,
 ) -> Optional[list]:
     """Try to get paths info from fallback sources.
@@ -351,7 +439,7 @@ async def try_fallback_paths_info(
 
             # POST request with form data
             response = await client.post(
-                kohaku_path, repo_type, data={"paths": paths, "expand": False}
+                kohaku_path, repo_type, data={"paths": paths, "expand": expand}
             )
 
             if response.status_code == 200:

@@ -30,6 +30,14 @@ OperationType = Literal["resolve", "tree", "info", "revision", "paths_info"]
 UserOperationType = Literal["profile", "repos", "avatar"]
 
 
+def _repo_sort_key(item: dict) -> tuple[str, str, str]:
+    return (
+        item.get("lastModified") or "",
+        item.get("createdAt") or "",
+        item.get("id") or "",
+    )
+
+
 def with_repo_fallback(operation: OperationType):
     """Decorator for endpoints that access individual repositories.
 
@@ -181,12 +189,20 @@ def with_repo_fallback(operation: OperationType):
                     case "tree":
                         revision = kwargs.get("revision", "main")
                         path = kwargs.get("path", "")
+                        recursive = kwargs.get("recursive", False)
+                        expand = kwargs.get("expand", False)
+                        limit = kwargs.get("limit")
+                        cursor = kwargs.get("cursor")
                         result = await try_fallback_tree(
                             repo_type,
                             namespace,
                             name,
                             revision,
                             path,
+                            recursive=recursive,
+                            expand=expand,
+                            limit=limit,
+                            cursor=cursor,
                             user_tokens=user_tokens,
                         )
 
@@ -199,12 +215,14 @@ def with_repo_fallback(operation: OperationType):
                         # For paths-info, extract paths and revision from kwargs
                         revision = kwargs.get("revision", "main")
                         paths = kwargs.get("paths", [])
+                        expand = kwargs.get("expand", False)
                         result = await try_fallback_paths_info(
                             repo_type,
                             namespace,
                             name,
                             revision,
                             paths,
+                            expand=expand,
                             user_tokens=user_tokens,
                         )
 
@@ -364,6 +382,10 @@ def with_list_aggregation(repo_type: str):
                     if item_id and item_id not in seen_ids:
                         all_results.append(item)
                         seen_ids.add(item_id)
+
+            sort = kwargs.get("sort", args[2] if len(args) > 2 else "recent")
+            if sort == "updated":
+                all_results.sort(key=_repo_sort_key, reverse=True)
 
             # Get limit from kwargs (if None or very large, return all)
             limit = kwargs.get("limit")
