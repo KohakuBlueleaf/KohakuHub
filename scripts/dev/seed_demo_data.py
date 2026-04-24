@@ -27,6 +27,7 @@ import pyarrow.parquet as pq
 import requests
 from hfutils import index as hf_index
 from safetensors.numpy import save as save_safetensors
+from seed_shared import SEED_VERSION
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -37,7 +38,6 @@ from kohakuhub.config import cfg
 from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
-SEED_VERSION = "local-dev-demo-v4"
 DEFAULT_PASSWORD = "KohakuDev123!"
 PRIMARY_USERNAME = "mai_lin"
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"

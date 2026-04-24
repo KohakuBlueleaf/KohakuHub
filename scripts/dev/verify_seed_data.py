@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import httpx
+from seed_shared import SEED_VERSION
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -21,7 +22,6 @@ from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"
-EXPECTED_SEED_VERSION = "local-dev-demo-v3"
 INTERNAL_BASE_URL = (
     getattr(cfg.app, "internal_base_url", None)
     or cfg.app.base_url
@@ -40,9 +40,9 @@ def load_manifest() -> dict:
         )
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    if manifest.get("seed_version") != EXPECTED_SEED_VERSION:
+    if manifest.get("seed_version") != SEED_VERSION:
         raise VerifyError(
-            f"Expected seed version {EXPECTED_SEED_VERSION}, "
+            f"Expected seed version {SEED_VERSION}, "
             f"got {manifest.get('seed_version')!r}."
         )
     return manifest
