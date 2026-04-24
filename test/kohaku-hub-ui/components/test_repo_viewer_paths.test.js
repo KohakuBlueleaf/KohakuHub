@@ -160,9 +160,13 @@ describe("RepoViewer path handling", () => {
       );
     expect(commitLink).toBeTruthy();
 
-    await row.trigger("click");
-
-    expect(mocks.router.push).toHaveBeenCalledWith(
+    // Directory rows render as a stretched <RouterLink> overlay so the
+    // browser treats them as real anchors (right-click / middle-click /
+    // Cmd-click all work). Assert the overlay href matches the tree
+    // route for the directory.
+    const rowLink = row.find('[data-testid="filelist-row-link"]');
+    expect(rowLink.exists()).toBe(true);
+    expect(rowLink.attributes("href")).toBe(
       "/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/catalog/section-01",
     );
   });
@@ -255,11 +259,89 @@ describe("RepoViewer path handling", () => {
       .find((node) => node.text().includes("features.json"));
     expect(row).toBeTruthy();
 
-    await row.trigger("click");
-
-    expect(mocks.router.push).toHaveBeenCalledWith(
+    // File rows point the stretched RouterLink at the blob route.
+    const rowLink = row.find('[data-testid="filelist-row-link"]');
+    expect(rowLink.exists()).toBe(true);
+    expect(rowLink.attributes("href")).toBe(
       "/datasets/open-media-lab/table-scan-fixtures/blob/main/metadata/features.json",
     );
+  });
+
+  it("renders every file-list row as a real <a> anchor so right-click → Open in New Tab works", async () => {
+    // Mix of nested subdirectories + files with and without lastCommit
+    // to exercise the directory-route vs blob-route branch and confirm
+    // the RouterLink overlay is present on every row regardless of
+    // entry type or metadata shape.
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/catalog",
+        () =>
+          jsonResponse([
+            {
+              type: "directory",
+              path: "catalog/sub-dir",
+              size: 0,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+            {
+              type: "file",
+              path: "catalog/weights.safetensors",
+              size: 1024,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+            },
+            {
+              type: "file",
+              path: "catalog/notes.md",
+              size: 64,
+              lastModified: "2026-04-21T13:53:39.000000Z",
+              lastCommit: {
+                id: "abc123",
+                title: "Add notes",
+                date: "2026-04-21T13:53:39.000000Z",
+              },
+            },
+          ]),
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        () => jsonResponse([]),
+      ),
+    );
+
+    const wrapper = mountViewer({ currentPath: "catalog" });
+    await flushPromises();
+    await flushPromises();
+
+    const rowLinks = wrapper.findAll('[data-testid="filelist-row-link"]');
+    const hrefs = rowLinks.map((n) => n.attributes("href")).sort();
+    expect(hrefs).toEqual(
+      [
+        "/datasets/open-media-lab/hierarchy-crawl-fixtures/blob/main/catalog/notes.md",
+        "/datasets/open-media-lab/hierarchy-crawl-fixtures/blob/main/catalog/weights.safetensors",
+        "/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main/catalog/sub-dir",
+      ].sort(),
+    );
+
+    // Every overlay is an <a> element — that is what makes the native
+    // browser context menu offer "Open link in new tab".
+    for (const link of rowLinks) {
+      expect(link.element.tagName).toBe("A");
+      expect(link.attributes("aria-label")).toMatch(/^Open /);
+    }
+
+    // The preview button and commit-row RouterLink must NOT trigger a
+    // navigation of the stretched row link — their clicks are
+    // swallowed by @click.stop and their z-index keeps them on top.
+    const previewBtn = wrapper
+      .findAll("button")
+      .find((b) => (b.attributes("aria-label") || "").startsWith("Preview"));
+    if (previewBtn) {
+      await previewBtn.trigger("click");
+      // click on the preview button should NOT have navigated via router.push
+      expect(mocks.router.push).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\/blob\/|\/tree\//),
+      );
+    }
   });
 
   it("skips expanded path loading for empty trees and clears the tree when loading fails", async () => {

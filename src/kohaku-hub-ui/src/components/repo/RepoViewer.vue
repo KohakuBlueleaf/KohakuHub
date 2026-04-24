@@ -488,12 +488,27 @@
               </div>
 
               <!-- File Rows -->
+              <!--
+                Each row is anchored with a stretched <RouterLink> that
+                covers the whole row (absolute inset-0). That makes the
+                entry a real <a href> element, so right-click → "Open in
+                New Tab", middle-click, and Cmd/Ctrl-click all work like
+                they do on any other link. Interactive children (the
+                preview button, the commit RouterLink) sit above the
+                overlay with a higher z-index + their own @click.stop so
+                they don't trigger the row navigation.
+              -->
               <div
                 v-for="file in filteredFiles"
                 :key="file.path"
-                class="py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
-                @click="handleFileClick(file)"
+                class="relative py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
               >
+                <RouterLink
+                  :to="getEntryHref(file)"
+                  :aria-label="`Open ${getFileName(file.path)}`"
+                  class="absolute inset-0 z-10"
+                  data-testid="filelist-row-link"
+                />
                 <div
                   :class="
                     file.type === 'directory'
@@ -508,7 +523,7 @@
                     <button
                       v-if="canPreviewFile(file)"
                       type="button"
-                      class="flex-shrink-0 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+                      class="relative z-20 flex-shrink-0 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
                       :title="`Preview ${getPreviewKind(file.path)} metadata (Range-read, no download)`"
                       :aria-label="`Preview metadata for ${getFileName(file.path)}`"
                       @click.stop="openFilePreview(file)"
@@ -522,7 +537,7 @@
                     <RouterLink
                       v-if="file.lastCommit"
                       :to="getCommitPath(file.lastCommit.id)"
-                      class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                      class="relative z-20 text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
                       :title="file.lastCommit.title"
                       @click.stop
                     >
@@ -545,7 +560,7 @@
                   <RouterLink
                     v-if="file.lastCommit"
                     :to="getCommitPath(file.lastCommit.id)"
-                    class="text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                    class="relative z-20 text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
                     :title="file.lastCommit.title"
                     @click.stop
                   >
@@ -1478,18 +1493,14 @@ async function loadMoreCommits() {
   }
 }
 
-function handleFileClick(file) {
+function getEntryHref(file) {
+  // Builds the route path used by the stretched row RouterLink.
+  // Kept as a pure function (no router.push) so right-click / middle-click
+  // / Cmd-click all use the browser's native link behavior — SPA
+  // left-click navigation is handled by RouterLink itself.
   const targetPath = resolveRepoTreeEntryPath(props.currentPath, file.path);
-
-  if (file.type === "directory") {
-    router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${targetPath}`,
-    );
-  } else {
-    router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${targetPath}`,
-    );
-  }
+  const kind = file.type === "directory" ? "tree" : "blob";
+  return `/${props.repoType}s/${props.namespace}/${props.name}/${kind}/${currentBranch.value}/${targetPath}`;
 }
 
 function downloadRepo() {
