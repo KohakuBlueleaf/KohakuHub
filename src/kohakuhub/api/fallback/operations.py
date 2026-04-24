@@ -267,17 +267,16 @@ async def try_fallback_resolve(
     # `with_repo_fallback` decorator passes non-None results through, so
     # the aggregated 4xx/5xx bubbles up to the client instead of
     # collapsing to the local "RepoNotFound".
-    if attempts:
-        logger.debug(
-            f"Fallback MISS: aggregating {len(attempts)} source failure(s) "
-            f"for {repo_type}/{namespace}/{name}"
-        )
-        return build_aggregate_failure_response(attempts)
-
+    # Reaching here means every enabled source produced a non-success
+    # outcome (every branch of the loop that does not `return` also
+    # `attempts.append(...)`), so the attempts list is always non-empty
+    # at this point. The early `if not sources: return None` above
+    # already handled the zero-source case.
     logger.debug(
-        f"Fallback MISS: no source was tried for {repo_type}/{namespace}/{name}"
+        f"Fallback MISS: aggregating {len(attempts)} source failure(s) "
+        f"for {repo_type}/{namespace}/{name}"
     )
-    return None
+    return build_aggregate_failure_response(attempts)
 
 
 async def try_fallback_info(
