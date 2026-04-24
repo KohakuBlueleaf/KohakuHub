@@ -44,21 +44,40 @@ except ImportError:  # pre-1.0 hf_hub matrix cells
     parse_xet_file_data_from_response = None  # type: ignore[assignment]
     HAS_XET = False
 
-# hf_hub migrated from `requests` to `httpx` in 1.0. The pattern-D
-# tests below feed httpx.Response objects straight into
-# `hf_raise_for_status`; on pre-1.0 versions that function's
-# `except requests.HTTPError` clause never catches the
-# `httpx.HTTPStatusError` emitted by our synthesized response, so the
-# status-code -> HF-exception classification never runs and the test
-# sees a bare `httpx.HTTPStatusError` instead of `GatedRepoError` /
-# `EntryNotFoundError`. The classification behavior we pin IS present
-# on 1.0+ — the matrix cells that fail are ones where hf_hub's own
-# `_raise_for_status` accepts a different Response type than the one
-# KohakuHub serves.
+# hf_hub migrated its internal HTTP layer from `requests` to `httpx`
+# in 1.0. That migration changed the type `hf_raise_for_status`
+# accepts: older versions expect `requests.Response`, newer ones
+# expect `httpx.Response`. The CLASSIFICATION logic (X-Error-Code →
+# GatedRepoError / EntryNotFoundError / generic HfHubHTTPError) is
+# identical across both branches — only the input type differs, so
+# the pattern-D tests below build whichever Response type the
+# installed hf_hub understands and assert the same classification on
+# every matrix cell.
 import huggingface_hub as _hf
 
-_hf_version_tuple = tuple(int(p) for p in _hf.__version__.split(".")[:2] if p.isdigit())
-_HF_SUPPORTS_HTTPX_CLASSIFICATION = _hf_version_tuple >= (1, 0)
+_hf_version_tuple = tuple(
+    int(p) for p in _hf.__version__.split(".")[:2] if p.isdigit()
+)
+_HF_USES_HTTPX = _hf_version_tuple >= (1, 0)
+
+
+def _hf_error(name):
+    """Resolve an hf_hub exception class across the matrix of installed
+    versions. The public module graph reshuffled a few times:
+
+    - 0.20.x: only ``huggingface_hub.utils.<Name>`` is importable
+    - 0.30.x through latest: ``huggingface_hub.errors.<Name>`` is the
+      documented location, also re-exported from ``huggingface_hub.utils``
+
+    Try the modern path first; fall back to the utils path on old cells.
+    """
+    try:
+        mod = __import__("huggingface_hub.errors", fromlist=[name])
+        return getattr(mod, name)
+    except (ImportError, AttributeError):
+        pass
+    mod = __import__("huggingface_hub.utils", fromlist=[name])
+    return getattr(mod, name)
 
 _HF_METADATA_FIELDS = set(inspect.signature(HfFileMetadata).parameters.keys())
 
@@ -102,6 +121,43 @@ def _to_httpx(response, *, request_url: str) -> httpx.Response:
         content=response.body or b"",
         request=httpx.Request("HEAD", request_url),
     )
+
+
+def _to_hf_response(response, *, request_url: str):
+    """Rehydrate a FastAPI ``Response`` as the Response type the
+    installed hf_hub's ``hf_raise_for_status`` expects.
+
+    - hf_hub >= 1.0 → ``httpx.Response``
+    - hf_hub <  1.0 → ``requests.Response``
+
+    Used only by pattern-D tests that drive ``hf_raise_for_status``;
+    other tests in this file keep using ``_to_httpx`` because they
+    read fields (status, headers) that exist on both shapes.
+    """
+    raw_pairs = [
+        (k.decode("latin-1"), v.decode("latin-1"))
+        for k, v in response.raw_headers
+    ]
+    body = response.body or b""
+    if _HF_USES_HTTPX:
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=httpx.Headers(raw_pairs),
+            content=body,
+            request=httpx.Request("HEAD", request_url),
+        )
+    # requests branch (0.x hf_hub). Import lazily so the module import
+    # does not fail on a hypothetical httpx-only install.
+    import requests
+    from requests.structures import CaseInsensitiveDict
+
+    r = requests.Response()
+    r.status_code = response.status_code
+    r.headers = CaseInsensitiveDict(raw_pairs)
+    r.url = request_url
+    r._content = body
+    r.encoding = "utf-8"
+    return r
 
 
 def _hf_metadata(hx: httpx.Response) -> HfFileMetadata:
@@ -469,14 +525,6 @@ async def test_pattern_A_resolve_cache_HEAD_fallback_on_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
-    reason="pre-1.0 hf_hub uses `requests` internally; its "
-    "hf_raise_for_status does not catch httpx.HTTPStatusError and "
-    "the GatedRepo classification never runs. The aggregate response "
-    "contract is still upheld — just not observable through this path "
-    "on those matrix cells.",
-)
 @pytest.mark.asyncio
 async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
     """Single gated source → aggregate 401 + X-Error-Code=GatedRepo. When
@@ -484,8 +532,8 @@ async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
     `GatedRepoError` specifically, not the generic 401→RepositoryNotFound
     fallback. This is the regression-guard for the fallback bug repro
     against `animetimm/mobilenetv3_large_150d.dbv4-full`."""
-    from huggingface_hub.errors import GatedRepoError
-    from huggingface_hub.utils._http import hf_raise_for_status
+    GatedRepoError = _hf_error("GatedRepoError")
+    from huggingface_hub.utils import hf_raise_for_status
 
     _setup_resolve_cache_source(monkeypatch)
     path = f"{REPO_PREFIX}/model.safetensors"
@@ -507,7 +555,7 @@ async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
     resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "model.safetensors", method="HEAD",
     )
-    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/model.safetensors")
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/model.safetensors")
     assert hx.status_code == 401
     assert hx.headers.get("x-error-code") == "GatedRepo"
 
@@ -515,11 +563,6 @@ async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
         hf_raise_for_status(hx)
 
 
-@pytest.mark.skipif(
-    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
-    reason="pre-1.0 hf_hub: httpx.HTTPStatusError bypasses the "
-    "EntryNotFound classification path.",
-)
 @pytest.mark.asyncio
 async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
     """All sources legitimately 404 → aggregate 404 + X-Error-Code=EntryNotFound.
@@ -527,8 +570,8 @@ async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
     `RepositoryNotFoundError` — the repo exists on at least one source
     per the tree endpoint, it's just this particular file that is
     missing."""
-    from huggingface_hub.errors import EntryNotFoundError
-    from huggingface_hub.utils._http import hf_raise_for_status
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
 
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
     monkeypatch.setattr(
@@ -552,7 +595,7 @@ async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
     resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "nope.bin", method="HEAD",
     )
-    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/nope.bin")
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/nope.bin")
     assert hx.status_code == 404
     assert hx.headers.get("x-error-code") == "EntryNotFound"
 
@@ -560,24 +603,17 @@ async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
         hf_raise_for_status(hx)
 
 
-@pytest.mark.skipif(
-    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
-    reason="pre-1.0 hf_hub: httpx.HTTPStatusError bypasses the "
-    "generic 5xx classification path.",
-)
 @pytest.mark.asyncio
 async def test_pattern_D_all_5xx_raises_generic_HfHubHTTPError(monkeypatch):
     """Aggregate of 5xx / timeout is a 502 with no X-Error-Code so hf_hub
     raises its generic `HfHubHTTPError` (caller usually treats this as
     a retryable upstream issue). The important property: it is NOT
     mis-classified as GatedRepo / EntryNotFound / RepoNotFound."""
-    from huggingface_hub.errors import (
-        EntryNotFoundError,
-        GatedRepoError,
-        HfHubHTTPError,
-        RepositoryNotFoundError,
-    )
-    from huggingface_hub.utils._http import hf_raise_for_status
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+    GatedRepoError = _hf_error("GatedRepoError")
+    HfHubHTTPError = _hf_error("HfHubHTTPError")
+    RepositoryNotFoundError = _hf_error("RepositoryNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
 
     _setup_resolve_cache_source(monkeypatch)
     path = f"{REPO_PREFIX}/transient.bin"
@@ -589,7 +625,7 @@ async def test_pattern_D_all_5xx_raises_generic_HfHubHTTPError(monkeypatch):
     resp = await fallback_ops.try_fallback_resolve(
         "model", "owner", "demo", "main", "transient.bin", method="HEAD",
     )
-    hx = _to_httpx(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/transient.bin")
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/transient.bin")
     assert hx.status_code == 502
     assert hx.headers.get("x-error-code") is None
 
