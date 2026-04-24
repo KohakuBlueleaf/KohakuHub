@@ -180,6 +180,47 @@ async def test_resolve_get_302_carries_hf_metadata_and_no_store_cache(owner_clie
     )
 
 
+async def test_resolve_get_302_exposes_cors_headers_for_browser_preview(
+    owner_client,
+):
+    """A cross-origin GET on ``/resolve`` must surface the HF metadata
+    headers to the browser so the pure-client safetensors/parquet
+    preview (deepghs/KohakuHub#27) can read them. Without an explicit
+    ``Access-Control-Expose-Headers`` list the browser silently strips
+    every header beyond the CORS-safelisted set, hiding ``X-Linked-*``,
+    ``X-Repo-Commit``, ``Content-Range``, and ``Location`` from JS.
+    This pins the CORS contract so a future ``expose_headers`` change
+    cannot regress the preview path without a failing test.
+    """
+    response = await owner_client.get(
+        "/models/owner/demo-model/resolve/main/weights/model.safetensors",
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert response.status_code == 302
+    exposed = {
+        token.strip().lower()
+        for token in (
+            response.headers.get("access-control-expose-headers") or ""
+        ).split(",")
+        if token.strip()
+    }
+    required = {
+        "accept-ranges",
+        "content-range",
+        "content-length",
+        "etag",
+        "location",
+        "x-repo-commit",
+        "x-linked-etag",
+        "x-linked-size",
+    }
+    missing = required - exposed
+    assert not missing, (
+        "Access-Control-Expose-Headers on /resolve GET must surface "
+        f"{sorted(required)}; missing {sorted(missing)}"
+    )
+
+
 async def test_hf_hub_download_survives_cdn_head_to_get(
     live_server_url, hf_api_token, tmp_path
 ):

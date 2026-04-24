@@ -107,6 +107,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Needed for the pure-client preview path (safetensors/parquet): the SPA
+    # issues cross-origin Range reads against /resolve/ and follows the 302 to
+    # MinIO. Without explicit expose_headers, browsers strip everything beyond
+    # the "CORS-safelisted" set, hiding Content-Range / X-Linked-* / ETag from
+    # JS. Keep in sync with the header set emitted by _get_file_metadata in
+    # src/kohakuhub/api/files.py.
+    expose_headers=[
+        "Accept-Ranges",
+        "Content-Range",
+        "Content-Length",
+        "ETag",
+        "Location",
+        "X-Repo-Commit",
+        "X-Linked-Etag",
+        "X-Linked-Size",
+        "X-Xet-Hash",
+    ],
 )
 
 app.include_router(auth_router, prefix=cfg.app.api_base)

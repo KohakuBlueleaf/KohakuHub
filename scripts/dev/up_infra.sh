@@ -27,6 +27,9 @@ fi
 : "${DEV_POSTGRES_DB:=kohakuhub_dev}"
 : "${DEV_MINIO_ROOT_USER:=minioadmin}"
 : "${DEV_MINIO_ROOT_PASSWORD:=minioadmin}"
+# MinIO must advertise CORS so the SPA can do cross-origin Range reads on
+# presigned /resolve/ targets for the pure-client preview (issue #27).
+: "${DEV_MINIO_CORS_ALLOW_ORIGIN:=*}"
 : "${DEV_LAKEFS_ENCRYPT_SECRET_KEY:=dev-lakefs-encrypt-key-32chars}"
 : "${KOHAKU_HUB_S3_BUCKET:=hub-storage}"
 : "${KOHAKU_HUB_S3_REGION:=us-east-1}"
@@ -102,6 +105,7 @@ ensure_minio() {
     -p 29000:29000 \
     -e MINIO_ROOT_USER="${DEV_MINIO_ROOT_USER}" \
     -e MINIO_ROOT_PASSWORD="${DEV_MINIO_ROOT_PASSWORD}" \
+    -e MINIO_API_CORS_ALLOW_ORIGIN="${DEV_MINIO_CORS_ALLOW_ORIGIN}" \
     -v "${MINIO_DATA_DIR}:/data" \
     -v "${MINIO_CONFIG_DIR}:/root/.minio" \
     quay.io/minio/minio:latest \

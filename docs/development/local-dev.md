@@ -74,6 +74,41 @@ This starts:
 
 Persistent dev data is stored under `hub-meta/dev/`.
 
+### MinIO CORS (required for in-browser preview)
+
+The pure-client safetensors / parquet preview (issue #27) issues cross-origin
+HTTP `Range` reads against the presigned S3 URL that `/resolve/` 302s to.
+Browsers will block those reads unless MinIO advertises CORS.
+
+`up_infra.sh` already passes `MINIO_API_CORS_ALLOW_ORIGIN=*` to the MinIO
+container by default, which is what both the Vite dev origin
+(`http://127.0.0.1:28300`) and production deploys need. Override it with the
+`DEV_MINIO_CORS_ALLOW_ORIGIN` variable in `.env.dev` if you want to restrict
+it to a specific origin (the value is forwarded verbatim as
+`Access-Control-Allow-Origin`; comma-separated origins also work).
+
+If you already have a MinIO container from before this change, recreate it
+so the env var lands:
+
+```bash
+docker rm -f kohakuhub-dev-minio
+./scripts/dev/up_infra.sh
+```
+
+Smoke-test the CORS response (should include
+`Access-Control-Allow-Origin: *` and `Access-Control-Allow-Methods: GET`):
+
+```bash
+curl -i -X OPTIONS http://127.0.0.1:29001/hub-storage \
+     -H 'Origin: http://127.0.0.1:28300' \
+     -H 'Access-Control-Request-Method: GET'
+```
+
+Without this, the preview modal opens, shows its spinner, then surfaces a
+browser-level CORS error instead of the parsed metadata. Downloads via
+`hf_hub_download` / direct `/resolve/` hits are unaffected — only the
+cross-origin Range probe the SPA does breaks.
+
 ## Start The Backend
 
 ```bash
