@@ -1,6 +1,7 @@
 // src/kohaku-hub-ui/src/utils/api.js
 import axios from "axios";
 import { formatAuthHeader, getExternalTokens } from "./externalTokens";
+import { classifyError } from "./http-errors";
 
 const api = axios.create({
   timeout: 30000,
@@ -32,7 +33,19 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     // Don't auto-redirect on 401, let components handle it
-    // This allows visitors to browse public content without login
+    // This allows visitors to browse public content without login.
+    //
+    // Attach an HF-aligned classification (gated / forbidden /
+    // not-found / upstream-unavailable / cors / generic) onto the
+    // error so callers can `catch (err) { render(err.classification) }`
+    // without re-reading X-Error-Code + body every time. See
+    // `utils/http-errors.js` for the truth table.
+    try {
+      error.classification = classifyError(error);
+    } catch {
+      // Never let the interceptor itself throw — falling back to
+      // the raw error is always safer than masking the original.
+    }
     return Promise.reject(error);
   },
 );

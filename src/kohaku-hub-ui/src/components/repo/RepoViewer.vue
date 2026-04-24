@@ -302,6 +302,19 @@
                 :branch="currentBranch"
               />
             </div>
+            <!--
+              When the README fetch itself errored (gated / unavailable /
+              not-found on any fallback source), show the classified
+              state instead of the "No README.md found" placeholder —
+              the latter implied "the repo has no README", when actually
+              we just couldn't read it.
+            -->
+            <ErrorState
+              v-else-if="readmeErrorClassification"
+              :classification="readmeErrorClassification"
+              mode="inline-panel"
+              :retry="loadReadme"
+            />
             <div
               v-else
               class="text-center py-12 text-gray-500 dark:text-gray-400"
@@ -448,6 +461,19 @@
                 Loading files...
               </p>
             </div>
+            <!--
+              Root-tree fetch failed (classified by the axios
+              interceptor → err.classification). Render the shared
+              ErrorState instead of silently showing an empty file
+              list — that was the preview-of-gated-repo symptom in
+              the linked tracking issue.
+            -->
+            <ErrorState
+              v-else-if="treeErrorClassification"
+              :classification="treeErrorClassification"
+              mode="inline-panel"
+              :retry="loadFileTree"
+            />
             <template v-else>
               <!-- Header Row (desktop only) -->
               <div
@@ -873,6 +899,7 @@ import { copyToClipboard } from "@/utils/clipboard";
 import { parseYAMLFrontmatter, normalizeMetadata } from "@/utils/yaml-parser";
 import { parseTags } from "@/utils/tag-parser";
 import { likesAPI, repoAPI } from "@/utils/api";
+import { classifyError, classifyResponse } from "@/utils/http-errors";
 import { resolveRepoTreeEntryPath } from "@/utils/repo-paths";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import MetadataHeader from "@/components/repo/metadata/MetadataHeader.vue";
@@ -880,6 +907,7 @@ import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPa
 import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDatasetsCard.vue";
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
+import ErrorState from "@/components/common/ErrorState.vue";
 import FilePreviewDialog from "@/components/repo/preview/FilePreviewDialog.vue";
 import {
   buildResolveUrl,
@@ -919,6 +947,11 @@ const commitsLoading = ref(false);
 const commitsHasMore = ref(false);
 const commitsNextCursor = ref(null);
 const filesLoading = ref(true);
+// Classified tree / readme errors (utils/http-errors.js shape). A
+// 4xx/5xx fallback failure used to silently render an empty file list
+// or "No README.md found" — now drives the shared <ErrorState> panel.
+const treeErrorClassification = ref(null);
+const readmeErrorClassification = ref(null);
 const readmeContent = ref("");
 const readmeLoading = ref(true);
 const readmeMetadata = ref({});
@@ -1277,6 +1310,7 @@ async function toggleLike() {
 
 async function loadFileTree() {
   filesLoading.value = true;
+  treeErrorClassification.value = null;
   const requestId = fileTreeRequestId.value + 1;
   fileTreeRequestId.value = requestId;
 
@@ -1305,6 +1339,11 @@ async function loadFileTree() {
     console.error("Failed to load file tree:", err);
     if (requestId === fileTreeRequestId.value) {
       fileTree.value = [];
+      // Axios interceptor in utils/api.js attaches `.classification`.
+      // Prefer it; fall back to classifying the bare error ourselves
+      // if a future refactor changes the interceptor.
+      treeErrorClassification.value =
+        err?.classification || classifyError(err);
     }
   } finally {
     if (requestId === fileTreeRequestId.value) {
@@ -1351,6 +1390,7 @@ async function loadFileTree() {
 
 async function loadReadme() {
   readmeLoading.value = true;
+  readmeErrorClassification.value = null;
   try {
     const readmeFile = fileTree.value.find(
       (f) => f.type === "file" && f.path.toLowerCase().endsWith("readme.md"),
@@ -1372,9 +1412,20 @@ async function loadReadme() {
       const { metadata, content } = parseYAMLFrontmatter(rawContent);
       readmeMetadata.value = normalizeMetadata(metadata);
       readmeContent.value = content ? content : " "; // Content without frontmatter for display, single space if remainder empty
+    } else {
+      // README fetch failed (gated / not-found / unavailable). Surface
+      // the classification so the card tab shows an actionable
+      // ErrorState instead of the "No README.md found" placeholder,
+      // which would be misleading — the repo has a README, we just
+      // couldn't read it.
+      readmeErrorClassification.value = await classifyResponse(response);
+      readmeContent.value = "";
+      readmeMetadata.value = {};
     }
   } catch (err) {
     console.error("Failed to load README:", err);
+    readmeErrorClassification.value =
+      err?.classification || classifyError(err);
     readmeContent.value = "";
     readmeMetadata.value = {};
   } finally {

@@ -46,11 +46,21 @@
       </el-icon>
     </div>
 
-    <div v-else-if="error" class="text-center py-20">
-      <div class="i-carbon-warning text-6xl text-red-500 mb-4" />
-      <h2 class="text-2xl font-bold mb-2">{{ error }}</h2>
-      <el-button @click="$router.back()">Go Back</el-button>
-    </div>
+    <ErrorState
+      v-else-if="errorClassification"
+      :classification="errorClassification"
+      mode="full-page"
+      :retry="loadFileContent"
+    >
+      <template #actions>
+        <div class="flex items-center gap-2 mt-4">
+          <el-button type="primary" plain @click="loadFileContent">
+            Retry
+          </el-button>
+          <el-button @click="$router.back()">Go Back</el-button>
+        </div>
+      </template>
+    </ErrorState>
 
     <div v-else>
       <!-- File Header -->
@@ -134,8 +144,10 @@ import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute, onBeforeRouteLeave } from "vue-router";
 import { ElMessage } from "element-plus";
 import CodeEditor from "@/components/common/CodeEditor.vue";
+import ErrorState from "@/components/common/ErrorState.vue";
 import { repoAPI } from "@/utils/api";
 import { normalizeCatchAllParam } from "@/utils/repo-paths";
+import { classifyError, classifyResponse } from "@/utils/http-errors";
 import { useAuthStore } from "@/stores/auth";
 
 const route = useRoute();
@@ -157,7 +169,10 @@ const filePath = computed(() => normalizeCatchAllParam(route.params.file));
 
 // State
 const loading = ref(true);
-const error = ref(null);
+// HF-aligned error classification (see utils/http-errors.js). Replaces
+// the old "error string → generic File Not Found" state so a gated
+// upstream surfaces the real remediation instead of a misleading 404.
+const errorClassification = ref(null);
 const fileContent = ref("");
 const originalContent = ref("");
 const editorRef = ref(null);
@@ -200,20 +215,24 @@ const blobUrl = computed(() => {
 // Methods
 async function loadFileContent() {
   loading.value = true;
-  error.value = null;
+  errorClassification.value = null;
 
   try {
     const response = await fetch(fileUrl.value);
 
     if (!response.ok) {
-      throw new Error("File not found");
+      // Surface the classified response (gated / not-found / upstream
+      // unavailable) so ErrorState renders the right copy instead of
+      // a bare "File not found" string.
+      errorClassification.value = await classifyResponse(response);
+      return;
     }
 
     const content = await response.text();
     fileContent.value = content;
     originalContent.value = content;
   } catch (err) {
-    error.value = err.message || "Failed to load file";
+    errorClassification.value = classifyError(err);
     console.error("Failed to load file:", err);
   } finally {
     loading.value = false;
@@ -221,7 +240,17 @@ async function loadFileContent() {
 }
 
 function handleSave(content, onSuccess, onError) {
-  // Show commit dialog
+  // Refuse to open the commit dialog if the file never loaded
+  // successfully — otherwise the user could overwrite a gated / not-
+  // found file with empty content and silently nuke whatever the
+  // upstream actually has.
+  if (errorClassification.value) {
+    ElMessage.error(
+      "This file did not load successfully; fix the error above before committing changes.",
+    );
+    if (typeof onError === "function") onError();
+    return;
+  }
   showCommitDialog.value = true;
 }
 

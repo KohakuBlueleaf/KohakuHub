@@ -29,6 +29,8 @@ import {
   parseParquetMetadata,
   summarizeParquetSchema,
 } from "@/utils/parquet";
+import { classifyError, ERROR_KIND } from "@/utils/http-errors";
+import ErrorState from "@/components/common/ErrorState.vue";
 
 const props = defineProps({
   visible: { type: Boolean, required: true },
@@ -41,16 +43,11 @@ const emit = defineEmits(["update:visible"]);
 const state = ref("idle"); // idle | loading | ready | error
 const phase = ref(""); // human-readable current phase
 const payload = ref(null);
-const errorMessage = ref("");
-const errorCorsLikely = ref(false);
-// HF-aligned error classification carried on SafetensorsFetchError. When
-// the backend fallback aggregates upstream failures (see
-// src/kohakuhub/api/fallback/utils.py) it returns a structured body with
-// `error`, `detail`, and `sources[]`; the SPA surfaces those here so the
-// error state can render something more actionable than a bare status.
-const errorCode = ref(null);
-const errorSources = ref(null);
-const errorStatus = ref(null);
+// Classification output from utils/http-errors.js — shared with the
+// blob / edit pages and RepoViewer via the same `<ErrorState>`
+// component, so "authentication required" copy stays identical
+// across every surface where a fallback-sourced resource fails.
+const errorClassification = ref(null);
 let currentController = null;
 let currentRequestId = 0;
 
@@ -95,11 +92,7 @@ async function startLoad() {
   state.value = "loading";
   phase.value = describePhase(props.kind, "init");
   payload.value = null;
-  errorMessage.value = "";
-  errorCorsLikely.value = false;
-  errorCode.value = null;
-  errorSources.value = null;
-  errorStatus.value = null;
+  errorClassification.value = null;
 
   const controller = new AbortController();
   currentController = controller;
@@ -138,11 +131,7 @@ async function startLoad() {
   } catch (err) {
     if (requestId !== currentRequestId) return;
     if (err?.name === "AbortError") return;
-    errorMessage.value = err?.message ?? String(err);
-    errorCorsLikely.value = isLikelyCorsError(err);
-    errorCode.value = err?.errorCode ?? null;
-    errorSources.value = Array.isArray(err?.sources) ? err.sources : null;
-    errorStatus.value = typeof err?.status === "number" ? err.status : null;
+    errorClassification.value = classifyError(err);
     state.value = "error";
   } finally {
     if (requestId === currentRequestId) currentController = null;
@@ -169,19 +158,6 @@ function describePhase(kind, phaseName) {
     if (phaseName === "done") return "Done.";
   }
   return phaseName;
-}
-
-function isLikelyCorsError(err) {
-  // Browsers don't expose the CORS failure reason to JS. All we get is a
-  // generic TypeError with "Failed to fetch" (Chromium) or "NetworkError
-  // when attempting to fetch resource" (Firefox). We flag likely-CORS so
-  // the modal can point at the MinIO CORS doc section — misdiagnosing a
-  // real 404 as CORS is cheap; the retry button surfaces the real error.
-  const message = (err?.message ?? "").toLowerCase();
-  if (err?.name === "TypeError") return true;
-  if (message.includes("failed to fetch")) return true;
-  if (message.includes("networkerror")) return true;
-  return false;
 }
 
 function formatNumber(value) {
@@ -269,29 +245,21 @@ const parquetColumnRows = computed(() => {
   }));
 });
 
-// Error classification (based on what the backend fallback returned or
-// what the browser saw). `kind` drives which remediation copy the modal
-// shows.
-const errorKind = computed(() => {
-  if (errorCorsLikely.value) return "cors";
-  if (errorCode.value === "GatedRepo") return "gated";
-  if (errorStatus.value === 403) return "forbidden";
-  if (errorCode.value === "EntryNotFound" || errorStatus.value === 404)
-    return "not-found";
-  if (errorStatus.value === 502 || errorStatus.value === 503)
-    return "upstream-unavailable";
-  return "generic";
-});
-
-const errorSourceRows = computed(() => {
-  if (!Array.isArray(errorSources.value)) return [];
-  return errorSources.value.map((src) => ({
-    name: src?.name ?? "(unknown)",
-    url: src?.url ?? "",
-    status: src?.status == null ? "-" : String(src.status),
-    category: src?.category ?? "",
-    message: typeof src?.message === "string" ? src.message : "",
-  }));
+// Customize the title / hint copy for the preview-specific "file
+// header fetch" context. The default `ErrorState` copy talks about
+// the whole repo, but inside the preview dialog we specifically
+// failed to read ONE file's metadata — the shared hint for "gated"
+// still applies verbatim, others benefit from a preview-scoped nudge.
+const previewTitle = computed(() => {
+  if (!errorClassification.value) return null;
+  switch (errorClassification.value.kind) {
+    case ERROR_KIND.NOT_FOUND:
+      return "File header not found on any source";
+    case ERROR_KIND.UPSTREAM_UNAVAILABLE:
+      return "Upstream source unavailable";
+    default:
+      return null; // fall back to ErrorState's default
+  }
 });
 </script>
 
@@ -315,90 +283,13 @@ const errorSourceRows = computed(() => {
       </p>
     </div>
 
-    <div
-      v-else-if="state === 'error'"
-      class="py-8 flex flex-col items-center text-center"
-    >
-      <div
-        :class="
-          errorKind === 'gated'
-            ? 'i-carbon-locked text-5xl text-amber-500'
-            : 'i-carbon-warning-alt text-5xl text-amber-500'
-        "
-      />
-      <p class="mt-4 text-sm font-medium text-gray-800 dark:text-gray-100">
-        <template v-if="errorKind === 'gated'">
-          Authentication required
-        </template>
-        <template v-else-if="errorKind === 'forbidden'">
-          Access denied by upstream
-        </template>
-        <template v-else-if="errorKind === 'not-found'">
-          File not found on any source
-        </template>
-        <template v-else-if="errorKind === 'upstream-unavailable'">
-          Upstream source unavailable
-        </template>
-        <template v-else>
-          Preview failed
-        </template>
-      </p>
-      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 max-w-md break-words">
-        {{ errorMessage }}
-      </p>
-
-      <p
-        v-if="errorKind === 'gated'"
-        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
-      >
-        At least one fallback source gates this repository and requires
-        authentication. Attach an access token for that source
-        (typically Hugging Face) in your account settings, then retry.
-      </p>
-      <p
-        v-else-if="errorKind === 'cors'"
-        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
-      >
-        This looks like a CORS failure on the object-storage host. Preview
-        needs the S3/MinIO backend to advertise
-        <code>Access-Control-Allow-Origin</code>. See
-        <em>docs/development/local-dev.md &rarr; "MinIO CORS"</em>.
-      </p>
-      <p
-        v-else-if="errorKind === 'not-found'"
-        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
-      >
-        Every configured fallback source returned 404 for this file.
-        The containing repository may exist, but this specific entry
-        does not.
-      </p>
-      <p
-        v-else-if="errorKind === 'upstream-unavailable'"
-        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
-      >
-        The fallback source(s) did not respond within the timeout or
-        returned a server error. This is usually transient — retry in
-        a few seconds.
-      </p>
-
-      <div v-if="errorSourceRows.length" class="mt-4 w-full max-w-xl text-left">
-        <details class="text-xs">
-          <summary class="cursor-pointer text-gray-500 dark:text-gray-400 mb-2">
-            Fallback sources tried ({{ errorSourceRows.length }})
-          </summary>
-          <el-table :data="errorSourceRows" size="small" :border="true">
-            <el-table-column prop="name" label="Source" width="130" />
-            <el-table-column prop="status" label="HTTP" width="70" />
-            <el-table-column prop="category" label="Category" width="110" />
-            <el-table-column prop="message" label="Message" />
-          </el-table>
-        </details>
-      </div>
-
-      <el-button class="mt-4" type="primary" plain @click="retry">
-        Retry
-      </el-button>
-    </div>
+    <ErrorState
+      v-else-if="state === 'error' && errorClassification"
+      :classification="errorClassification"
+      mode="inline-panel"
+      :retry="retry"
+      :title-override="previewTitle"
+    />
 
     <div v-else-if="state === 'ready' && payload?.kind === 'safetensors'">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">

@@ -326,7 +326,7 @@ describe("FilePreviewDialog", () => {
     // dialog already renders the "Preview failed" view because the
     // component rejects unsupported kinds, so this assertion just
     // confirms the fallthrough did not crash.
-    expect(wrapper.text()).toContain("Preview failed");
+    expect(wrapper.text()).toContain("Request failed");
     wrapper.unmount();
   });
 
@@ -499,7 +499,7 @@ describe("FilePreviewDialog", () => {
     safetensorsCtrl.deferred.reject(new Error("internal explosion"));
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Preview failed");
+    expect(wrapper.text()).toContain("Request failed");
     expect(wrapper.text()).toContain("internal explosion");
 
     // Clicking Retry kicks off a fresh parser call.
@@ -547,7 +547,7 @@ describe("FilePreviewDialog", () => {
     safetensorsCtrl.deferred.reject(new Error("404 not found"));
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Preview failed");
+    expect(wrapper.text()).toContain("Request failed");
     expect(wrapper.text()).not.toContain("looks like a CORS failure");
 
     wrapper.unmount();
@@ -566,7 +566,7 @@ describe("FilePreviewDialog", () => {
     safetensorsCtrl.deferred.reject(abortErr);
     await flushPromises();
 
-    expect(wrapper.text()).not.toContain("Preview failed");
+    expect(wrapper.text()).not.toContain("Request failed");
     wrapper.unmount();
   });
 
@@ -618,7 +618,7 @@ describe("FilePreviewDialog", () => {
     });
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Preview failed");
+    expect(wrapper.text()).toContain("Request failed");
     expect(wrapper.text()).toContain("Unsupported preview kind: gguf");
 
     wrapper.unmount();
@@ -662,7 +662,7 @@ describe("FilePreviewDialog", () => {
     const text = wrapper.text();
     expect(text).toContain("Authentication required");
     // The copy guides the user toward the concrete next step.
-    expect(text).toContain("Attach an access token");
+    expect(text).toContain("attach a Hugging Face token");
     // Raw upstream message surfaces in the sources details.
     expect(text).toContain("Access to model owner/demo is restricted");
     expect(text).toContain("Mirror");
@@ -695,8 +695,8 @@ describe("FilePreviewDialog", () => {
     await flushPromises();
 
     const text = wrapper.text();
-    expect(text).toContain("File not found on any source");
-    expect(text).toContain("Every configured fallback source returned 404");
+    expect(text).toContain("File header not found on any source");
+    expect(text).toContain("Every configured source returned 404");
 
     wrapper.unmount();
   });

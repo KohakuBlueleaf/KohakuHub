@@ -313,6 +313,13 @@ async def try_fallback_info(
     # Construct API path
     kohaku_path = f"/api/{repo_type}s/{namespace}/{name}"
 
+    # Every non-2xx source probe becomes an attempt dict; if we exit
+    # the loop without a success, aggregate the attempts into a
+    # classified JSONResponse (same contract as try_fallback_resolve,
+    # but with `scope="repo"` so all-404 maps to RepoNotFound rather
+    # than EntryNotFound — info is a repo-level operation).
+    attempts: list[dict] = []
+
     # Try each source
     for source in sources:
         try:
@@ -347,14 +354,27 @@ async def try_fallback_info(
                 )
                 return data
 
-            elif not should_retry_source(response):
-                return None
+            logger.warning(
+                f"Fallback info attempt at {source['name']}: HTTP {response.status_code}"
+            )
+            attempts.append(build_fallback_attempt(source, response=response))
 
+        except httpx.TimeoutException as e:
+            logger.warning(f"Fallback info timed out at {source['name']}")
+            attempts.append(build_fallback_attempt(source, timeout=e))
+            continue
         except Exception as e:
             logger.warning(f"Fallback info failed for {source['name']}: {e}")
+            attempts.append(build_fallback_attempt(source, network=e))
             continue
 
-    return None
+    if not attempts:
+        return None
+    logger.debug(
+        f"Fallback info MISS: aggregating {len(attempts)} source failure(s) "
+        f"for {repo_type}/{namespace}/{name}"
+    )
+    return build_aggregate_failure_response(attempts, scope="repo")
 
 
 async def try_fallback_tree(
@@ -391,6 +411,12 @@ async def try_fallback_tree(
     clean_path = path.lstrip("/") if path else ""
     kohaku_path = f"/api/{repo_type}s/{namespace}/{name}/tree/{revision}/{clean_path}"
 
+    # Tree is a repo-level operation: `scope="repo"` on all-404 so
+    # hf_hub_download / HfApi.list_repo_files raise
+    # RepositoryNotFoundError (not EntryNotFoundError), matching what
+    # HF itself returns for a missing model.
+    attempts: list[dict] = []
+
     # Try each source
     for source in sources:
         try:
@@ -425,14 +451,27 @@ async def try_fallback_tree(
                     headers=headers,
                 )
 
-            elif not should_retry_source(response):
-                return None
+            logger.warning(
+                f"Fallback tree attempt at {source['name']}: HTTP {response.status_code}"
+            )
+            attempts.append(build_fallback_attempt(source, response=response))
 
+        except httpx.TimeoutException as e:
+            logger.warning(f"Fallback tree timed out at {source['name']}")
+            attempts.append(build_fallback_attempt(source, timeout=e))
+            continue
         except Exception as e:
             logger.warning(f"Fallback tree failed for {source['name']}: {e}")
+            attempts.append(build_fallback_attempt(source, network=e))
             continue
 
-    return None
+    if not attempts:
+        return None
+    logger.debug(
+        f"Fallback tree MISS: aggregating {len(attempts)} source failure(s) "
+        f"for {repo_type}/{namespace}/{name}/tree"
+    )
+    return build_aggregate_failure_response(attempts, scope="repo")
 
 
 async def try_fallback_paths_info(
@@ -465,6 +504,10 @@ async def try_fallback_paths_info(
     # Construct API path
     kohaku_path = f"/api/{repo_type}s/{namespace}/{name}/paths-info/{revision}"
 
+    # paths-info is per-file (it answers "does file X exist at
+    # revision R"), so all-404 stays scope="file" → EntryNotFound.
+    attempts: list[dict] = []
+
     # Try each source
     for source in sources:
         try:
@@ -487,14 +530,27 @@ async def try_fallback_paths_info(
                 )
                 return data
 
-            elif not should_retry_source(response):
-                return None
+            logger.warning(
+                f"Fallback paths-info attempt at {source['name']}: HTTP {response.status_code}"
+            )
+            attempts.append(build_fallback_attempt(source, response=response))
 
+        except httpx.TimeoutException as e:
+            logger.warning(f"Fallback paths-info timed out at {source['name']}")
+            attempts.append(build_fallback_attempt(source, timeout=e))
+            continue
         except Exception as e:
             logger.warning(f"Fallback paths-info failed for {source['name']}: {e}")
+            attempts.append(build_fallback_attempt(source, network=e))
             continue
 
-    return None
+    if not attempts:
+        return None
+    logger.debug(
+        f"Fallback paths-info MISS: aggregating {len(attempts)} source failure(s) "
+        f"for {repo_type}/{namespace}/{name}"
+    )
+    return build_aggregate_failure_response(attempts, scope="file")
 
 
 async def fetch_external_list(

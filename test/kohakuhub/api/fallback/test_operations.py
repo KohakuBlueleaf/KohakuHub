@@ -516,7 +516,14 @@ async def test_try_fallback_resolve_continues_past_every_failure_and_aggregates(
         path,
         httpx.TimeoutException("too slow"),
     )
-    FakeFallbackClient.queue("https://auth.local", "HEAD", path, _content_response(401))
+    # 401 WITH X-Error-Code=GatedRepo — a genuinely gated repo (not the
+    # bare-401 anti-enumeration shape HF uses for missing repos).
+    FakeFallbackClient.queue(
+        "https://auth.local",
+        "HEAD",
+        path,
+        _content_response(401, headers={"X-Error-Code": "GatedRepo"}),
+    )
     FakeFallbackClient.queue("https://missing.local", "HEAD", path, _content_response(404))
 
     response = await fallback_ops.try_fallback_resolve(
@@ -535,8 +542,8 @@ async def test_try_fallback_resolve_continues_past_every_failure_and_aggregates(
         "https://missing.local",
     ]
 
-    # Aggregate: timeout + 401 + 404. Auth wins the priority contest
-    # because it's the most actionable status to surface.
+    # Aggregate: timeout + 401(GatedRepo) + 404. Auth wins the priority
+    # contest because it's the most actionable status to surface.
     assert response is not None
     assert response.status_code == 401
     assert response.headers.get("x-error-code") == "GatedRepo"
@@ -949,7 +956,13 @@ async def test_try_fallback_resolve_surfaces_upstream_401_as_aggregated_error(
         _content_response(
             401,
             content=gated_body,
-            headers={"content-type": "text/plain; charset=utf-8"},
+            # X-Error-Code=GatedRepo is what HF sets only when the repo
+            # actually exists and is gated — bare 401 means the repo
+            # doesn't exist, see test_try_fallback_resolve_bare_401...
+            headers={
+                "content-type": "text/plain; charset=utf-8",
+                "X-Error-Code": "GatedRepo",
+            },
         ),
     )
 
@@ -1054,12 +1067,16 @@ async def test_try_fallback_resolve_continues_past_401_and_succeeds_on_next_sour
         ],
     )
     path = "/models/owner/demo/resolve/main/weights.bin"
-    # Source 1 is gated.
+    # Source 1 is gated — 401 + X-Error-Code=GatedRepo, not bare 401
+    # (which HF uses for non-existent repos and we would classify as
+    # not-found instead).
     FakeFallbackClient.queue(
         "https://gated.local",
         "HEAD",
         path,
-        _content_response(401, content=b"gated"),
+        _content_response(
+            401, content=b"gated", headers={"X-Error-Code": "GatedRepo"}
+        ),
     )
     # Source 2 happily serves the same file.
     FakeFallbackClient.queue(
@@ -1116,7 +1133,11 @@ async def test_try_fallback_resolve_aggregates_mixed_failures_across_sources(
     path = "/models/owner/demo/resolve/main/file.bin"
     FakeFallbackClient.queue(
         "https://gated.local", "HEAD", path,
-        _content_response(401, content=b"Auth required"),
+        _content_response(
+            401,
+            content=b"Auth required",
+            headers={"X-Error-Code": "GatedRepo"},
+        ),
     )
     FakeFallbackClient.queue(
         "https://missing.local", "HEAD", path,
@@ -1260,13 +1281,17 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
             {"url": "https://secondary.local", "name": "Secondary", "source_type": "huggingface"},
         ],
     )
+    # Single 403 → aggregated 403 (no X-Error-Code — HF has no specific
+    # code for plain 403). Contract parity with try_fallback_resolve.
     FakeFallbackClient.queue(
         "https://secondary.local",
         "GET",
         "/api/models/owner/demo",
         _content_response(403),
     )
-    assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
+    info_resp = await fallback_ops.try_fallback_info("model", "owner", "demo")
+    assert info_resp is not None
+    assert info_resp.status_code == 403
     assert FakeFallbackClient.calls[0][0] == "https://secondary.local"
 
     FakeFallbackClient.reset()
@@ -1284,8 +1309,12 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         "/api/models/owner/demo",
         RuntimeError("info failed"),
     )
-    assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
+    # Transport-level failure classifies as `network` → aggregate 502.
+    info_resp_502 = await fallback_ops.try_fallback_info("model", "owner", "demo")
+    assert info_resp_502 is not None
+    assert info_resp_502.status_code == 502
 
+    # No sources enabled → still returns None (nothing to aggregate).
     monkeypatch.setattr(fallback_ops, "get_enabled_sources", lambda namespace, user_tokens=None: [])
     assert await fallback_ops.try_fallback_info("model", "owner", "demo") is None
     assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
@@ -1300,6 +1329,8 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         is None
     )
 
+    # tree is repo-level — all-404 should classify as RepoNotFound,
+    # not EntryNotFound, so hf_hub raises RepositoryNotFoundError.
     monkeypatch.setattr(
         fallback_ops,
         "get_enabled_sources",
@@ -1311,9 +1342,12 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         "https://tree.local",
         "GET",
         "/api/models/owner/demo/tree/main/",
-        _content_response(403),
+        _content_response(404),
     )
-    assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
+    tree_resp = await fallback_ops.try_fallback_tree("model", "owner", "demo", "main")
+    assert tree_resp is not None
+    assert tree_resp.status_code == 404
+    assert tree_resp.headers.get("x-error-code") == "RepoNotFound"
 
     FakeFallbackClient.reset()
     FakeFallbackClient.queue(
@@ -1322,8 +1356,14 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         "/api/models/owner/demo/tree/main/",
         RuntimeError("tree failed"),
     )
-    assert await fallback_ops.try_fallback_tree("model", "owner", "demo", "main") is None
+    tree_resp_502 = await fallback_ops.try_fallback_tree(
+        "model", "owner", "demo", "main",
+    )
+    assert tree_resp_502 is not None
+    assert tree_resp_502.status_code == 502
 
+    # paths-info is per-file → all-404 keeps EntryNotFound so hf_hub
+    # raises EntryNotFoundError for a truly-missing entry.
     monkeypatch.setattr(
         fallback_ops,
         "get_enabled_sources",
@@ -1335,18 +1375,14 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         "https://paths.local",
         "POST",
         "/api/models/owner/demo/paths-info/main",
-        _content_response(403),
+        _content_response(404),
     )
-    assert (
-        await fallback_ops.try_fallback_paths_info(
-            "model",
-            "owner",
-            "demo",
-            "main",
-            ["README.md"],
-        )
-        is None
+    paths_resp = await fallback_ops.try_fallback_paths_info(
+        "model", "owner", "demo", "main", ["README.md"],
     )
+    assert paths_resp is not None
+    assert paths_resp.status_code == 404
+    assert paths_resp.headers.get("x-error-code") == "EntryNotFound"
 
     FakeFallbackClient.reset()
     FakeFallbackClient.queue(
@@ -1355,16 +1391,11 @@ async def test_try_fallback_info_tree_and_paths_info_cover_cached_and_failure_pa
         "/api/models/owner/demo/paths-info/main",
         RuntimeError("paths failed"),
     )
-    assert (
-        await fallback_ops.try_fallback_paths_info(
-            "model",
-            "owner",
-            "demo",
-            "main",
-            ["README.md"],
-        )
-        is None
+    paths_resp_502 = await fallback_ops.try_fallback_paths_info(
+        "model", "owner", "demo", "main", ["README.md"],
     )
+    assert paths_resp_502 is not None
+    assert paths_resp_502.status_code == 502
 
 
 @pytest.mark.asyncio

@@ -444,4 +444,128 @@ describe("RepoViewer path handling", () => {
     expect(wrapper.text()).toContain("Ship new tree row");
     expect(wrapper.text()).not.toContain("Old tree row");
   });
+
+  it("renders an ErrorState panel when the root tree fetch fails (gated fallback)", async () => {
+    // Backend replies with the shape build_aggregate_failure_response
+    // emits on an all-auth aggregate: 401 + X-Error-Code=GatedRepo +
+    // sources[] in the JSON body. RepoViewer should classify via the
+    // axios interceptor and render ErrorState where the file list
+    // would otherwise sit — NOT silently show an empty grid.
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main",
+        () =>
+          jsonResponse(
+            {
+              error: "GatedRepo",
+              detail:
+                "Upstream source requires authentication - likely a gated repository.",
+              sources: [
+                {
+                  name: "HuggingFace",
+                  url: "https://huggingface.co",
+                  status: 401,
+                  category: "auth",
+                  message: "Access restricted",
+                },
+              ],
+            },
+            {
+              status: 401,
+              headers: {
+                "X-Error-Code": "GatedRepo",
+                "X-Error-Message":
+                  "Upstream source requires authentication - likely a gated repository.",
+              },
+            },
+          ),
+      ),
+    );
+
+    const wrapper = mountViewer();
+    await flushPromises();
+    await flushPromises();
+
+    // Shared ErrorState's default copy for `gated`.
+    expect(wrapper.text()).toContain("Authentication required");
+    // Diagnostic disclosure from the sources[] body. The per-row
+    // cell content lives inside the ElTable stub's scoped-slot
+    // rendering, which isn't exercised at this mount's stubs; the
+    // count is enough to prove we plumbed sources through.
+    expect(wrapper.text()).toContain("Fallback sources tried (1)");
+    // The misleading "No files" / empty-tree copy must NOT be shown
+    // once we have a classified error.
+    expect(wrapper.text()).not.toContain("No files");
+
+    wrapper.unmount();
+  });
+
+  it("renders an ErrorState for a README that fails to resolve, not the 'No README.md found' placeholder", async () => {
+    // Tree returns one entry — a README — so loadReadme() will try to
+    // fetch it. That fetch returns a classified 401/GatedRepo body;
+    // RepoViewer should show the ErrorState in the README slot
+    // instead of the misleading "No README.md found" empty copy.
+    server.use(
+      http.get(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/tree/main",
+        () =>
+          jsonResponse([
+            {
+              type: "file",
+              path: "README.md",
+              size: 120,
+              lastCommit: {
+                id: "c1",
+                title: "Add readme",
+                date: "2026-04-21T13:53:39.000000Z",
+              },
+            },
+          ]),
+      ),
+      http.post(
+        "/api/datasets/open-media-lab/hierarchy-crawl-fixtures/paths-info/main",
+        () => jsonResponse([]),
+      ),
+      // The README resolve itself fails with the aggregate-gated body.
+      http.get(
+        "/datasets/open-media-lab/hierarchy-crawl-fixtures/resolve/main/README.md",
+        () =>
+          jsonResponse(
+            {
+              error: "GatedRepo",
+              detail:
+                "Upstream source requires authentication - likely a gated repository.",
+              sources: [
+                {
+                  name: "HF",
+                  url: "https://hf",
+                  status: 401,
+                  category: "auth",
+                  message: "Access restricted",
+                },
+              ],
+            },
+            {
+              status: 401,
+              headers: {
+                "X-Error-Code": "GatedRepo",
+                "X-Error-Message":
+                  "Upstream source requires authentication - likely a gated repository.",
+              },
+            },
+          ),
+      ),
+    );
+
+    const wrapper = mountViewer({ tab: "card" });
+    await flushPromises();
+    await flushPromises();
+    await flushPromises();
+
+    const text = wrapper.text();
+    expect(text).toContain("Authentication required");
+    expect(text).not.toContain("No README.md found");
+
+    wrapper.unmount();
+  });
 });

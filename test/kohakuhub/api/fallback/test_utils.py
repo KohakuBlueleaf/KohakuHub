@@ -66,6 +66,7 @@ def test_extract_error_message_falls_back_to_text_and_status():
     ("status_code", "should_retry"),
     [
         (200, False),
+        (302, False),  # 3xx falls through to the default "don't retry" branch
         (400, False),
         (401, False),
         (403, False),
@@ -175,18 +176,31 @@ from kohakuhub.api.fallback.utils import (
 )
 
 
-def _plain_response(status: int, body: bytes = b"") -> httpx.Response:
+def _plain_response(
+    status: int, body: bytes = b"", headers: dict | None = None
+) -> httpx.Response:
     return httpx.Response(
         status,
         content=body,
+        headers=headers or {},
         request=httpx.Request("HEAD", "https://src.local/f"),
     )
 
 
 def test_build_fallback_attempt_categorizes_known_status_codes():
     src = {"name": "S", "url": "https://s"}
+    # Plain 401 (no X-Error-Code) is HF's repo-doesn't-exist shape and
+    # must classify as NOT_FOUND; the AUTH path is guarded by the
+    # X-Error-Code=GatedRepo header (see the dedicated test below).
     assert (
         build_fallback_attempt(src, response=_plain_response(401))["category"]
+        == CATEGORY_NOT_FOUND
+    )
+    assert (
+        build_fallback_attempt(
+            src,
+            response=_plain_response(401, headers={"X-Error-Code": "GatedRepo"}),
+        )["category"]
         == CATEGORY_AUTH
     )
     assert (
@@ -205,6 +219,83 @@ def test_build_fallback_attempt_categorizes_known_status_codes():
         build_fallback_attempt(src, response=_plain_response(503))["category"]
         == CATEGORY_SERVER
     )
+
+
+def test_build_fallback_attempt_reads_x_error_code_header():
+    """The aggregate layer needs the upstream's X-Error-Code to
+    distinguish 'real gated' (401 + GatedRepo) from 'repo missing'
+    (bare 401, HF's anti-enumeration shape). Persist it on the
+    attempt so `build_aggregate_failure_response` can branch on it."""
+    src = {"name": "S", "url": "https://s"}
+    attempt = build_fallback_attempt(
+        src,
+        response=_plain_response(
+            401,
+            headers={
+                "X-Error-Code": "GatedRepo",
+                "X-Error-Message": "need auth",
+            },
+        ),
+    )
+    assert attempt["category"] == CATEGORY_AUTH
+    assert attempt["error_code"] == "GatedRepo"
+
+
+def test_build_fallback_attempt_persists_not_found_error_code():
+    """Upstream EntryNotFound / RepoNotFound / RevisionNotFound ride
+    through on the attempt so the aggregate can use them verbatim."""
+    src = {"name": "S", "url": "https://s"}
+    for code in ("EntryNotFound", "RepoNotFound", "RevisionNotFound"):
+        attempt = build_fallback_attempt(
+            src,
+            response=_plain_response(
+                404, headers={"X-Error-Code": code}
+            ),
+        )
+        assert attempt["category"] == CATEGORY_NOT_FOUND
+        assert attempt["error_code"] == code
+
+
+def test_build_aggregate_failure_response_escalates_bare_401_to_repo_not_found():
+    """When every attempt returned bare 401 (no GatedRepo code), the
+    aggregate is 404 RepoNotFound — hf_hub's own heuristic. Even on
+    scope='file' the escalation applies because the upstream is
+    telling us the repo itself does not exist."""
+    src = {"name": "S", "url": "https://s"}
+    attempts = [
+        build_fallback_attempt(src, response=_plain_response(401)),
+    ]
+    resp = build_aggregate_failure_response(attempts, scope="file")
+    assert resp.status_code == 404
+    assert resp.headers.get("x-error-code") == "RepoNotFound"
+
+
+def test_build_aggregate_failure_response_plain_404_stays_entry_not_found():
+    """For scope='file', a genuine 404 (no bare-401 repo-miss signal)
+    still maps to EntryNotFound so the client raises EntryNotFoundError."""
+    src = {"name": "S", "url": "https://s"}
+    attempts = [build_fallback_attempt(src, response=_plain_response(404))]
+    resp = build_aggregate_failure_response(attempts, scope="file")
+    assert resp.status_code == 404
+    assert resp.headers.get("x-error-code") == "EntryNotFound"
+
+
+def test_build_aggregate_failure_response_real_gated_stays_auth():
+    """A 401 with X-Error-Code=GatedRepo must keep the AUTH path
+    (401 GatedRepo) so the client raises GatedRepoError, not
+    RepositoryNotFoundError."""
+    src = {"name": "S", "url": "https://s"}
+    attempts = [
+        build_fallback_attempt(
+            src,
+            response=_plain_response(
+                401, headers={"X-Error-Code": "GatedRepo"}
+            ),
+        )
+    ]
+    resp = build_aggregate_failure_response(attempts, scope="file")
+    assert resp.status_code == 401
+    assert resp.headers.get("x-error-code") == "GatedRepo"
 
 
 def test_build_fallback_attempt_falls_through_on_unclassifiable_status():
