@@ -44,6 +44,41 @@ except ImportError:  # pre-1.0 hf_hub matrix cells
     parse_xet_file_data_from_response = None  # type: ignore[assignment]
     HAS_XET = False
 
+# hf_hub migrated its internal HTTP layer from `requests` to `httpx`
+# in 1.0. That migration changed the type `hf_raise_for_status`
+# accepts: older versions expect `requests.Response`, newer ones
+# expect `httpx.Response`. The CLASSIFICATION logic (X-Error-Code →
+# GatedRepoError / EntryNotFoundError / generic HfHubHTTPError) is
+# identical across both branches — only the input type differs, so
+# the pattern-D tests below build whichever Response type the
+# installed hf_hub understands and assert the same classification on
+# every matrix cell.
+import huggingface_hub as _hf
+
+_hf_version_tuple = tuple(
+    int(p) for p in _hf.__version__.split(".")[:2] if p.isdigit()
+)
+_HF_USES_HTTPX = _hf_version_tuple >= (1, 0)
+
+
+def _hf_error(name):
+    """Resolve an hf_hub exception class across the matrix of installed
+    versions. The public module graph reshuffled a few times:
+
+    - 0.20.x: only ``huggingface_hub.utils.<Name>`` is importable
+    - 0.30.x through latest: ``huggingface_hub.errors.<Name>`` is the
+      documented location, also re-exported from ``huggingface_hub.utils``
+
+    Try the modern path first; fall back to the utils path on old cells.
+    """
+    try:
+        mod = __import__("huggingface_hub.errors", fromlist=[name])
+        return getattr(mod, name)
+    except (ImportError, AttributeError):
+        pass
+    mod = __import__("huggingface_hub.utils", fromlist=[name])
+    return getattr(mod, name)
+
 _HF_METADATA_FIELDS = set(inspect.signature(HfFileMetadata).parameters.keys())
 
 import kohakuhub.api.fallback.operations as fallback_ops  # noqa: E402
@@ -86,6 +121,43 @@ def _to_httpx(response, *, request_url: str) -> httpx.Response:
         content=response.body or b"",
         request=httpx.Request("HEAD", request_url),
     )
+
+
+def _to_hf_response(response, *, request_url: str):
+    """Rehydrate a FastAPI ``Response`` as the Response type the
+    installed hf_hub's ``hf_raise_for_status`` expects.
+
+    - hf_hub >= 1.0 → ``httpx.Response``
+    - hf_hub <  1.0 → ``requests.Response``
+
+    Used only by pattern-D tests that drive ``hf_raise_for_status``;
+    other tests in this file keep using ``_to_httpx`` because they
+    read fields (status, headers) that exist on both shapes.
+    """
+    raw_pairs = [
+        (k.decode("latin-1"), v.decode("latin-1"))
+        for k, v in response.raw_headers
+    ]
+    body = response.body or b""
+    if _HF_USES_HTTPX:
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=httpx.Headers(raw_pairs),
+            content=body,
+            request=httpx.Request("HEAD", request_url),
+        )
+    # requests branch (0.x hf_hub). Import lazily so the module import
+    # does not fail on a hypothetical httpx-only install.
+    import requests
+    from requests.structures import CaseInsensitiveDict
+
+    r = requests.Response()
+    r.status_code = response.status_code
+    r.headers = CaseInsensitiveDict(raw_pairs)
+    r.url = request_url
+    r._content = body
+    r.encoding = "utf-8"
+    return r
 
 
 def _hf_metadata(hx: httpx.Response) -> HfFileMetadata:
@@ -442,3 +514,126 @@ async def test_pattern_A_resolve_cache_HEAD_fallback_on_error(monkeypatch):
     assert meta.commit_hash == "abc123"
     assert meta.etag == "deadbeef"
     assert meta.size == 278
+
+
+# ---------------------------------------------------------------------------
+# Pattern D. All sources fail — aggregated error must flow through
+# huggingface_hub's `hf_raise_for_status` with the *right* exception
+# subclass. Without these tests a regression that drops `X-Error-Code`
+# would silently downgrade `GatedRepoError` → generic `RepositoryNotFoundError`
+# (the "all 401 look like misses" fallback in hf_hub/utils/_http.py).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
+    """Single gated source → aggregate 401 + X-Error-Code=GatedRepo. When
+    fed to `hf_raise_for_status`, huggingface_hub must raise
+    `GatedRepoError` specifically, not the generic 401→RepositoryNotFound
+    fallback. This is the regression-guard for the fallback bug repro
+    against `animetimm/mobilenetv3_large_150d.dbv4-full`."""
+    GatedRepoError = _hf_error("GatedRepoError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/model.safetensors"
+
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
+        _content_response(
+            401,
+            content=(
+                b"Access to model owner/demo is restricted. You must "
+                b"have access to it and be authenticated to access it. "
+                b"Please log in."
+            ),
+            headers={"content-type": "text/plain; charset=utf-8"},
+            url=f"{HF_ENDPOINT}{REPO_PREFIX}/model.safetensors",
+        ),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "model.safetensors", method="HEAD",
+    )
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/model.safetensors")
+    assert hx.status_code == 401
+    assert hx.headers.get("x-error-code") == "GatedRepo"
+
+    with pytest.raises(GatedRepoError):
+        hf_raise_for_status(hx)
+
+
+@pytest.mark.asyncio
+async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
+    """All sources legitimately 404 → aggregate 404 + X-Error-Code=EntryNotFound.
+    hf_hub must raise `EntryNotFoundError` (per-file miss), not
+    `RepositoryNotFoundError` — the repo exists on at least one source
+    per the tree endpoint, it's just this particular file that is
+    missing."""
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": HF_ENDPOINT, "name": "HF", "source_type": "huggingface"},
+            {"url": "https://mirror.local", "name": "Mirror", "source_type": "huggingface"},
+        ],
+    )
+    path = f"{REPO_PREFIX}/nope.bin"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
+        _content_response(404, url=f"{HF_ENDPOINT}{REPO_PREFIX}/nope.bin"),
+    )
+    FakeFallbackClient.queue(
+        "https://mirror.local", "HEAD", path,
+        _content_response(404, url=f"https://mirror.local{REPO_PREFIX}/nope.bin"),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "nope.bin", method="HEAD",
+    )
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/nope.bin")
+    assert hx.status_code == 404
+    assert hx.headers.get("x-error-code") == "EntryNotFound"
+
+    with pytest.raises(EntryNotFoundError):
+        hf_raise_for_status(hx)
+
+
+@pytest.mark.asyncio
+async def test_pattern_D_all_5xx_raises_generic_HfHubHTTPError(monkeypatch):
+    """Aggregate of 5xx / timeout is a 502 with no X-Error-Code so hf_hub
+    raises its generic `HfHubHTTPError` (caller usually treats this as
+    a retryable upstream issue). The important property: it is NOT
+    mis-classified as GatedRepo / EntryNotFound / RepoNotFound."""
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+    GatedRepoError = _hf_error("GatedRepoError")
+    HfHubHTTPError = _hf_error("HfHubHTTPError")
+    RepositoryNotFoundError = _hf_error("RepositoryNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/transient.bin"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
+        _content_response(503, url=f"{HF_ENDPOINT}{REPO_PREFIX}/transient.bin"),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "transient.bin", method="HEAD",
+    )
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{REPO_PREFIX}/transient.bin")
+    assert hx.status_code == 502
+    assert hx.headers.get("x-error-code") is None
+
+    with pytest.raises(HfHubHTTPError) as excinfo:
+        hf_raise_for_status(hx)
+    # Must NOT match the specific subclasses reserved for gated /
+    # missing-entry / missing-repo — those would signal the wrong
+    # remediation to a downstream user.
+    assert not isinstance(excinfo.value, GatedRepoError)
+    assert not isinstance(excinfo.value, EntryNotFoundError)
+    assert not isinstance(excinfo.value, RepositoryNotFoundError)

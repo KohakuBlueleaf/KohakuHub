@@ -179,6 +179,143 @@ describe("safetensors utilities", () => {
     expect(err.status).toBe(403);
   });
 
+  it("captures X-Error-Code + structured sources body from an aggregated fallback error", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    // Shape matches src/kohakuhub/api/fallback/utils.py
+    // build_aggregate_failure_response — a gated 401 with
+    // HF-compatible X-Error-Code=GatedRepo and a sources[] listing.
+    const aggregated = {
+      error: "GatedRepo",
+      detail:
+        "Upstream source requires authentication - likely a gated repository.",
+      sources: [
+        {
+          name: "HuggingFace",
+          url: "https://huggingface.co",
+          status: 401,
+          category: "auth",
+          message: "Access to model owner/demo is restricted. Please log in.",
+        },
+      ],
+    };
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(aggregated, {
+          status: 401,
+          headers: {
+            "X-Error-Code": "GatedRepo",
+            "X-Error-Message":
+              "Upstream source requires authentication - likely a gated repository.",
+          },
+        }),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(401);
+    expect(err.errorCode).toBe("GatedRepo");
+    expect(err.detail).toContain("authentication");
+    expect(err.sources).toHaveLength(1);
+    expect(err.sources[0]).toMatchObject({
+      name: "HuggingFace",
+      status: 401,
+      category: "auth",
+    });
+    expect(err.message).toContain("authentication");
+  });
+
+  it("defaults tensor data_offsets to [0, 0] when the header omits them", async () => {
+    const { parseSafetensorsMetadata } = await loadModule();
+
+    // A malformed-but-salvageable header: the tensor entry has dtype +
+    // shape but no `data_offsets` field. The parser should still produce
+    // a row (with an inert [0, 0] range) rather than throwing.
+    const headerJson = JSON.stringify({
+      "weird.tensor": { dtype: "F32", shape: [4] },
+    });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const file = new Uint8Array(8 + headerBytes.length);
+    new DataView(file.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    file.set(headerBytes, 8);
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(file, { status: 206 })));
+
+    const header = await parseSafetensorsMetadata(FIXTURE_URL);
+    expect(header.tensors["weird.tensor"].data_offsets).toEqual([0, 0]);
+  });
+
+  it("fromResponse derives errorCode / sources / detail from body when headers are absent", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    // Deliberately omit X-Error-Code + X-Error-Message headers so the
+    // parser must read them from the JSON body alone.
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(
+          {
+            error: "UpstreamFailure",
+            detail: "All sources failed",
+            sources: [
+              { name: "A", status: 500, category: "server", message: "x" },
+            ],
+          },
+          { status: 502 },
+        ),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(502);
+    expect(err.errorCode).toBe("UpstreamFailure");
+    expect(err.detail).toBe("All sources failed");
+    expect(err.message).toBe("All sources failed");
+    expect(err.sources).toHaveLength(1);
+    expect(err.sources[0].name).toBe("A");
+  });
+
+  it("fromResponse ignores body.sources when it is not an array", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(
+          { error: "BadShape", sources: "not-an-array" },
+          { status: 401 },
+        ),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.errorCode).toBe("BadShape");
+    expect(err.sources).toBeNull();
+  });
+
+  it("falls back to a header-derived message when the error body is not JSON", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.text("plain text body", {
+          status: 500,
+          headers: {
+            "X-Error-Message": "Upstream exploded",
+          },
+        }),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(500);
+    expect(err.errorCode).toBeNull();
+    expect(err.sources).toBeNull();
+    expect(err.detail).toBe("Upstream exploded");
+    expect(err.message).toBe("Upstream exploded");
+  });
+
   it("raises SafetensorsFormatError when the response is shorter than the 8-byte length prefix", async () => {
     const { parseSafetensorsMetadata, SafetensorsFormatError } =
       await loadModule();

@@ -152,3 +152,117 @@ def test_strip_xet_response_headers_is_noop_without_xet_signals():
     strip_xet_response_headers(headers)
 
     assert headers == original
+
+
+# -------------------------------------------------------------------------
+# Aggregated fallback failure helpers (new for the upstream-error-
+# classification fix). The loop-level behavior is already covered by
+# test_operations; these unit tests cover the edge-case branches that
+# only defensive callers would hit.
+# -------------------------------------------------------------------------
+
+
+from kohakuhub.api.fallback.utils import (
+    CATEGORY_AUTH,
+    CATEGORY_FORBIDDEN,
+    CATEGORY_NETWORK,
+    CATEGORY_NOT_FOUND,
+    CATEGORY_OTHER,
+    CATEGORY_SERVER,
+    CATEGORY_TIMEOUT,
+    build_aggregate_failure_response,
+    build_fallback_attempt,
+)
+
+
+def _plain_response(status: int, body: bytes = b"") -> httpx.Response:
+    return httpx.Response(
+        status,
+        content=body,
+        request=httpx.Request("HEAD", "https://src.local/f"),
+    )
+
+
+def test_build_fallback_attempt_categorizes_known_status_codes():
+    src = {"name": "S", "url": "https://s"}
+    assert (
+        build_fallback_attempt(src, response=_plain_response(401))["category"]
+        == CATEGORY_AUTH
+    )
+    assert (
+        build_fallback_attempt(src, response=_plain_response(403))["category"]
+        == CATEGORY_FORBIDDEN
+    )
+    assert (
+        build_fallback_attempt(src, response=_plain_response(404))["category"]
+        == CATEGORY_NOT_FOUND
+    )
+    assert (
+        build_fallback_attempt(src, response=_plain_response(410))["category"]
+        == CATEGORY_NOT_FOUND
+    )
+    assert (
+        build_fallback_attempt(src, response=_plain_response(503))["category"]
+        == CATEGORY_SERVER
+    )
+
+
+def test_build_fallback_attempt_falls_through_on_unclassifiable_status():
+    """Any status that isn't in the enumerated buckets (e.g. an
+    I'm-a-teapot or an odd client error a mirror might invent) gets the
+    ``CATEGORY_OTHER`` label so the aggregate still has a consistent
+    shape and the caller can still display the message."""
+    src = {"name": "S", "url": "https://s"}
+    attempt = build_fallback_attempt(src, response=_plain_response(418))
+    assert attempt["category"] == CATEGORY_OTHER
+    assert attempt["status"] == 418
+
+
+def test_build_fallback_attempt_contract_violation_returns_safe_default():
+    """If the caller passes none of response/timeout/network we still
+    return a well-formed attempt dict with CATEGORY_OTHER so the
+    aggregate loop can't swallow an exception path silently."""
+    attempt = build_fallback_attempt({"name": "S", "url": "https://s"})
+    assert attempt["status"] is None
+    assert attempt["category"] == CATEGORY_OTHER
+    assert attempt["message"] == ""
+    assert attempt["name"] == "S"
+
+
+def test_build_fallback_attempt_truncates_very_long_upstream_messages():
+    """A pathological upstream that returns a multi-MB error body
+    cannot be allowed to blow up response headers or body size. The
+    per-attempt message is capped (see MAX_ATTEMPT_MESSAGE_LEN)."""
+    src = {"name": "S", "url": "https://s"}
+    huge = "x" * 5000
+    attempt = build_fallback_attempt(
+        src, response=_plain_response(500, body=huge.encode())
+    )
+    assert len(attempt["message"]) <= 600  # cap is 500, allow a bit of slack
+
+
+def test_build_fallback_attempt_records_timeout_without_http_status():
+    import httpx
+
+    src = {"name": "S", "url": "https://s"}
+    attempt = build_fallback_attempt(src, timeout=httpx.TimeoutException("slow"))
+    assert attempt["status"] is None
+    assert attempt["category"] == CATEGORY_TIMEOUT
+    assert "slow" in attempt["message"]
+
+
+def test_build_fallback_attempt_records_generic_network_error():
+    src = {"name": "S", "url": "https://s"}
+    attempt = build_fallback_attempt(src, network=ConnectionResetError("reset"))
+    assert attempt["status"] is None
+    assert attempt["category"] == CATEGORY_NETWORK
+    assert "reset" in attempt["message"]
+
+
+def test_build_aggregate_failure_response_empty_attempts_is_generic_502():
+    """No recorded attempts is a contract violation (caller should
+    return None in that case), but we still produce a well-formed 502
+    rather than a KeyError or a nonsensical 401."""
+    resp = build_aggregate_failure_response([])
+    assert resp.status_code == 502
+    assert resp.headers.get("x-error-code") is None

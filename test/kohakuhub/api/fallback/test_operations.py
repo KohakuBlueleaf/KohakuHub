@@ -492,7 +492,13 @@ async def test_try_fallback_resolve_get_strips_xet_signals(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_try_fallback_resolve_stops_on_non_retryable_status_and_handles_timeouts(monkeypatch):
+async def test_try_fallback_resolve_continues_past_every_failure_and_aggregates(monkeypatch):
+    """Every source must be probed even when the first ones fail with
+    non-retryable statuses. Previously the loop exited on the first 4xx
+    that `should_retry_source` flagged (e.g. 401), which meant a gated
+    first source would hide a healthy third source that would have
+    served the file. See `build_aggregate_failure_response` for the
+    status-priority rules that decide the final HTTP code."""
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
     monkeypatch.setattr(
         fallback_ops,
@@ -500,7 +506,7 @@ async def test_try_fallback_resolve_stops_on_non_retryable_status_and_handles_ti
         lambda namespace, user_tokens=None: [
             {"url": "https://timeout.local", "name": "Timeout", "source_type": "huggingface"},
             {"url": "https://auth.local", "name": "Auth", "source_type": "huggingface"},
-            {"url": "https://unused.local", "name": "Unused", "source_type": "huggingface"},
+            {"url": "https://missing.local", "name": "Missing", "source_type": "huggingface"},
         ],
     )
     path = "/models/owner/demo/resolve/main/config.json"
@@ -511,6 +517,7 @@ async def test_try_fallback_resolve_stops_on_non_retryable_status_and_handles_ti
         httpx.TimeoutException("too slow"),
     )
     FakeFallbackClient.queue("https://auth.local", "HEAD", path, _content_response(401))
+    FakeFallbackClient.queue("https://missing.local", "HEAD", path, _content_response(404))
 
     response = await fallback_ops.try_fallback_resolve(
         "model",
@@ -520,10 +527,24 @@ async def test_try_fallback_resolve_stops_on_non_retryable_status_and_handles_ti
         "config.json",
     )
 
-    assert response is None
+    # All three sources must have been tried — a 401 on source 2 no
+    # longer skips source 3.
     assert [call[0] for call in FakeFallbackClient.calls] == [
         "https://timeout.local",
         "https://auth.local",
+        "https://missing.local",
+    ]
+
+    # Aggregate: timeout + 401 + 404. Auth wins the priority contest
+    # because it's the most actionable status to surface.
+    assert response is not None
+    assert response.status_code == 401
+    assert response.headers.get("x-error-code") == "GatedRepo"
+    body = _decode_aggregate_body(response)
+    assert [s["category"] for s in body["sources"]] == [
+        "timeout",
+        "auth",
+        "not-found",
     ]
 
 
@@ -823,7 +844,12 @@ async def test_try_fallback_user_repos_supports_hf_aggregation_and_kohakuhub(mon
 
 
 @pytest.mark.asyncio
-async def test_try_fallback_resolve_returns_none_after_generic_source_failures(monkeypatch):
+async def test_try_fallback_resolve_wraps_generic_transport_failure_as_502(monkeypatch):
+    """A generic transport-level exception (DNS failure, connection
+    reset, broken TLS handshake, ...) from the only source is recorded
+    as a ``network`` attempt and bubbled up as a 502 Bad Gateway
+    aggregate, not discarded. The client needs to know the upstream was
+    unreachable rather than seeing a misleading local 404."""
     monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
     monkeypatch.setattr(
         fallback_ops,
@@ -840,16 +866,377 @@ async def test_try_fallback_resolve_returns_none_after_generic_source_failures(m
         RuntimeError("boom"),
     )
 
-    assert (
-        await fallback_ops.try_fallback_resolve(
-            "model",
-            "owner",
-            "demo",
-            "main",
-            "config.json",
-        )
-        is None
+    response = await fallback_ops.try_fallback_resolve(
+        "model",
+        "owner",
+        "demo",
+        "main",
+        "config.json",
     )
+
+    assert response is not None
+    assert response.status_code == 502
+    assert response.headers.get("x-error-code") is None
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "UpstreamFailure"
+    assert len(body["sources"]) == 1
+    assert body["sources"][0]["category"] == "network"
+    assert "boom" in body["sources"][0]["message"]
+
+
+# -------------------------------------------------------------------------
+# Upstream-error classification contract for fallback resolve.
+#
+# When a fallback source returns a non-success status, or when a source
+# fails with a timeout / network error, try_fallback_resolve records a
+# per-source "attempt" and continues to the next source. A mirror that
+# doesn't gate the artifact the first source gates, or a mirror that
+# simply has a file the first source doesn't, can still serve the
+# request — which is the whole point of a multi-source fallback chain.
+#
+# If every source fails, the function returns an HTTP-level aggregate
+# response that pins the information the client needs to pick a
+# remediation:
+#
+#   HTTP status priority:   401 > 403 > 404 > 502
+#   X-Error-Code (aligned with huggingface_hub.utils._http):
+#       401 → GatedRepo         (→ GatedRepoError on hf_hub_download)
+#       404 (all attempts)
+#                       → EntryNotFound    (→ EntryNotFoundError)
+#       403, 502        → unset             (HF falls back to generic)
+#   Body:              { error, detail, sources: [...] }
+#   Each sources[*]:   { name, url, status|null, category, message }
+#
+# Reproduced live against animetimm/mobilenetv3_large_150d.dbv4-full
+# (gated model) while developing PR#28. Before this contract the client
+# saw a bare 404 RepoNotFound for a file whose repo it had just listed.
+# -------------------------------------------------------------------------
+
+
+def _decode_aggregate_body(response):
+    """Parse the structured failure body."""
+    import json
+
+    return json.loads(bytes(response.body).decode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_surfaces_upstream_401_as_aggregated_error(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {
+                "url": "https://gated.local",
+                "name": "GatedHF",
+                "source_type": "huggingface",
+            }
+        ],
+    )
+    path = "/models/animetimm/gated-demo/resolve/main/model.safetensors"
+    gated_body = (
+        b"Access to model animetimm/gated-demo is restricted. "
+        b"You must have access to it and be authenticated to access "
+        b"it. Please log in."
+    )
+    FakeFallbackClient.queue(
+        "https://gated.local",
+        "HEAD",
+        path,
+        _content_response(
+            401,
+            content=gated_body,
+            headers={"content-type": "text/plain; charset=utf-8"},
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model",
+        "animetimm",
+        "gated-demo",
+        "main",
+        "model.safetensors",
+        method="HEAD",
+    )
+
+    assert response is not None, (
+        "fallback must not discard the only 401 attempt — the client "
+        "needs the status + upstream body to render an 'auth required' "
+        "affordance instead of a misleading 'repo not found'"
+    )
+    assert response.status_code == 401
+    # X-Error-Code uses the huggingface_hub classification so that
+    # hf_hub_download raises GatedRepoError (see HF compat test).
+    assert response.headers.get("x-error-code") == "GatedRepo"
+    # X-Error-Message is the same human-readable summary HF echoes into
+    # exception text, so even a bare curl -I user sees something useful.
+    assert response.headers.get("x-error-message")
+
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "GatedRepo"
+    assert len(body["sources"]) == 1
+    entry = body["sources"][0]
+    assert entry["name"] == "GatedHF"
+    assert entry["url"] == "https://gated.local"
+    assert entry["status"] == 401
+    assert entry["category"] == "auth"
+    assert "restricted" in entry["message"]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_surfaces_upstream_403_as_aggregated_error(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {
+                "url": "https://forbidden.local",
+                "name": "ForbiddenHF",
+                "source_type": "huggingface",
+            }
+        ],
+    )
+    path = "/models/owner/forbidden-demo/resolve/main/model.bin"
+    FakeFallbackClient.queue(
+        "https://forbidden.local",
+        "HEAD",
+        path,
+        _content_response(
+            403,
+            content=b"Forbidden: this IP range is denied access.",
+            headers={"content-type": "text/plain; charset=utf-8"},
+        ),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "forbidden-demo", "main", "model.bin", method="HEAD",
+    )
+
+    assert response is not None
+    assert response.status_code == 403
+    # 403 has no specific HF X-Error-Code mapping — the client sees the
+    # plain status and falls back to generic HfHubHTTPError, which is
+    # what HF itself does for non-gated denies.
+    assert response.headers.get("x-error-code") is None
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "UpstreamFailure"
+    entry = body["sources"][0]
+    assert entry["status"] == 403
+    assert entry["category"] == "forbidden"
+    assert "Forbidden" in entry["message"]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_continues_past_401_and_succeeds_on_next_source(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {
+                "url": "https://gated.local",
+                "name": "GatedHF",
+                "source_type": "huggingface",
+            },
+            {
+                "url": "https://mirror.local",
+                "name": "OpenMirror",
+                "source_type": "huggingface",
+            },
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/weights.bin"
+    # Source 1 is gated.
+    FakeFallbackClient.queue(
+        "https://gated.local",
+        "HEAD",
+        path,
+        _content_response(401, content=b"gated"),
+    )
+    # Source 2 happily serves the same file.
+    FakeFallbackClient.queue(
+        "https://mirror.local",
+        "HEAD",
+        path,
+        _content_response(307, headers={"etag": "mirror-etag"}),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "weights.bin", method="HEAD",
+    )
+
+    assert response is not None
+    assert response.status_code == 307
+    assert response.headers.get("etag") == "mirror-etag"
+    assert response.headers.get("X-Source") == "OpenMirror"
+    # Both sources should have been tried.
+    tried = [call[0] for call in FakeFallbackClient.calls]
+    assert tried == ["https://gated.local", "https://mirror.local"]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_aggregates_mixed_failures_across_sources(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {
+                "url": "https://gated.local",
+                "name": "GatedHF",
+                "source_type": "huggingface",
+            },
+            {
+                "url": "https://missing.local",
+                "name": "MissingMirror",
+                "source_type": "huggingface",
+            },
+            {
+                "url": "https://broken.local",
+                "name": "BrokenMirror",
+                "source_type": "huggingface",
+            },
+            {
+                "url": "https://slow.local",
+                "name": "SlowMirror",
+                "source_type": "huggingface",
+            },
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/file.bin"
+    FakeFallbackClient.queue(
+        "https://gated.local", "HEAD", path,
+        _content_response(401, content=b"Auth required"),
+    )
+    FakeFallbackClient.queue(
+        "https://missing.local", "HEAD", path,
+        _content_response(404, content=b"Not found"),
+    )
+    FakeFallbackClient.queue(
+        "https://broken.local", "HEAD", path,
+        _content_response(503, content=b"Service unavailable"),
+    )
+    FakeFallbackClient.queue(
+        "https://slow.local", "HEAD", path,
+        httpx.TimeoutException("too slow"),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "file.bin", method="HEAD",
+    )
+
+    assert response is not None
+    # 401 is the most actionable status in the mix, so it bubbles up.
+    assert response.status_code == 401
+    assert response.headers.get("x-error-code") == "GatedRepo"
+
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "GatedRepo"
+    assert len(body["sources"]) == 4
+
+    by_name = {s["name"]: s for s in body["sources"]}
+    assert by_name["GatedHF"]["status"] == 401
+    assert by_name["GatedHF"]["category"] == "auth"
+
+    assert by_name["MissingMirror"]["status"] == 404
+    assert by_name["MissingMirror"]["category"] == "not-found"
+
+    assert by_name["BrokenMirror"]["status"] == 503
+    assert by_name["BrokenMirror"]["category"] == "server"
+
+    # Timeout / network failures have no HTTP status — null, not omitted.
+    assert by_name["SlowMirror"]["status"] is None
+    assert by_name["SlowMirror"]["category"] == "timeout"
+    assert "slow" in by_name["SlowMirror"]["message"].lower()
+
+    # Order is the probe order (stable for debuggability).
+    assert [s["name"] for s in body["sources"]] == [
+        "GatedHF",
+        "MissingMirror",
+        "BrokenMirror",
+        "SlowMirror",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_aggregates_all_404_into_upstream_not_found(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://a.local", "name": "A", "source_type": "huggingface"},
+            {"url": "https://b.local", "name": "B", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/nope.bin"
+    FakeFallbackClient.queue(
+        "https://a.local", "HEAD", path, _content_response(404),
+    )
+    FakeFallbackClient.queue(
+        "https://b.local", "HEAD", path, _content_response(404),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "nope.bin", method="HEAD",
+    )
+
+    assert response is not None
+    assert response.status_code == 404
+    # EntryNotFound aligns with huggingface_hub's per-file miss
+    # classification so hf_hub_download raises EntryNotFoundError.
+    assert response.headers.get("x-error-code") == "EntryNotFound"
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "EntryNotFound"
+    assert [s["status"] for s in body["sources"]] == [404, 404]
+
+
+@pytest.mark.asyncio
+async def test_try_fallback_resolve_aggregates_all_unavailable_into_502(
+    monkeypatch,
+):
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": "https://x.local", "name": "X", "source_type": "huggingface"},
+            {"url": "https://y.local", "name": "Y", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/main/thing.bin"
+    FakeFallbackClient.queue(
+        "https://x.local", "HEAD", path, _content_response(500),
+    )
+    FakeFallbackClient.queue(
+        "https://y.local", "HEAD", path, httpx.TimeoutException("too slow"),
+    )
+
+    response = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "thing.bin", method="HEAD",
+    )
+
+    assert response is not None
+    assert response.status_code == 502
+    # 5xx / timeout / network mixes get no specific X-Error-Code — the
+    # HF client's generic 5xx retry path is the right escape hatch.
+    assert response.headers.get("x-error-code") is None
+    body = _decode_aggregate_body(response)
+    assert body["error"] == "UpstreamFailure"
+    categories = [s["category"] for s in body["sources"]]
+    assert categories == ["server", "timeout"]
 
 
 @pytest.mark.asyncio
