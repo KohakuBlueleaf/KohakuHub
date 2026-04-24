@@ -881,6 +881,11 @@ import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDataset
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
 import FilePreviewDialog from "@/components/repo/preview/FilePreviewDialog.vue";
+import {
+  buildResolveUrl,
+  canPreviewFile,
+  getPreviewKind,
+} from "@/utils/file-preview";
 
 /**
  * @typedef {Object} Props
@@ -928,33 +933,24 @@ const fileTreeRequestId = ref(0);
 // Client-side metadata preview (issue #27 v4): a small icon appears next
 // to .safetensors / .parquet rows; clicking opens a modal that reads the
 // file header via HTTP Range against /resolve/ (no backend parsing).
+// Predicate + URL builder live in @/utils/file-preview so they stay
+// directly unit-testable; everything here is Vue glue.
 const previewDialogVisible = ref(false);
 const previewTarget = ref(null); // { kind, resolveUrl, filename }
-
-function getPreviewKind(path) {
-  if (!path) return null;
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".safetensors")) return "safetensors";
-  if (lower.endsWith(".parquet")) return "parquet";
-  return null;
-}
-
-function canPreviewFile(file) {
-  return file?.type !== "directory" && !!getPreviewKind(file?.path);
-}
 
 function openFilePreview(file) {
   const kind = getPreviewKind(file.path);
   if (!kind) return;
-  const resolveUrl = `${baseUrl}/${props.repoType}s/${props.namespace}/${props.name}/resolve/${encodeURIComponent(
-    currentBranch.value,
-  )}/${file.path
-    .split("/")
-    .map((seg) => encodeURIComponent(seg))
-    .join("/")}`;
   previewTarget.value = {
     kind,
-    resolveUrl,
+    resolveUrl: buildResolveUrl({
+      baseUrl,
+      repoType: props.repoType,
+      namespace: props.namespace,
+      name: props.name,
+      branch: currentBranch.value,
+      path: file.path,
+    }),
     filename: getFileName(file.path),
   };
   previewDialogVisible.value = true;

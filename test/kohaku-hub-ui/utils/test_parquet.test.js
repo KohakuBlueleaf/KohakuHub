@@ -94,6 +94,72 @@ describe("parquet utilities", () => {
     expect(physical.flag).toBe("BOOLEAN");
   });
 
+  it("normalizeCount: null/undefined → 0", async () => {
+    const { normalizeCount } = await loadModule();
+    expect(normalizeCount(null)).toBe(0);
+    expect(normalizeCount(undefined)).toBe(0);
+  });
+
+  it("normalizeCount: bigint within MAX_SAFE_INTEGER → number", async () => {
+    const { normalizeCount } = await loadModule();
+    expect(normalizeCount(0n)).toBe(0);
+    expect(normalizeCount(500n)).toBe(500);
+    expect(normalizeCount(BigInt(Number.MAX_SAFE_INTEGER))).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it("normalizeCount: bigint beyond MAX_SAFE_INTEGER → string (preserves precision)", async () => {
+    const { normalizeCount } = await loadModule();
+    const huge = BigInt(Number.MAX_SAFE_INTEGER) + 17n;
+    expect(normalizeCount(huge)).toBe(huge.toString());
+  });
+
+  it("normalizeCount: plain number passes through unchanged", async () => {
+    const { normalizeCount } = await loadModule();
+    expect(normalizeCount(42)).toBe(42);
+    expect(normalizeCount(0)).toBe(0);
+  });
+
+  it("summarizeParquetSchema copes with an empty / shapeless schema tree", async () => {
+    const { summarizeParquetSchema } = await loadModule();
+    expect(summarizeParquetSchema({ schemaTree: null })).toEqual({
+      columnCount: 0,
+      columns: [],
+    });
+    expect(summarizeParquetSchema({ schemaTree: {} })).toEqual({
+      columnCount: 0,
+      columns: [],
+    });
+    expect(
+      summarizeParquetSchema({ schemaTree: { children: [] } }),
+    ).toEqual({ columnCount: 0, columns: [] });
+  });
+
+  it("summarizeParquetSchema tolerates children without element metadata", async () => {
+    const { summarizeParquetSchema } = await loadModule();
+    const summary = summarizeParquetSchema({
+      schemaTree: {
+        children: [{}, { element: { name: "foo", type: "INT32" } }],
+      },
+    });
+    expect(summary.columnCount).toBe(2);
+    expect(summary.columns).toEqual([
+      {
+        name: "",
+        logicalType: null,
+        physicalType: null,
+        repetitionType: null,
+      },
+      {
+        name: "foo",
+        logicalType: null,
+        physicalType: "INT32",
+        repetitionType: null,
+      },
+    ]);
+  });
+
   it("fires the progress callback phases in order", async () => {
     const { parseParquetMetadata } = await loadModule();
     server.use(http.get(FIXTURE_URL, respondRange(FIXTURE_BYTES)));

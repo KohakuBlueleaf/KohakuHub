@@ -178,4 +178,198 @@ describe("safetensors utilities", () => {
     expect(err).toBeInstanceOf(SafetensorsFetchError);
     expect(err.status).toBe(403);
   });
+
+  it("raises SafetensorsFormatError when the response is shorter than the 8-byte length prefix", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFormatError } =
+      await loadModule();
+    // 4-byte body: no way to read the u64 length prefix.
+    server.use(
+      http.get(FIXTURE_URL, () => new HttpResponse(new Uint8Array([1, 2, 3, 4]), { status: 206 })),
+    );
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFormatError);
+    expect(err.message).toMatch(/Truncated response/i);
+  });
+
+  it("raises SafetensorsFormatError when the header JSON is not valid UTF-8", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFormatError } =
+      await loadModule();
+    // Header length = 3, followed by invalid UTF-8 continuation bytes.
+    const invalid = new Uint8Array(8 + 3);
+    new DataView(invalid.buffer).setBigUint64(0, 3n, true);
+    invalid[8] = 0xff;
+    invalid[9] = 0xff;
+    invalid[10] = 0xff;
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(invalid, { status: 206 })));
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFormatError);
+    expect(err.message).toMatch(/not valid UTF-8 JSON/i);
+  });
+
+  it("raises SafetensorsFormatError when the header JSON does not parse to an object", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFormatError } =
+      await loadModule();
+    // Valid JSON that parses to `null` — still not an object-shaped header.
+    const nullJson = new TextEncoder().encode("null");
+    const bytes = new Uint8Array(8 + nullJson.length);
+    new DataView(bytes.buffer).setBigUint64(0, BigInt(nullJson.length), true);
+    bytes.set(nullJson, 8);
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(bytes, { status: 206 })));
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFormatError);
+    expect(err.message).toMatch(/not an object/i);
+  });
+
+  it("raises SafetensorsFormatError when the fat-header second read is truncated", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFormatError } =
+      await loadModule();
+
+    // Build a file whose header length exceeds 100,000 so the parser
+    // will issue the second Range — but the mock only returns fewer
+    // bytes than requested, exercising the truncation guard.
+    const headerJson = JSON.stringify({
+      // Pad to >100,000 bytes with a huge unused key.
+      padding: "x".repeat(100_050),
+    });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const fullFile = new Uint8Array(8 + headerBytes.length);
+    new DataView(fullFile.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    fullFile.set(headerBytes, 8);
+
+    let callCount = 0;
+    server.use(
+      http.get(FIXTURE_URL, ({ request }) => {
+        callCount += 1;
+        const range = request.headers.get("range");
+        if (callCount === 1) {
+          // First speculative read — hand back the first 100,001 bytes
+          // (the parser will then issue a second read for the full header).
+          const slice = fullFile.subarray(0, 100_001);
+          return new HttpResponse(slice, {
+            status: 206,
+            headers: {
+              "Content-Range": `bytes 0-100000/${fullFile.length}`,
+              "Content-Length": String(slice.length),
+            },
+          });
+        }
+        // Second call (fat-header fallback): intentionally short-change
+        // the response so we hit the truncation guard.
+        expect(range).toMatch(/^bytes=8-/);
+        return new HttpResponse(new Uint8Array([1, 2, 3]), { status: 206 });
+      }),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFormatError);
+    expect(err.message).toMatch(/Truncated header response/i);
+    expect(callCount).toBe(2);
+  });
+
+  it("raises SafetensorsFetchError when the second Range fetch itself fails", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    const headerJson = JSON.stringify({ padding: "x".repeat(100_050) });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const fullFile = new Uint8Array(8 + headerBytes.length);
+    new DataView(fullFile.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    fullFile.set(headerBytes, 8);
+
+    let callCount = 0;
+    server.use(
+      http.get(FIXTURE_URL, () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new HttpResponse(fullFile.subarray(0, 100_001), {
+            status: 206,
+            headers: {
+              "Content-Range": `bytes 0-100000/${fullFile.length}`,
+              "Content-Length": "100001",
+            },
+          });
+        }
+        return HttpResponse.text("gone", { status: 410 });
+      }),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(410);
+  });
+
+  it("SafetensorsFetchError carries its HTTP status, SafetensorsFormatError has the expected name", async () => {
+    const { SafetensorsFetchError, SafetensorsFormatError } =
+      await loadModule();
+    const fetchErr = new SafetensorsFetchError("boom", 502);
+    expect(fetchErr).toBeInstanceOf(Error);
+    expect(fetchErr.name).toBe("SafetensorsFetchError");
+    expect(fetchErr.status).toBe(502);
+
+    const formatErr = new SafetensorsFormatError("bad bytes");
+    expect(formatErr).toBeInstanceOf(Error);
+    expect(formatErr.name).toBe("SafetensorsFormatError");
+  });
+
+  it("skips __metadata__-less headers and non-object tensor entries without crashing", async () => {
+    const { parseSafetensorsMetadata } = await loadModule();
+
+    // Minimal header with one valid tensor entry and one malformed entry
+    // that should be silently ignored (the parser is defensive so a
+    // weird upload cannot NPE the whole modal).
+    const headerJson = JSON.stringify({
+      "real.tensor": { dtype: "F32", shape: [2, 2], data_offsets: [0, 16] },
+      "junk.tensor": "not-an-object",
+    });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const file = new Uint8Array(8 + headerBytes.length);
+    new DataView(file.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    file.set(headerBytes, 8);
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(file, { status: 206 })));
+
+    const header = await parseSafetensorsMetadata(FIXTURE_URL);
+    expect(header.metadata).toBeNull();
+    expect(Object.keys(header.tensors)).toEqual(["real.tensor"]);
+    expect(header.tensors["real.tensor"].parameters).toBe(4);
+  });
+
+  it("treats missing shape as [] (0 parameters)", async () => {
+    const { parseSafetensorsMetadata } = await loadModule();
+    const headerJson = JSON.stringify({
+      scalar: { dtype: "F32", data_offsets: [0, 4] },
+    });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const file = new Uint8Array(8 + headerBytes.length);
+    new DataView(file.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    file.set(headerBytes, 8);
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(file, { status: 206 })));
+
+    const header = await parseSafetensorsMetadata(FIXTURE_URL);
+    expect(header.tensors.scalar.shape).toEqual([]);
+    // reduce over [] with an initial value of 1 gives 1 — that is the
+    // documented behaviour: a rank-0 scalar counts as 1 element.
+    expect(header.tensors.scalar.parameters).toBe(1);
+  });
+
+  it("summarizeSafetensors omits unknown dtype sizes from byte_size total", async () => {
+    const { summarizeSafetensors } = await loadModule();
+    const summary = summarizeSafetensors({
+      tensors: {
+        a: { dtype: "F32", shape: [4], parameters: 4, data_offsets: [0, 16] },
+        b: {
+          dtype: "WEIRD_DTYPE",
+          shape: [10],
+          parameters: 10,
+          data_offsets: [16, 26],
+        },
+      },
+    });
+    expect(summary.total).toBe(14);
+    // F32 is 4 bytes/elem, the WEIRD_DTYPE size is unknown so it
+    // contributes 0 to byte_size. Not a great UX for novel dtypes,
+    // but it is better than lying with a made-up size.
+    expect(summary.byte_size).toBe(16);
+    expect(summary.parameters).toEqual({ F32: 4, WEIRD_DTYPE: 10 });
+  });
 });

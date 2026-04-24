@@ -105,7 +105,11 @@ export function summarizeParquetSchema(metadata) {
   return { columnCount: columns.length, columns };
 }
 
-function normalizeCount(value) {
+// Exported for direct unit-testing — the hyparquet API never hands us a
+// plain number path in practice (thrift decoding always yields BigInt),
+// so a direct test is cleaner than trying to synthesize a fake buffer
+// that happens to encode a small-enough int as Number.
+export function normalizeCount(value) {
   if (value == null) return 0;
   if (typeof value === "bigint") {
     return value <= BigInt(Number.MAX_SAFE_INTEGER)
