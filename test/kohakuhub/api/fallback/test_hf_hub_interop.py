@@ -44,6 +44,22 @@ except ImportError:  # pre-1.0 hf_hub matrix cells
     parse_xet_file_data_from_response = None  # type: ignore[assignment]
     HAS_XET = False
 
+# hf_hub migrated from `requests` to `httpx` in 1.0. The pattern-D
+# tests below feed httpx.Response objects straight into
+# `hf_raise_for_status`; on pre-1.0 versions that function's
+# `except requests.HTTPError` clause never catches the
+# `httpx.HTTPStatusError` emitted by our synthesized response, so the
+# status-code -> HF-exception classification never runs and the test
+# sees a bare `httpx.HTTPStatusError` instead of `GatedRepoError` /
+# `EntryNotFoundError`. The classification behavior we pin IS present
+# on 1.0+ — the matrix cells that fail are ones where hf_hub's own
+# `_raise_for_status` accepts a different Response type than the one
+# KohakuHub serves.
+import huggingface_hub as _hf
+
+_hf_version_tuple = tuple(int(p) for p in _hf.__version__.split(".")[:2] if p.isdigit())
+_HF_SUPPORTS_HTTPX_CLASSIFICATION = _hf_version_tuple >= (1, 0)
+
 _HF_METADATA_FIELDS = set(inspect.signature(HfFileMetadata).parameters.keys())
 
 import kohakuhub.api.fallback.operations as fallback_ops  # noqa: E402
@@ -453,6 +469,14 @@ async def test_pattern_A_resolve_cache_HEAD_fallback_on_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
+    reason="pre-1.0 hf_hub uses `requests` internally; its "
+    "hf_raise_for_status does not catch httpx.HTTPStatusError and "
+    "the GatedRepo classification never runs. The aggregate response "
+    "contract is still upheld — just not observable through this path "
+    "on those matrix cells.",
+)
 @pytest.mark.asyncio
 async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
     """Single gated source → aggregate 401 + X-Error-Code=GatedRepo. When
@@ -491,6 +515,11 @@ async def test_pattern_D_all_401_raises_GatedRepoError(monkeypatch):
         hf_raise_for_status(hx)
 
 
+@pytest.mark.skipif(
+    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
+    reason="pre-1.0 hf_hub: httpx.HTTPStatusError bypasses the "
+    "EntryNotFound classification path.",
+)
 @pytest.mark.asyncio
 async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
     """All sources legitimately 404 → aggregate 404 + X-Error-Code=EntryNotFound.
@@ -531,6 +560,11 @@ async def test_pattern_D_all_404_raises_EntryNotFoundError(monkeypatch):
         hf_raise_for_status(hx)
 
 
+@pytest.mark.skipif(
+    not _HF_SUPPORTS_HTTPX_CLASSIFICATION,
+    reason="pre-1.0 hf_hub: httpx.HTTPStatusError bypasses the "
+    "generic 5xx classification path.",
+)
 @pytest.mark.asyncio
 async def test_pattern_D_all_5xx_raises_generic_HfHubHTTPError(monkeypatch):
     """Aggregate of 5xx / timeout is a 502 with no X-Error-Code so hf_hub
