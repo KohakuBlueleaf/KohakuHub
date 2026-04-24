@@ -19,6 +19,8 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import {
+  buildTensorTree,
+  formatHumanReadable,
   parseSafetensorsMetadata,
   summarizeSafetensors,
   SafetensorsFetchError,
@@ -208,17 +210,53 @@ function formatShape(shape) {
   return `[${shape.join(", ")}]`;
 }
 
-const safetensorsRows = computed(() => {
+function formatBytesExact(value) {
+  if (value == null) return "0";
+  const n = typeof value === "bigint" ? Number(value) : value;
+  if (!Number.isFinite(n)) return String(value);
+  return Math.trunc(n).toLocaleString();
+}
+
+// Continuous-gradient fill for the %-of-parent bar. slate-500 RGB,
+// alpha ramps linearly from 0.08 at 0% to 0.72 at 100% so low-mass
+// tensors stay visible without drowning out the high-mass ones.
+function percentBarStyle(pct) {
+  const clamped = Math.min(100, Math.max(0, Number(pct) || 0));
+  const alpha = (0.08 + (clamped / 100) * 0.64).toFixed(3);
+  return {
+    width: `${clamped}%`,
+    backgroundColor: `rgba(100, 116, 139, ${alpha})`,
+  };
+}
+
+// Tree of tensor rows keyed by dotted-path hierarchy. Element Plus's
+// tree table consumes `row-key` + `tree-props.children`; build every
+// node up front and hand it the full nested structure instead of
+// flipping between flat + tree datasets.
+const safetensorsTreeRows = computed(() => {
   if (payload.value?.kind !== "safetensors") return [];
-  return Object.entries(payload.value.header.tensors).map(
-    ([name, entry]) => ({
-      name,
-      dtype: entry.dtype,
-      shape: formatShape(entry.shape),
-      parameters: entry.parameters,
-      byteSize: entry.data_offsets[1] - entry.data_offsets[0],
-    }),
+  return buildTensorTree(
+    payload.value.header.tensors,
+    payload.value.summary.total,
   );
+});
+
+// Toggle between human-readable ("1.23B") and exact ("1,234,567,890")
+// rendering of the "Total parameters" pill. Human is the default
+// because the compact form is what people say out loud when they
+// describe a model ("a 7B model"); the exact form stays one click away
+// for anyone verifying a precise count.
+const totalParamsFormat = ref("human"); // "human" | "exact"
+function toggleTotalParamsFormat() {
+  totalParamsFormat.value =
+    totalParamsFormat.value === "human" ? "exact" : "human";
+}
+const totalParamsDisplay = computed(() => {
+  if (payload.value?.kind !== "safetensors") return "-";
+  const total = payload.value.summary.total;
+  return totalParamsFormat.value === "human"
+    ? formatHumanReadable(total)
+    : formatNumber(total);
 });
 
 const parquetColumnRows = computed(() => {
@@ -370,15 +408,29 @@ const errorSourceRows = computed(() => {
             {{ Object.keys(payload.header.tensors).length }}
           </div>
         </div>
-        <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded">
-          <div class="text-xs text-gray-500 dark:text-gray-400">
-            Total parameters
+        <div
+          class="p-3 bg-gray-50 dark:bg-gray-800 rounded cursor-pointer select-none hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          :title="
+            totalParamsFormat === 'human'
+              ? 'Click to show the exact parameter count'
+              : 'Click to show a compact (K / M / B / T) summary'
+          "
+          @click="toggleTotalParamsFormat"
+        >
+          <div class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+            <div
+              class="i-carbon-arrows-horizontal text-[10px] opacity-60 flex-shrink-0"
+            />
+            <span>Total parameters</span>
           </div>
           <div class="text-lg font-semibold mt-1">
-            {{ formatNumber(payload.summary.total) }}
+            {{ totalParamsDisplay }}
           </div>
         </div>
-        <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded">
+        <div
+          class="p-3 bg-gray-50 dark:bg-gray-800 rounded"
+          :title="`${formatBytesExact(payload.summary.byte_size)} bytes`"
+        >
           <div class="text-xs text-gray-500 dark:text-gray-400">
             Tensor bytes
           </div>
@@ -425,22 +477,109 @@ const errorSourceRows = computed(() => {
       <div>
         <h4 class="text-sm font-semibold mb-2">Tensors</h4>
         <el-table
-          :data="safetensorsRows"
+          :data="safetensorsTreeRows"
+          row-key="path"
+          :tree-props="{ children: 'children' }"
+          :default-expand-all="false"
           size="small"
           :border="true"
-          max-height="320"
+          max-height="360"
         >
-          <el-table-column prop="name" label="Name" min-width="240" />
-          <el-table-column prop="dtype" label="dtype" width="110" />
-          <el-table-column prop="shape" label="Shape" min-width="160" />
-          <el-table-column label="Parameters" width="140" align="right">
+          <el-table-column label="Name" min-width="280">
             <template #default="{ row }">
-              {{ formatNumber(row.parameters) }}
+              <span :class="row.isLeaf ? '' : 'font-semibold'">
+                {{ row.segment }}
+              </span>
+              <span
+                v-if="!row.isLeaf"
+                class="ml-2 text-xs text-gray-400 dark:text-gray-500"
+              >
+                ({{ row.leafCount }}
+                {{ row.leafCount === 1 ? "tensor" : "tensors" }})
+              </span>
             </template>
           </el-table-column>
-          <el-table-column label="Bytes" width="120" align="right">
+          <el-table-column prop="dtypeLabel" label="dtype" />
+          <el-table-column label="Shape">
             <template #default="{ row }">
-              {{ formatBytes(row.byteSize) }}
+              {{ row.isLeaf ? formatShape(row.shape) : "—" }}
+            </template>
+          </el-table-column>
+          <el-table-column align="right">
+            <!--
+              Header cell is clickable; toggles the SAME
+              `totalParamsFormat` ref the top "Total parameters" pill
+              uses, so the whole table + pill flip together. Cells
+              themselves are not clickable per the user's ask.
+            -->
+            <template #header>
+              <!--
+                Icon sits BEFORE the label: with `align="right"` the
+                column auto-widths to the header content and anything
+                after "Parameters" gets clipped off the right edge.
+                Putting the icon on the leading side keeps both parts
+                inside the column regardless of how narrow ElTable
+                sizes it.
+              -->
+              <span
+                class="cursor-pointer select-none inline-flex items-center gap-1"
+                :title="
+                  totalParamsFormat === 'human'
+                    ? 'Click to show the exact parameter count'
+                    : 'Click to show a compact (K / M / B / T) summary'
+                "
+                @click="toggleTotalParamsFormat"
+              >
+                <div
+                  class="i-carbon-arrows-horizontal text-[10px] opacity-60 flex-shrink-0"
+                />
+                <span>Parameters</span>
+              </span>
+            </template>
+            <template #default="{ row }">
+              {{
+                totalParamsFormat === "human"
+                  ? formatHumanReadable(row.parameters)
+                  : formatNumber(row.parameters)
+              }}
+            </template>
+          </el-table-column>
+          <el-table-column label="% of parent" width="140">
+            <template #default="{ row }">
+              <!--
+                Continuous-gradient "share of parent" bar. Bar alpha
+                ramps from ~0.08 (very faint) at 0% to ~0.72 at 100%,
+                so high-mass subtrees read as dark gray while long tails
+                stay visible but unobtrusive. Same slate-500 RGB on
+                both themes — alpha on transparent parent composes
+                against the table background either way.
+              -->
+              <div
+                class="relative h-5 rounded bg-gray-100 dark:bg-gray-700 overflow-hidden"
+              >
+                <div
+                  class="absolute inset-y-0 left-0"
+                  :style="percentBarStyle(row.percent)"
+                />
+                <div
+                  class="relative text-xs text-right pr-2 leading-5 font-mono text-gray-700 dark:text-gray-200"
+                >
+                  {{ row.percent.toFixed(2) }}%
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="Bytes" align="right">
+            <template #default="{ row }">
+              <!--
+                Hovering the cell reveals the exact byte count so a
+                user eyeballing "497.51 KB" can still copy the precise
+                509,452 bytes for a bug report or a sanity-check
+                against the safetensors header math.
+              -->
+              <span :title="`${formatBytesExact(row.byteSize)} bytes`">
+                {{ formatBytes(row.byteSize) }}
+              </span>
             </template>
           </el-table-column>
         </el-table>

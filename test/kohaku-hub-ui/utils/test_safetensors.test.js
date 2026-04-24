@@ -489,6 +489,202 @@ describe("safetensors utilities", () => {
     expect(header.tensors.scalar.parameters).toBe(1);
   });
 
+  it("formatHumanReadable buckets into K/M/B/T and trims trailing zeros", async () => {
+    const { formatHumanReadable } = await loadModule();
+    // Below 1000 stays raw.
+    expect(formatHumanReadable(0)).toBe("0");
+    expect(formatHumanReadable(999)).toBe("999");
+    // Exact thresholds stay clean (no "1.00K" noise).
+    expect(formatHumanReadable(1000)).toBe("1K");
+    expect(formatHumanReadable(1_000_000)).toBe("1M");
+    expect(formatHumanReadable(1_000_000_000)).toBe("1B");
+    expect(formatHumanReadable(1_000_000_000_000)).toBe("1T");
+    // Typical model-scale counts keep two decimals of precision.
+    expect(formatHumanReadable(126_851)).toBe("126.85K");
+    expect(formatHumanReadable(1_234_567_890)).toBe("1.23B");
+    // Negative + null / NaN guards.
+    expect(formatHumanReadable(-2_500)).toBe("-2.5K");
+    expect(formatHumanReadable(null)).toBe("-");
+    expect(formatHumanReadable(Number.NaN)).toBe("-");
+  });
+
+  it("buildTensorTree groups tensors by dotted-path hierarchy and rolls parents up", async () => {
+    const { buildTensorTree, summarizeSafetensors } = await loadModule();
+    // Two sibling leaves under the same "encoder.layer.0" parent; one
+    // top-level leaf; two different dtypes so the parent dtype label
+    // should collapse to "2 dtypes" instead of picking one.
+    const header = {
+      metadata: null,
+      tensors: {
+        "encoder.layer.0.attn.q_proj.weight": {
+          dtype: "F32",
+          shape: [4, 4],
+          parameters: 16,
+          data_offsets: [0, 64],
+        },
+        "encoder.layer.0.ln.bias": {
+          dtype: "F16",
+          shape: [4],
+          parameters: 4,
+          data_offsets: [64, 72],
+        },
+        "head.weight": {
+          dtype: "F32",
+          shape: [2],
+          parameters: 2,
+          data_offsets: [72, 80],
+        },
+      },
+    };
+    const summary = summarizeSafetensors(header);
+    const tree = buildTensorTree(header.tensors, summary.total);
+
+    // Top-level after chain-collapse: encoder/layer/0 had no fork
+    // before "0", so it folds into a single "encoder.layer.0" row.
+    // "head.weight" is a single-chain single-leaf and folds into a
+    // top-level leaf by itself.
+    expect(tree.map((n) => n.segment)).toEqual([
+      "encoder.layer.0",
+      "head.weight",
+    ]);
+    expect(tree.map((n) => n.path)).toEqual([
+      "encoder.layer.0",
+      "head.weight",
+    ]);
+    const encoder = tree[0];
+    const head = tree[1];
+
+    // Parent rolls up both leaves.
+    expect(encoder.isLeaf).toBe(false);
+    expect(encoder.leafCount).toBe(2);
+    expect(encoder.parameters).toBe(20);
+    expect(encoder.byteSize).toBe(72);
+    expect(encoder.dtypeLabel).toBe("2 dtypes");
+    // Top-level percent uses the file total (22): 20/22 ≈ 90.909%.
+    expect(encoder.percent).toBeCloseTo((20 / 22) * 100, 5);
+
+    // Under the collapsed parent we see the two sub-chains, each
+    // also collapsed into a single leaf since each is a single-chain
+    // single-leaf below the fork.
+    expect(encoder.children.map((c) => c.segment)).toEqual([
+      "attn.q_proj.weight",
+      "ln.bias",
+    ]);
+    const attnLeaf = encoder.children[0];
+    expect(attnLeaf.isLeaf).toBe(true);
+    expect(attnLeaf.dtype).toBe("F32");
+    expect(attnLeaf.parameters).toBe(16);
+    // Percent is relative to the PARENT (20 params), not the file
+    // total — that's the new UX: "this subtree's share of its box".
+    expect(attnLeaf.percent).toBeCloseTo((16 / 20) * 100, 5);
+    // Leaves have no `children` so Element Plus does not render an
+    // expand chevron for them.
+    expect(attnLeaf.children).toBeUndefined();
+
+    // head collapsed all the way down to a top-level leaf of its own.
+    expect(head.isLeaf).toBe(true);
+    expect(head.parameters).toBe(2);
+    expect(head.percent).toBeCloseTo((2 / 22) * 100, 5);
+  });
+
+  it("buildTensorTree collapses deeply nested single-chain tensors to one row", async () => {
+    const { buildTensorTree } = await loadModule();
+    // `a.b.c.d.e.weight` with no siblings along the way — should fold
+    // into a single row with segment="a.b.c.d.e.weight" at the top
+    // level, not six nested rows the user has to click through.
+    const tree = buildTensorTree(
+      {
+        "a.b.c.d.e.weight": {
+          dtype: "F32",
+          shape: [4],
+          parameters: 4,
+          data_offsets: [0, 16],
+        },
+      },
+      4,
+    );
+    expect(tree).toHaveLength(1);
+    expect(tree[0].segment).toBe("a.b.c.d.e.weight");
+    expect(tree[0].isLeaf).toBe(true);
+    expect(tree[0].path).toBe("a.b.c.d.e.weight");
+  });
+
+  it("buildTensorTree keeps single-segment tensors at the top level", async () => {
+    const { buildTensorTree } = await loadModule();
+    const tree = buildTensorTree(
+      {
+        scalar: {
+          dtype: "F32",
+          shape: [],
+          parameters: 1,
+          data_offsets: [0, 4],
+        },
+      },
+      1,
+    );
+    expect(tree).toHaveLength(1);
+    expect(tree[0]).toMatchObject({
+      segment: "scalar",
+      path: "scalar",
+      isLeaf: true,
+      leafCount: 1,
+      percent: 100,
+    });
+  });
+
+  it("buildTensorTree returns zero percent when totalParams is 0", async () => {
+    const { buildTensorTree } = await loadModule();
+    const tree = buildTensorTree(
+      {
+        "a.b": { dtype: "F32", shape: [1], parameters: 0, data_offsets: [0, 4] },
+      },
+      0,
+    );
+    // Single-leaf single-chain collapses to one top-level leaf "a.b".
+    expect(tree[0].isLeaf).toBe(true);
+    expect(tree[0].percent).toBe(0);
+    expect(tree[0].children).toBeUndefined();
+  });
+
+  it("buildTensorTree copes with leaves missing shape or data_offsets", async () => {
+    const { buildTensorTree } = await loadModule();
+    // Malformed entry: shape is not an array, data_offsets missing.
+    // The tree should still produce a row (shape → [], byteSize → 0)
+    // instead of throwing. Parameters drop to 0 too.
+    const tree = buildTensorTree(
+      {
+        malformed: { dtype: "F32" /* no shape, no data_offsets */ },
+      },
+      1,
+    );
+    expect(tree).toHaveLength(1);
+    expect(tree[0].shape).toEqual([]);
+    expect(tree[0].byteSize).toBe(0);
+    expect(tree[0].parameters).toBe(0);
+  });
+
+  it("buildTensorTree skips non-object entries defensively", async () => {
+    const { buildTensorTree } = await loadModule();
+    const tree = buildTensorTree(
+      {
+        "good.tensor": {
+          dtype: "F32",
+          shape: [4],
+          parameters: 4,
+          data_offsets: [0, 16],
+        },
+        "junk.tensor": "not-an-object",
+      },
+      4,
+    );
+    // `junk.tensor` is silently dropped; `good.tensor` is a
+    // single-chain single-leaf so it collapses to one top-level leaf.
+    expect(tree).toHaveLength(1);
+    expect(tree[0].segment).toBe("good.tensor");
+    expect(tree[0].isLeaf).toBe(true);
+    expect(tree[0].leafCount).toBe(1);
+  });
+
   it("summarizeSafetensors omits unknown dtype sizes from byte_size total", async () => {
     const { summarizeSafetensors } = await loadModule();
     const summary = summarizeSafetensors({

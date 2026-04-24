@@ -16,29 +16,66 @@ const ElTableStub = defineComponent({
   name: "ElTable",
   props: {
     data: { type: Array, default: () => [] },
+    rowKey: { type: String, default: "" },
+    treeProps: { type: Object, default: () => ({}) },
+    defaultExpandAll: { type: Boolean, default: false },
   },
   setup(props, { slots }) {
     return () => {
       const columnNodes = (slots.default?.() ?? []).filter(
         (node) => node.type?.name === "ElTableColumn",
       );
+      // Flatten tree rows via `treeProps.children` so leaves — which
+      // live under `row.children` in tree mode — also render and
+      // appear in text-based assertions. Real ElTable hides
+      // collapsed subtrees behind expand chevrons; the stub does not
+      // model chevron state so everything renders, which is exactly
+      // what text-level tests want to assert against.
+      const childrenKey = props.treeProps?.children || "children";
+      const flat = [];
+      (function walk(rows) {
+        for (const r of rows || []) {
+          flat.push(r);
+          const kids = r?.[childrenKey];
+          if (Array.isArray(kids) && kids.length) walk(kids);
+        }
+      })(props.data);
+      // Render the per-column header slot if one is provided so any
+      // clickable header wires up from the test.
+      const headerSlots = columnNodes
+        .map((col) => (col.children || {}).header)
+        .filter((fn) => typeof fn === "function");
+      const thead = headerSlots.length
+        ? h(
+            "thead",
+            {},
+            h(
+              "tr",
+              {},
+              headerSlots.map((fn) => h("th", {}, fn())),
+            ),
+          )
+        : null;
       return h(
         "table",
         { "data-el-table": "true" },
-        (props.data || []).map((row) =>
-          h(
-            "tr",
-            {},
-            columnNodes.map((col) => {
-              const colSlots = col.children || {};
-              const colProps = col.props || {};
-              if (typeof colSlots.default === "function") {
-                return h("td", {}, colSlots.default({ row }));
-              }
-              return h("td", {}, String(row[colProps.prop] ?? ""));
-            }),
+        [
+          thead,
+          ...flat.map((row) =>
+            h(
+              "tr",
+              {},
+              columnNodes.map((col) => {
+                const colSlots = col.children || {};
+                const colProps = col.props || {};
+                if (typeof colSlots.default === "function") {
+                  return h("td", {}, colSlots.default({ row }));
+                }
+                return h("td", {}, String(row[colProps.prop] ?? ""));
+              }),
+            ),
           ),
-        ),
+        ].filter(Boolean),
       );
     };
   },
@@ -85,11 +122,85 @@ vi.mock("@/utils/safetensors", () => ({
     safetensorsCtrl.calls.push({ url, opts });
     return safetensorsCtrl.deferred.promise;
   }),
-  summarizeSafetensors: vi.fn((header) => ({
-    parameters: { F32: 4 },
-    total: 4,
-    byte_size: 16,
-  })),
+  // Compute totals from the actual header so tests exercising the
+  // human-readable toggle see a number large enough to render
+  // differently under the two formats ("1.23B" vs "1,234,567,890").
+  // The default mock's fixed `total: 4` made both formats collapse to
+  // the same "4".
+  summarizeSafetensors: vi.fn((header) => {
+    const parameters = {};
+    let total = 0;
+    let byteSize = 0;
+    for (const entry of Object.values(header?.tensors || {})) {
+      const p = entry?.parameters ?? 0;
+      total += p;
+      parameters[entry?.dtype ?? "?"] =
+        (parameters[entry?.dtype ?? "?"] ?? 0) + p;
+      byteSize += Array.isArray(entry?.data_offsets)
+        ? entry.data_offsets[1] - entry.data_offsets[0]
+        : 0;
+    }
+    return { parameters, total, byte_size: byteSize };
+  }),
+  // buildTensorTree and formatHumanReadable are pure helpers in the
+  // real module; the dialog consumes their outputs so we provide
+  // deterministic stand-ins instead of re-mocking per test. The stub
+  // shape mirrors the real contract: nested {segment, path, isLeaf,
+  // children, parameters, percent, dtypeLabel, leafCount, shape,
+  // byteSize}. One parent "encoder" with two leaf children under it.
+  buildTensorTree: vi.fn((tensors, total) => {
+    const entries = Object.entries(tensors || {});
+    if (entries.length === 0) return [];
+    // Split each tensor name on "." and use the first segment as the
+    // parent-node name; rest as leaf segment. Sum params + bytes.
+    const groups = new Map();
+    for (const [name, entry] of entries) {
+      const [head, ...rest] = name.split(".");
+      const leafSegment = rest.length > 0 ? rest.join(".") : name;
+      if (!groups.has(head)) groups.set(head, { leaves: [], params: 0, bytes: 0 });
+      const grp = groups.get(head);
+      const params = entry.parameters ?? 0;
+      const bytes = Array.isArray(entry.data_offsets)
+        ? entry.data_offsets[1] - entry.data_offsets[0]
+        : 0;
+      grp.leaves.push({
+        path: name,
+        segment: leafSegment,
+        isLeaf: true,
+        dtype: entry.dtype,
+        dtypeLabel: entry.dtype,
+        shape: Array.isArray(entry.shape) ? entry.shape : [],
+        parameters: params,
+        byteSize: bytes,
+        leafCount: 1,
+        percent: total > 0 ? (params / total) * 100 : 0,
+      });
+      grp.params += params;
+      grp.bytes += bytes;
+    }
+    return [...groups.entries()].map(([head, grp]) => ({
+      path: head,
+      segment: head,
+      isLeaf: false,
+      dtypeLabel:
+        new Set(grp.leaves.map((l) => l.dtype)).size === 1
+          ? grp.leaves[0].dtype
+          : `${new Set(grp.leaves.map((l) => l.dtype)).size} dtypes`,
+      shape: [],
+      parameters: grp.params,
+      byteSize: grp.bytes,
+      leafCount: grp.leaves.length,
+      percent: total > 0 ? (grp.params / total) * 100 : 0,
+      children: grp.leaves,
+    }));
+  }),
+  formatHumanReadable: vi.fn((n) => {
+    if (n == null || Number.isNaN(n)) return "-";
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2).replace(/\.?0+$/, "")}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2).replace(/\.?0+$/, "")}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(2).replace(/\.?0+$/, "")}K`;
+    return String(n);
+  }),
   SafetensorsFetchError: class SafetensorsFetchError extends Error {
     constructor(message, status) {
       super(message);
@@ -219,6 +330,99 @@ describe("FilePreviewDialog", () => {
     wrapper.unmount();
   });
 
+  it("renders the safetensors tree (parent + nested leaves) with per-row percent", async () => {
+    const wrapper = mountDialog({
+      kind: "safetensors",
+      resolveUrl: "http://host/repo/resolve/main/model.safetensors",
+      filename: "model.safetensors",
+    });
+    await flushPromises();
+
+    safetensorsCtrl.deferred.resolve({
+      metadata: null,
+      tensors: {
+        "encoder.layer.weight": {
+          dtype: "F32",
+          shape: [4, 4],
+          parameters: 16,
+          data_offsets: [0, 64],
+        },
+        "encoder.layer.bias": {
+          dtype: "F32",
+          shape: [4],
+          parameters: 4,
+          data_offsets: [64, 80],
+        },
+      },
+    });
+    await flushPromises();
+
+    const text = wrapper.text();
+    // Parent rows show segment name + leafCount hint.
+    expect(text).toContain("encoder");
+    expect(text).toContain("2 tensors");
+    // Leaves render too (tree table default-expand-all=false, but stub
+    // expands everything and we rely on stub tolerance here).
+    expect(text).toContain("weight");
+    expect(text).toContain("bias");
+    // Percent column carries the aggregated value; summary forces
+    // percent text to match the total (100% on the root since every
+    // tensor lives under `encoder`).
+    expect(text).toMatch(/100\.00%/);
+
+    wrapper.unmount();
+  });
+
+  it("toggles the Total parameters pill between compact and exact formats", async () => {
+    const wrapper = mountDialog({
+      kind: "safetensors",
+      resolveUrl: "http://host/repo/resolve/main/big.safetensors",
+      filename: "big.safetensors",
+    });
+    await flushPromises();
+
+    safetensorsCtrl.deferred.resolve({
+      metadata: null,
+      tensors: {
+        big: {
+          dtype: "F32",
+          shape: [1_234_567_890],
+          parameters: 1_234_567_890,
+          data_offsets: [0, 4 * 1_234_567_890],
+        },
+      },
+    });
+    await flushPromises();
+
+    // Override the summary mock locally to return the real total —
+    // the default mock returns 4, which wouldn't exercise the
+    // human-readable path.
+    // Re-mocking at this point would require vi.resetModules; instead
+    // assert the toggle behavior directly on the component. Both
+    // strings ("human" and "exact") are shaped by formatHumanReadable
+    // / formatNumber which live behind the mock boundary, so we just
+    // verify that the pill text CHANGES when clicked and the `title`
+    // attribute flips.
+
+    const pillBefore = wrapper
+      .findAll("[title]")
+      .find((el) => /compact|exact/.test(el.attributes("title") || ""));
+    expect(pillBefore).toBeTruthy();
+    const titleBefore = pillBefore.attributes("title");
+    const textBefore = pillBefore.text();
+
+    await pillBefore.trigger("click");
+    await flushPromises();
+
+    const pillAfter = wrapper
+      .findAll("[title]")
+      .find((el) => /compact|exact/.test(el.attributes("title") || ""));
+    expect(pillAfter.attributes("title")).not.toBe(titleBefore);
+    expect(pillAfter.text()).not.toBe(textBefore);
+
+    wrapper.unmount();
+  });
+
   it("renders the safetensors result once the parser resolves", async () => {
     const wrapper = mountDialog({
       kind: "safetensors",
@@ -243,7 +447,11 @@ describe("FilePreviewDialog", () => {
     const text = wrapper.text();
     expect(text).toContain("Total parameters");
     expect(text).toContain("4");
-    expect(text).toContain("layer.weight");
+    // Tree mode shows each path segment on its own row (parent =
+    // "layer", leaf = "weight"); the fully-qualified "layer.weight"
+    // lives on the `row-key` and is not rendered verbatim.
+    expect(text).toContain("layer");
+    expect(text).toContain("weight");
     expect(text).toContain("__metadata__");
     expect(text).toContain("notes");
     expect(text).toContain("seed-3b");
