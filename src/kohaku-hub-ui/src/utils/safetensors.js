@@ -85,14 +85,13 @@ export async function parseSafetensorsMetadata(url, options = {}) {
     );
   }
 
+  // DataView.getBigUint64 always returns a non-negative BigInt in
+  // [0, 2^64 - 1], which Number() always maps to a finite non-negative
+  // float — no `!isFinite` / `< 0` guard needed. The MAX_HEADER_LENGTH
+  // check below is the only upper bound that matters.
   const headerLen = Number(
     new DataView(firstBuf).getBigUint64(0, /* littleEndian */ true),
   );
-  if (!Number.isFinite(headerLen) || headerLen < 0) {
-    throw new SafetensorsFormatError(
-      `Invalid header length prefix: ${headerLen}`,
-    );
-  }
   if (headerLen > SAFETENSORS_MAX_HEADER_LENGTH) {
     throw new SafetensorsFormatError(
       `Safetensors header too large: ${headerLen} > ${SAFETENSORS_MAX_HEADER_LENGTH}`,

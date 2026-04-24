@@ -226,6 +226,73 @@ describe("safetensors utilities", () => {
     expect(err.message).toContain("authentication");
   });
 
+  it("defaults tensor data_offsets to [0, 0] when the header omits them", async () => {
+    const { parseSafetensorsMetadata } = await loadModule();
+
+    // A malformed-but-salvageable header: the tensor entry has dtype +
+    // shape but no `data_offsets` field. The parser should still produce
+    // a row (with an inert [0, 0] range) rather than throwing.
+    const headerJson = JSON.stringify({
+      "weird.tensor": { dtype: "F32", shape: [4] },
+    });
+    const headerBytes = new TextEncoder().encode(headerJson);
+    const file = new Uint8Array(8 + headerBytes.length);
+    new DataView(file.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
+    file.set(headerBytes, 8);
+    server.use(http.get(FIXTURE_URL, () => new HttpResponse(file, { status: 206 })));
+
+    const header = await parseSafetensorsMetadata(FIXTURE_URL);
+    expect(header.tensors["weird.tensor"].data_offsets).toEqual([0, 0]);
+  });
+
+  it("fromResponse derives errorCode / sources / detail from body when headers are absent", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    // Deliberately omit X-Error-Code + X-Error-Message headers so the
+    // parser must read them from the JSON body alone.
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(
+          {
+            error: "UpstreamFailure",
+            detail: "All sources failed",
+            sources: [
+              { name: "A", status: 500, category: "server", message: "x" },
+            ],
+          },
+          { status: 502 },
+        ),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(502);
+    expect(err.errorCode).toBe("UpstreamFailure");
+    expect(err.detail).toBe("All sources failed");
+    expect(err.message).toBe("All sources failed");
+    expect(err.sources).toHaveLength(1);
+    expect(err.sources[0].name).toBe("A");
+  });
+
+  it("fromResponse ignores body.sources when it is not an array", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(
+          { error: "BadShape", sources: "not-an-array" },
+          { status: 401 },
+        ),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.errorCode).toBe("BadShape");
+    expect(err.sources).toBeNull();
+  });
+
   it("falls back to a header-derived message when the error body is not JSON", async () => {
     const { parseSafetensorsMetadata, SafetensorsFetchError } =
       await loadModule();
