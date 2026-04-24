@@ -377,7 +377,7 @@ async def list_repos(
     limit: int = Query(
         50, ge=1, le=100000
     ),  # Very high limit to support "get all repos"
-    sort: str = Query("recent", regex="^(recent|updated|likes|downloads|trending)$"),
+    sort: str = Query("recent", pattern="^(recent|updated|likes|downloads|trending)$"),
     fallback: bool = Query(True, description="Enable fallback to external sources"),
     request: Request = None,
     user: User | None = Depends(get_optional_user),
@@ -426,7 +426,7 @@ async def list_user_repos(
     limit: int = Query(
         100, ge=1, le=100000
     ),  # Very high limit to support "get all repos"
-    sort: str = Query("recent", regex="^(recent|likes|downloads)$"),
+    sort: str = Query("recent", pattern="^(recent|likes|downloads)$"),
     fallback: bool = True,
     user: User | None = Depends(get_optional_user),
 ):

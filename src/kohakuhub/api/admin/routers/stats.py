@@ -222,7 +222,7 @@ async def get_timeseries_stats(
 @router.get("/stats/top-repos")
 async def get_top_repositories(
     limit: int = Query(default=10, ge=1, le=100),
-    by: str = Query(default="commits", regex="^(commits|size)$"),
+    by: str = Query(default="commits", pattern="^(commits|size)$"),
     _admin: bool = Depends(verify_admin_token),
 ):
     """Get top repositories by various metrics.

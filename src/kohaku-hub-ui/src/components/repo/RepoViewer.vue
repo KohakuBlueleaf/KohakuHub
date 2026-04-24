@@ -477,8 +477,18 @@
                   class="text-xl flex-shrink-0"
                 />
                 <div class="min-w-0">
-                  <div class="font-medium truncate">
-                    {{ getFileName(file.path) }}
+                  <div class="font-medium truncate flex items-center gap-2">
+                    <span class="truncate">{{ getFileName(file.path) }}</span>
+                    <button
+                      v-if="canPreviewFile(file)"
+                      type="button"
+                      class="flex-shrink-0 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+                      :title="`Preview ${getPreviewKind(file.path)} metadata (Range-read, no download)`"
+                      :aria-label="`Preview metadata for ${getFileName(file.path)}`"
+                      @click.stop="openFilePreview(file)"
+                    >
+                      <div class="i-carbon-chart-line-data text-base" />
+                    </button>
                   </div>
                   <div
                     class="mt-1 text-sm text-gray-500 dark:text-gray-400 truncate md:hidden"
@@ -839,6 +849,14 @@ huggingface-cli download {{ repoInfo?.id }}</pre
         </div>
       </div>
     </el-dialog>
+
+    <FilePreviewDialog
+      v-if="previewTarget"
+      v-model:visible="previewDialogVisible"
+      :kind="previewTarget.kind"
+      :resolve-url="previewTarget.resolveUrl"
+      :filename="previewTarget.filename"
+    />
   </div>
 </template>
 
@@ -862,6 +880,12 @@ import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPa
 import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDatasetsCard.vue";
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
+import FilePreviewDialog from "@/components/repo/preview/FilePreviewDialog.vue";
+import {
+  buildResolveUrl,
+  canPreviewFile,
+  getPreviewKind,
+} from "@/utils/file-preview";
 
 /**
  * @typedef {Object} Props
@@ -905,6 +929,32 @@ const likesCount = ref(0);
 const likingInProgress = ref(false);
 const deletingFolder = ref(false);
 const fileTreeRequestId = ref(0);
+
+// Client-side metadata preview (issue #27 v4): a small icon appears next
+// to .safetensors / .parquet rows; clicking opens a modal that reads the
+// file header via HTTP Range against /resolve/ (no backend parsing).
+// Predicate + URL builder live in @/utils/file-preview so they stay
+// directly unit-testable; everything here is Vue glue.
+const previewDialogVisible = ref(false);
+const previewTarget = ref(null); // { kind, resolveUrl, filename }
+
+function openFilePreview(file) {
+  const kind = getPreviewKind(file.path);
+  if (!kind) return;
+  previewTarget.value = {
+    kind,
+    resolveUrl: buildResolveUrl({
+      baseUrl,
+      repoType: props.repoType,
+      namespace: props.namespace,
+      name: props.name,
+      branch: currentBranch.value,
+      path: file.path,
+    }),
+    filename: getFileName(file.path),
+  };
+  previewDialogVisible.value = true;
+}
 
 const baseUrl = window.location.origin;
 const PATHS_INFO_BATCH_SIZE = 1000;

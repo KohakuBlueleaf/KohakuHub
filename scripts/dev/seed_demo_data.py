@@ -27,6 +27,7 @@ import pyarrow.parquet as pq
 import requests
 from hfutils import index as hf_index
 from safetensors.numpy import save as save_safetensors
+from seed_shared import SEED_VERSION
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT_DIR / "src"
@@ -37,7 +38,6 @@ from kohakuhub.config import cfg
 from kohakuhub.main import app
 from kohakuhub.utils.s3 import init_storage
 
-SEED_VERSION = "local-dev-demo-v3"
 DEFAULT_PASSWORD = "KohakuDev123!"
 PRIMARY_USERNAME = "mai_lin"
 MANIFEST_PATH = ROOT_DIR / "hub-meta" / "dev" / "demo-seed-manifest.json"
@@ -528,6 +528,22 @@ REMOTE_MEDIA_ASSETS: dict[str, RemoteAsset] = {
             url="https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi",
             sha256="45cddc9490be69345cbdab64ca583be65987e864ca408038e648db99e10516cf",
             source_url="https://github.com/opencv/opencv/blob/4.x/samples/data/vtest.avi",
+        ),
+        # Real HF-hosted fixtures used to exercise the pure-client preview
+        # path (issue #27). Both files are small (~500 KB each), pinned by
+        # sha256, and sourced from long-stable public HF test artifacts so
+        # the seed stays deterministic across runs.
+        RemoteAsset(
+            cache_name="hf-tiny-random-bert.safetensors",
+            url="https://huggingface.co/hf-internal-testing/tiny-random-bert/resolve/main/model.safetensors",
+            sha256="965f02b6a7e5520fc12f710e4e3b6132f697f1c8f648819553c5ade86752d2de",
+            source_url="https://huggingface.co/hf-internal-testing/tiny-random-bert/blob/main/model.safetensors",
+        ),
+        RemoteAsset(
+            cache_name="hf-no-robots-test.parquet",
+            url="https://huggingface.co/datasets/HuggingFaceH4/no_robots/resolve/main/data/test-00000-of-00001.parquet",
+            sha256="60707b2636a46e37bb0c1e9ca263a18553f430317b7a53c691676d6a492fc0f2",
+            source_url="https://huggingface.co/datasets/HuggingFaceH4/no_robots/blob/main/data/test-00000-of-00001.parquet",
         ),
     )
 }
@@ -2109,6 +2125,13 @@ def build_open_media_core_repo_seeds() -> tuple[RepoSeed, ...]:
             "parquet/validation-00000-of-00001.parquet",
             lambda: make_parquet_bytes("open-media-validation", row_count=1500, payload_size=1024),
         ),
+        # Real HF-sourced parquet so the pure-client preview (issue #27)
+        # can be exercised against a file that actually came off the
+        # Hugging Face hub, not just locally generated pyarrow output.
+        seed_file(
+            "fixtures/hf-no-robots-test.parquet",
+            lambda: remote_asset_bytes("hf-no-robots-test.parquet"),
+        ),
         *(
             seed_file(path, lambda asset_name=asset_name: remote_asset_bytes(asset_name))
             for path, asset_name in top_level_media_entries
@@ -2254,6 +2277,14 @@ def build_open_media_core_repo_seeds() -> tuple[RepoSeed, ...]:
         seed_file(
             "model-00003-of-00003.safetensors",
             lambda: model_bundle()["model-00003-of-00003.safetensors"],
+        ),
+        # Real HF-sourced safetensors (tiny-random-bert, ~520 KB) so the
+        # pure-client preview (issue #27) can be exercised against a file
+        # that actually came off the Hugging Face hub, not just locally
+        # generated safetensors.numpy.save output.
+        seed_file(
+            "fixtures/hf-tiny-random-bert.safetensors",
+            lambda: remote_asset_bytes("hf-tiny-random-bert.safetensors"),
         ),
     )
 

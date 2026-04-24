@@ -5,7 +5,7 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import httpx
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from kohakuhub.config import cfg
 from kohakuhub.logger import get_logger
@@ -14,6 +14,8 @@ from kohakuhub.api.fallback.client import FallbackClient
 from kohakuhub.api.fallback.config import get_enabled_sources
 from kohakuhub.api.fallback.utils import (
     add_source_headers,
+    build_fallback_attempt,
+    build_aggregate_failure_response,
     extract_error_message,
     is_not_found_error,
     should_retry_source,
@@ -71,6 +73,14 @@ async def try_fallback_resolve(
 
     # Construct KohakuHub path
     kohaku_path = f"/{repo_type}s/{namespace}/{name}/resolve/{revision}/{path}"
+
+    # Per-source attempts accumulated across the loop. If every source
+    # fails, the aggregated JSON body exposes this list under
+    # `body.sources` so the client can tell which sources were asked,
+    # what each one answered, and pick the right remediation (token,
+    # retry, move on). See src/kohakuhub/api/fallback/utils.py for the
+    # status-priority + HF-compatible X-Error-Code contract.
+    attempts: list[dict] = []
 
     # Try each source in priority order
     for source in sources:
@@ -214,32 +224,59 @@ async def try_fallback_resolve(
                         )
                         return final_resp
                     else:
-                        # GET failed, try next source
+                        # GET failed, try next source. Log the attempt so
+                        # the aggregate response can explain what each
+                        # source actually answered.
                         logger.warning(
                             f"GET request failed for {source['name']}: {get_response.status_code}"
                         )
+                        attempts.append(
+                            build_fallback_attempt(source, response=get_response)
+                        )
                         continue
 
-            elif not should_retry_source(response):
-                # Don't try more sources on auth/permission errors
+            # Non-success HEAD response. Record and continue to the next
+            # source: a mirror that does not gate (or that simply has
+            # the artifact when the first source does not) can still
+            # serve the request. The old short-circuit on 4xx lost the
+            # status + body completely and blamed the local 404 for
+            # what was really an upstream auth failure (issue tied to
+            # PR#28: gated repos surfacing as RepoNotFound).
+            else:
                 logger.warning(
-                    f"Fallback stopped at {source['name']}: {response.status_code}"
+                    f"Fallback attempt at {source['name']}: HTTP {response.status_code}"
                 )
-                return None
+                attempts.append(build_fallback_attempt(source, response=response))
+                continue
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
             logger.warning(f"Fallback source {source['name']} timed out")
+            attempts.append(build_fallback_attempt(source, timeout=e))
             continue
 
         except Exception as e:
             logger.warning(f"Fallback source {source['name']} failed: {e}")
+            attempts.append(build_fallback_attempt(source, network=e))
             continue
 
-    # Not found in any source
+    # Every source produced a non-success response. Build an aggregated
+    # error with HF-compatible X-Error-Code (see
+    # build_aggregate_failure_response for the status-priority rules and
+    # the reason we align with huggingface_hub's `hf_raise_for_status`
+    # classification) and let the caller return it unchanged — the
+    # `with_repo_fallback` decorator passes non-None results through, so
+    # the aggregated 4xx/5xx bubbles up to the client instead of
+    # collapsing to the local "RepoNotFound".
+    # Reaching here means every enabled source produced a non-success
+    # outcome (every branch of the loop that does not `return` also
+    # `attempts.append(...)`), so the attempts list is always non-empty
+    # at this point. The early `if not sources: return None` above
+    # already handled the zero-source case.
     logger.debug(
-        f"Fallback MISS: {repo_type}/{namespace}/{name} not found in any source"
+        f"Fallback MISS: aggregating {len(attempts)} source failure(s) "
+        f"for {repo_type}/{namespace}/{name}"
     )
-    return None
+    return build_aggregate_failure_response(attempts)
 
 
 async def try_fallback_info(

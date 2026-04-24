@@ -125,7 +125,7 @@ async def get_recent_stats(
 
 @router.get("/trending")
 async def get_trending_repositories(
-    repo_type: str = Query("model", regex="^(model|dataset|space)$"),
+    repo_type: str = Query("model", pattern="^(model|dataset|space)$"),
     days: int = Query(7, ge=1, le=90),
     limit: int = Query(20, ge=1, le=100),
     user: User | None = Depends(get_optional_user),

@@ -100,6 +100,10 @@ services:
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
+      # Required so the SPA can do cross-origin Range reads on presigned
+      # /resolve/ targets for the pure-client safetensors/parquet preview
+      # (deepghs/KohakuHub#27). Tighten to a specific origin list in prod.
+      - MINIO_API_CORS_ALLOW_ORIGIN=*
     ports:
       - "29001:9000"    # S3 API
       - "29000:29000"   # Web Console
