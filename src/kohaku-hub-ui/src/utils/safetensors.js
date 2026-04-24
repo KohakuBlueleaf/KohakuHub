@@ -75,10 +75,7 @@ export async function parseSafetensorsMetadata(url, options = {}) {
     credentials: "omit",
   });
   if (firstResp.status !== 200 && firstResp.status !== 206) {
-    throw new SafetensorsFetchError(
-      `Range read failed: HTTP ${firstResp.status}`,
-      firstResp.status,
-    );
+    throw await SafetensorsFetchError.fromResponse(firstResp);
   }
 
   const firstBuf = await firstResp.arrayBuffer();
@@ -114,10 +111,7 @@ export async function parseSafetensorsMetadata(url, options = {}) {
       credentials: "omit",
     });
     if (secondResp.status !== 200 && secondResp.status !== 206) {
-      throw new SafetensorsFetchError(
-        `Second Range read failed: HTTP ${secondResp.status}`,
-        secondResp.status,
-      );
+      throw await SafetensorsFetchError.fromResponse(secondResp);
     }
     const secondBuf = await secondResp.arrayBuffer();
     if (secondBuf.byteLength < headerLen) {
@@ -185,10 +179,49 @@ export function summarizeSafetensors(header) {
 }
 
 export class SafetensorsFetchError extends Error {
-  constructor(message, status) {
+  constructor(message, status, { errorCode = null, sources = null, detail = null } = {}) {
     super(message);
     this.name = "SafetensorsFetchError";
     this.status = status;
+    // huggingface_hub-style classification (populated for fallback
+    // aggregate errors). `errorCode` is the `X-Error-Code` header value
+    // and is also present as `sources[].error` when the backend
+    // returned our structured fallback failure body. Null for ordinary
+    // 4xx / 5xx.
+    this.errorCode = errorCode;
+    this.sources = sources;
+    this.detail = detail;
+  }
+
+  static async fromResponse(response) {
+    // Defensive: tolerate missing body / non-JSON errors. HF upstream
+    // sometimes replies with a plain text 401 body, and our aggregate
+    // failure body is JSON. Try JSON first, fall back to header/text.
+    const status = response.status;
+    const errorCodeHeader = response.headers.get("x-error-code") || null;
+    const errorMessageHeader = response.headers.get("x-error-message") || null;
+
+    let errorCode = errorCodeHeader;
+    let sources = null;
+    let detail = errorMessageHeader;
+
+    try {
+      const body = await response.clone().json();
+      if (body && typeof body === "object") {
+        if (!errorCode && typeof body.error === "string") errorCode = body.error;
+        if (Array.isArray(body.sources)) sources = body.sources;
+        if (!detail && typeof body.detail === "string") detail = body.detail;
+      }
+    } catch {
+      // Not JSON, or empty body — keep header-derived info only.
+    }
+
+    const message = detail || `Range read failed: HTTP ${status}`;
+    return new SafetensorsFetchError(message, status, {
+      errorCode,
+      sources,
+      detail,
+    });
   }
 }
 

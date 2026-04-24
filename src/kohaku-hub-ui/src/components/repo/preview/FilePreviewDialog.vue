@@ -41,6 +41,14 @@ const phase = ref(""); // human-readable current phase
 const payload = ref(null);
 const errorMessage = ref("");
 const errorCorsLikely = ref(false);
+// HF-aligned error classification carried on SafetensorsFetchError. When
+// the backend fallback aggregates upstream failures (see
+// src/kohakuhub/api/fallback/utils.py) it returns a structured body with
+// `error`, `detail`, and `sources[]`; the SPA surfaces those here so the
+// error state can render something more actionable than a bare status.
+const errorCode = ref(null);
+const errorSources = ref(null);
+const errorStatus = ref(null);
 let currentController = null;
 let currentRequestId = 0;
 
@@ -87,6 +95,9 @@ async function startLoad() {
   payload.value = null;
   errorMessage.value = "";
   errorCorsLikely.value = false;
+  errorCode.value = null;
+  errorSources.value = null;
+  errorStatus.value = null;
 
   const controller = new AbortController();
   currentController = controller;
@@ -127,6 +138,9 @@ async function startLoad() {
     if (err?.name === "AbortError") return;
     errorMessage.value = err?.message ?? String(err);
     errorCorsLikely.value = isLikelyCorsError(err);
+    errorCode.value = err?.errorCode ?? null;
+    errorSources.value = Array.isArray(err?.sources) ? err.sources : null;
+    errorStatus.value = typeof err?.status === "number" ? err.status : null;
     state.value = "error";
   } finally {
     if (requestId === currentRequestId) currentController = null;
@@ -216,6 +230,31 @@ const parquetColumnRows = computed(() => {
     repetition: col.repetitionType ?? "",
   }));
 });
+
+// Error classification (based on what the backend fallback returned or
+// what the browser saw). `kind` drives which remediation copy the modal
+// shows.
+const errorKind = computed(() => {
+  if (errorCorsLikely.value) return "cors";
+  if (errorCode.value === "GatedRepo") return "gated";
+  if (errorStatus.value === 403) return "forbidden";
+  if (errorCode.value === "EntryNotFound" || errorStatus.value === 404)
+    return "not-found";
+  if (errorStatus.value === 502 || errorStatus.value === 503)
+    return "upstream-unavailable";
+  return "generic";
+});
+
+const errorSourceRows = computed(() => {
+  if (!Array.isArray(errorSources.value)) return [];
+  return errorSources.value.map((src) => ({
+    name: src?.name ?? "(unknown)",
+    url: src?.url ?? "",
+    status: src?.status == null ? "-" : String(src.status),
+    category: src?.category ?? "",
+    message: typeof src?.message === "string" ? src.message : "",
+  }));
+});
 </script>
 
 <template>
@@ -242,15 +281,44 @@ const parquetColumnRows = computed(() => {
       v-else-if="state === 'error'"
       class="py-8 flex flex-col items-center text-center"
     >
-      <div class="i-carbon-warning-alt text-5xl text-amber-500" />
+      <div
+        :class="
+          errorKind === 'gated'
+            ? 'i-carbon-locked text-5xl text-amber-500'
+            : 'i-carbon-warning-alt text-5xl text-amber-500'
+        "
+      />
       <p class="mt-4 text-sm font-medium text-gray-800 dark:text-gray-100">
-        Preview failed
+        <template v-if="errorKind === 'gated'">
+          Authentication required
+        </template>
+        <template v-else-if="errorKind === 'forbidden'">
+          Access denied by upstream
+        </template>
+        <template v-else-if="errorKind === 'not-found'">
+          File not found on any source
+        </template>
+        <template v-else-if="errorKind === 'upstream-unavailable'">
+          Upstream source unavailable
+        </template>
+        <template v-else>
+          Preview failed
+        </template>
       </p>
       <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 max-w-md break-words">
         {{ errorMessage }}
       </p>
+
       <p
-        v-if="errorCorsLikely"
+        v-if="errorKind === 'gated'"
+        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
+      >
+        At least one fallback source gates this repository and requires
+        authentication. Attach an access token for that source
+        (typically Hugging Face) in your account settings, then retry.
+      </p>
+      <p
+        v-else-if="errorKind === 'cors'"
         class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
       >
         This looks like a CORS failure on the object-storage host. Preview
@@ -258,6 +326,37 @@ const parquetColumnRows = computed(() => {
         <code>Access-Control-Allow-Origin</code>. See
         <em>docs/development/local-dev.md &rarr; "MinIO CORS"</em>.
       </p>
+      <p
+        v-else-if="errorKind === 'not-found'"
+        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
+      >
+        Every configured fallback source returned 404 for this file.
+        The containing repository may exist, but this specific entry
+        does not.
+      </p>
+      <p
+        v-else-if="errorKind === 'upstream-unavailable'"
+        class="mt-3 text-xs text-gray-500 dark:text-gray-400 max-w-md"
+      >
+        The fallback source(s) did not respond within the timeout or
+        returned a server error. This is usually transient — retry in
+        a few seconds.
+      </p>
+
+      <div v-if="errorSourceRows.length" class="mt-4 w-full max-w-xl text-left">
+        <details class="text-xs">
+          <summary class="cursor-pointer text-gray-500 dark:text-gray-400 mb-2">
+            Fallback sources tried ({{ errorSourceRows.length }})
+          </summary>
+          <el-table :data="errorSourceRows" size="small" :border="true">
+            <el-table-column prop="name" label="Source" width="130" />
+            <el-table-column prop="status" label="HTTP" width="70" />
+            <el-table-column prop="category" label="Category" width="110" />
+            <el-table-column prop="message" label="Message" />
+          </el-table>
+        </details>
+      </div>
+
       <el-button class="mt-4" type="primary" plain @click="retry">
         Retry
       </el-button>

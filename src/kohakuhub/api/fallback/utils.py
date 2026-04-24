@@ -3,10 +3,30 @@
 from typing import Optional
 
 import httpx
+from fastapi.responses import JSONResponse
 
 from kohakuhub.logger import get_logger
 
 logger = get_logger("FALLBACK_UTILS")
+
+
+# Category labels attached to each fallback attempt, used for aggregation.
+# Kept intentionally coarse — finer upstream semantics (e.g. "repo gated"
+# vs "org access revoked") ride in the `message` field pulled from the
+# upstream body, because there is no portable way to distinguish them.
+CATEGORY_AUTH = "auth"  # HTTP 401 — authentication required
+CATEGORY_FORBIDDEN = "forbidden"  # HTTP 403 — explicit deny
+CATEGORY_NOT_FOUND = "not-found"  # HTTP 404 / 410
+CATEGORY_SERVER = "server"  # HTTP 5xx
+CATEGORY_TIMEOUT = "timeout"  # httpx.TimeoutException
+CATEGORY_NETWORK = "network"  # other transport-level failure
+CATEGORY_OTHER = "other"  # anything not covered above (4xx edge cases)
+
+# Cap per-attempt message length so a misbehaving upstream returning a
+# multi-megabyte error page can't blow up response headers or the body
+# schema. The message is advisory; full upstream detail is preserved in
+# logs if anyone needs it.
+MAX_ATTEMPT_MESSAGE_LEN = 500
 
 
 def is_not_found_error(response: httpx.Response) -> bool:
@@ -140,6 +160,132 @@ def strip_xet_response_headers(headers: dict) -> None:
         headers[link_key] = new_link
     else:
         headers.pop(link_key, None)
+
+
+def _categorize_status(status: int) -> str:
+    if status == 401:
+        return CATEGORY_AUTH
+    if status == 403:
+        return CATEGORY_FORBIDDEN
+    if status in (404, 410):
+        return CATEGORY_NOT_FOUND
+    if 500 <= status < 600:
+        return CATEGORY_SERVER
+    return CATEGORY_OTHER
+
+
+def build_fallback_attempt(
+    source: dict,
+    *,
+    response: httpx.Response | None = None,
+    timeout: BaseException | None = None,
+    network: BaseException | None = None,
+) -> dict:
+    """Normalize one probe against one fallback source into a serializable dict.
+
+    Exactly one of ``response`` / ``timeout`` / ``network`` must be set:
+
+    - ``response`` → HTTP response that arrived (status + body available).
+    - ``timeout`` → the request tripped the client timeout before responding.
+    - ``network`` → any other transport-level failure (DNS, refused, etc.).
+
+    Shape is public contract: the same dict is embedded verbatim in the
+    aggregate failure body and is what the SPA / any CLI client will see
+    under ``body.sources[*]``.
+    """
+    base = {
+        "name": source.get("name"),
+        "url": source.get("url"),
+        "status": None,
+        "category": CATEGORY_OTHER,
+        "message": "",
+    }
+
+    if response is not None:
+        base["status"] = response.status_code
+        base["category"] = _categorize_status(response.status_code)
+        msg = extract_error_message(response) or ""
+        base["message"] = msg[:MAX_ATTEMPT_MESSAGE_LEN]
+        return base
+
+    if timeout is not None:
+        base["category"] = CATEGORY_TIMEOUT
+        base["message"] = str(timeout) or "request timed out"
+        return base
+
+    if network is not None:
+        base["category"] = CATEGORY_NETWORK
+        base["message"] = str(network) or type(network).__name__
+        return base
+
+    # Caller violated the contract; keep the default "other" category so
+    # the aggregate still reports something rather than swallowing it.
+    return base
+
+
+def build_aggregate_failure_response(attempts: list[dict]) -> JSONResponse:
+    """Combine per-source attempts into one HTTP response.
+
+    Status priority (highest first): 401 > 403 > 404 > 502. The
+    rationale is user-actionability — an auth failure is the most
+    specific next step ("attach a token"), an explicit 403 is next, a
+    real "not found" after that, and 5xx / timeout / network get
+    collapsed to 502 Bad Gateway.
+
+    X-Error-Code values are intentionally **aligned with
+    huggingface_hub.utils._http.hf_raise_for_status**:
+
+    - 401 → ``GatedRepo`` → ``GatedRepoError`` on the client
+    - 404 (all attempts) → ``EntryNotFound`` → ``EntryNotFoundError``
+    - 403, 502 → no ``X-Error-Code`` (HF client falls back to generic
+      ``HfHubHTTPError``; for 5xx its retry path handles transient
+      upstream issues).
+
+    Putting the code in the header (not just the body) matters because
+    ``huggingface_hub`` reads ``X-Error-Code`` to decide which exception
+    subclass to raise — inventing our own codes here would downgrade
+    gated-repo downloads to a generic 4xx error and lose the actionable
+    exception type that users already handle.
+    """
+    categories = {a.get("category") for a in attempts}
+
+    if CATEGORY_AUTH in categories:
+        status_code = 401
+        error_code = "GatedRepo"
+        detail = (
+            "Upstream source requires authentication - likely a gated "
+            "repository. Attach an access token for that source in "
+            "KohakuHub account settings."
+        )
+    elif CATEGORY_FORBIDDEN in categories:
+        status_code = 403
+        error_code = None  # HF has no specific code for plain 403.
+        detail = "Upstream source denied access."
+    elif attempts and categories <= {CATEGORY_NOT_FOUND}:
+        status_code = 404
+        error_code = "EntryNotFound"
+        detail = "No fallback source serves this file."
+    else:
+        # 5xx / timeout / network mix (or an edge-case "other" category).
+        status_code = 502
+        error_code = None
+        detail = "All fallback sources failed - upstream unavailable."
+
+    body = {
+        "error": error_code or "UpstreamFailure",
+        "detail": detail,
+        "sources": list(attempts),
+    }
+    headers = {
+        "X-Source-Count": str(len(attempts)),
+        # HF client echoes X-Error-Message into its exception text, so the
+        # CLI user ends up with something readable even without the body.
+        "X-Error-Message": detail,
+    }
+    if error_code:
+        headers["X-Error-Code"] = error_code
+
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
 def add_source_headers(

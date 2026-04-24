@@ -416,6 +416,104 @@ describe("FilePreviewDialog", () => {
     wrapper.unmount();
   });
 
+  it("renders a GatedRepo-specific message + sources table when the parser throws a structured fallback error", async () => {
+    const wrapper = mountDialog({
+      kind: "safetensors",
+      resolveUrl: "http://host/repo/resolve/main/model.safetensors",
+      filename: "model.safetensors",
+    });
+    await flushPromises();
+
+    const gatedErr = new Error(
+      "Upstream source requires authentication - likely a gated repository.",
+    );
+    gatedErr.name = "SafetensorsFetchError";
+    gatedErr.status = 401;
+    gatedErr.errorCode = "GatedRepo";
+    gatedErr.detail =
+      "Upstream source requires authentication - likely a gated repository.";
+    gatedErr.sources = [
+      {
+        name: "HuggingFace",
+        url: "https://huggingface.co",
+        status: 401,
+        category: "auth",
+        message: "Access to model owner/demo is restricted.",
+      },
+      {
+        name: "Mirror",
+        url: "https://mirror.local",
+        status: 404,
+        category: "not-found",
+        message: "File not found",
+      },
+    ];
+    safetensorsCtrl.deferred.reject(gatedErr);
+    await flushPromises();
+
+    const text = wrapper.text();
+    expect(text).toContain("Authentication required");
+    // The copy guides the user toward the concrete next step.
+    expect(text).toContain("Attach an access token");
+    // Raw upstream message surfaces in the sources details.
+    expect(text).toContain("Access to model owner/demo is restricted");
+    expect(text).toContain("Mirror");
+    expect(text).toContain("404");
+    // The generic CORS-guidance copy must NOT appear here — CORS and
+    // gated-repo are different remediations.
+    expect(text).not.toContain("CORS failure");
+
+    wrapper.unmount();
+  });
+
+  it("renders a file-not-found message for an aggregated EntryNotFound error", async () => {
+    const wrapper = mountDialog({
+      kind: "safetensors",
+      resolveUrl: "http://host/repo/resolve/main/nope.safetensors",
+      filename: "nope.safetensors",
+    });
+    await flushPromises();
+
+    const notFound = new Error("No fallback source serves this file.");
+    notFound.name = "SafetensorsFetchError";
+    notFound.status = 404;
+    notFound.errorCode = "EntryNotFound";
+    notFound.detail = "No fallback source serves this file.";
+    notFound.sources = [
+      { name: "A", url: "https://a", status: 404, category: "not-found", message: "" },
+      { name: "B", url: "https://b", status: 404, category: "not-found", message: "" },
+    ];
+    safetensorsCtrl.deferred.reject(notFound);
+    await flushPromises();
+
+    const text = wrapper.text();
+    expect(text).toContain("File not found on any source");
+    expect(text).toContain("Every configured fallback source returned 404");
+
+    wrapper.unmount();
+  });
+
+  it("renders an upstream-unavailable message when status is 502 with no error code", async () => {
+    const wrapper = mountDialog({
+      kind: "safetensors",
+      resolveUrl: "http://host/repo/resolve/main/transient.safetensors",
+      filename: "transient.safetensors",
+    });
+    await flushPromises();
+
+    const upstream = new Error("All fallback sources failed - upstream unavailable.");
+    upstream.name = "SafetensorsFetchError";
+    upstream.status = 502;
+    upstream.errorCode = null;
+    upstream.detail = "All fallback sources failed - upstream unavailable.";
+    upstream.sources = null;
+    safetensorsCtrl.deferred.reject(upstream);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Upstream source unavailable");
+    wrapper.unmount();
+  });
+
   it("emits update:visible when the footer Close button is clicked", async () => {
     const wrapper = mountDialog({
       kind: "parquet",

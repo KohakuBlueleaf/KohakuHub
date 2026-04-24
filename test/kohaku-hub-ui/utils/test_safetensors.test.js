@@ -179,6 +179,76 @@ describe("safetensors utilities", () => {
     expect(err.status).toBe(403);
   });
 
+  it("captures X-Error-Code + structured sources body from an aggregated fallback error", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    // Shape matches src/kohakuhub/api/fallback/utils.py
+    // build_aggregate_failure_response — a gated 401 with
+    // HF-compatible X-Error-Code=GatedRepo and a sources[] listing.
+    const aggregated = {
+      error: "GatedRepo",
+      detail:
+        "Upstream source requires authentication - likely a gated repository.",
+      sources: [
+        {
+          name: "HuggingFace",
+          url: "https://huggingface.co",
+          status: 401,
+          category: "auth",
+          message: "Access to model owner/demo is restricted. Please log in.",
+        },
+      ],
+    };
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.json(aggregated, {
+          status: 401,
+          headers: {
+            "X-Error-Code": "GatedRepo",
+            "X-Error-Message":
+              "Upstream source requires authentication - likely a gated repository.",
+          },
+        }),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(401);
+    expect(err.errorCode).toBe("GatedRepo");
+    expect(err.detail).toContain("authentication");
+    expect(err.sources).toHaveLength(1);
+    expect(err.sources[0]).toMatchObject({
+      name: "HuggingFace",
+      status: 401,
+      category: "auth",
+    });
+    expect(err.message).toContain("authentication");
+  });
+
+  it("falls back to a header-derived message when the error body is not JSON", async () => {
+    const { parseSafetensorsMetadata, SafetensorsFetchError } =
+      await loadModule();
+    server.use(
+      http.get(FIXTURE_URL, () =>
+        HttpResponse.text("plain text body", {
+          status: 500,
+          headers: {
+            "X-Error-Message": "Upstream exploded",
+          },
+        }),
+      ),
+    );
+
+    const err = await parseSafetensorsMetadata(FIXTURE_URL).catch((e) => e);
+    expect(err).toBeInstanceOf(SafetensorsFetchError);
+    expect(err.status).toBe(500);
+    expect(err.errorCode).toBeNull();
+    expect(err.sources).toBeNull();
+    expect(err.detail).toBe("Upstream exploded");
+    expect(err.message).toBe("Upstream exploded");
+  });
+
   it("raises SafetensorsFormatError when the response is shorter than the 8-byte length prefix", async () => {
     const { parseSafetensorsMetadata, SafetensorsFormatError } =
       await loadModule();
