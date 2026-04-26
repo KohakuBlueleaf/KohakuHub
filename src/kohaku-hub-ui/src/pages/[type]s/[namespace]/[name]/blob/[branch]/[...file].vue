@@ -3,15 +3,37 @@
   <div class="container-main">
     <!-- Breadcrumb -->
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${namespace}` }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s/${namespace}/${name}` }">
-        {{ name }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${namespace}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
       </el-breadcrumb-item>
       <el-breadcrumb-item>{{ fileName }}</el-breadcrumb-item>
     </el-breadcrumb>
@@ -22,12 +44,27 @@
       </el-icon>
     </div>
 
-    <div v-else-if="error" class="text-center py-20">
-      <div class="i-carbon-warning text-6xl text-red-500 mb-4" />
-      <h2 class="text-2xl font-bold mb-2">File Not Found</h2>
-      <p class="text-gray-600 dark:text-gray-400 mb-4">{{ error }}</p>
-      <el-button @click="$router.back()">Go Back</el-button>
-    </div>
+    <ErrorState
+      v-else-if="errorClassification"
+      :classification="errorClassification"
+      mode="full-page"
+      :retry="loadFile"
+    >
+      <template #actions>
+        <div class="flex items-center gap-2 mt-4">
+          <el-button type="primary" plain @click="loadFile">Retry</el-button>
+          <el-button
+            v-if="errorClassification.kind === 'gated'"
+            type="primary"
+            @click="$router.push('/settings')"
+          >
+            <div class="i-carbon-settings inline-block mr-1" />
+            Open account settings
+          </el-button>
+          <el-button v-else @click="$router.back()">Go Back</el-button>
+        </div>
+      </template>
+    </ErrorState>
 
     <div v-else>
       <!-- File Header -->
@@ -112,15 +149,13 @@
                 v-for="(segment, idx) in pathSegments"
                 :key="idx"
               >
-                <a
+                <RouterLink
                   v-if="idx < pathSegments.length - 1"
-                  @click="
-                    navigateToFolder(pathSegments.slice(0, idx + 1).join('/'))
-                  "
-                  class="cursor-pointer text-blue-600 dark:text-blue-400 hover:underline"
+                  :to="getFolderPath(pathSegments.slice(0, idx + 1).join('/'))"
+                  class="text-blue-600 dark:text-blue-400 hover:underline"
                 >
                   {{ segment }}
-                </a>
+                </RouterLink>
                 <span v-else class="text-gray-700 dark:text-gray-300">{{
                   segment
                 }}</span>
@@ -254,7 +289,15 @@
 <script setup>
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import CodeViewer from "@/components/common/CodeViewer.vue";
+import ErrorState from "@/components/common/ErrorState.vue";
 import { copyToClipboard } from "@/utils/clipboard";
+import { normalizeCatchAllParam } from "@/utils/repo-paths";
+import {
+  classifyError,
+  classifyResponse,
+  downloadToastFor,
+  probeUrlAndClassify,
+} from "@/utils/http-errors";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { repoAPI } from "@/utils/api";
@@ -274,14 +317,17 @@ const repoType = computed(() => {
 const namespace = computed(() => route.params.namespace);
 const name = computed(() => route.params.name);
 const branch = computed(() => route.params.branch || "main");
-const filePath = computed(() => route.params.file || "");
+const filePath = computed(() => normalizeCatchAllParam(route.params.file));
 
 // Constants
 const maxPreviewSize = 100 * 1000; // 100KB
 
 // State
 const loading = ref(true);
-const error = ref(null);
+// Classification payload from utils/http-errors.js shared across the
+// SPA. Replaces the pre-#28 "error string → generic 404 page" path
+// so a gated upstream no longer surfaces as "File Not Found".
+const errorClassification = ref(null);
 const fileContent = ref("");
 const fileSize = ref(0);
 const fileHeaders = ref({});
@@ -504,9 +550,16 @@ function formatSize(bytes) {
   return (bytes / (1000 * 1000 * 1000)).toFixed(1) + " GB";
 }
 
+// Thin retry-style wrapper the template's ErrorState binds to.
+// Kept as a dedicated export so the Retry button's click handler and
+// the initial onMounted call share the same name.
+async function loadFile() {
+  await loadFileInfo();
+}
+
 async function loadFileInfo() {
   loading.value = true;
-  error.value = null;
+  errorClassification.value = null;
 
   try {
     // Note: Presigned URLs are signed for GET method only
@@ -518,9 +571,11 @@ async function loadFileInfo() {
     if (canPreviewText.value || isMarkdown.value) {
       let retries = 0;
       const maxRetries = 10;
+      let lastResponse = null;
 
       while (retries < maxRetries) {
         const response = await fetch(fileUrl.value);
+        lastResponse = response;
 
         if (response.ok) {
           fileSize.value = parseInt(
@@ -528,21 +583,41 @@ async function loadFileInfo() {
           );
           fileHeaders.value = Object.fromEntries(response.headers.entries());
           fileContent.value = await response.text();
-          break;
+          return;
         }
 
-        // If 404, might be commit still processing - retry
-        if (response.status === 404 && retries < maxRetries - 1) {
+        // If 404 and no specific HF error code, commit might still be
+        // processing — retry a few times before surfacing. A 404 with
+        // an EntryNotFound / RepoNotFound code is already a terminal
+        // answer from the backend, so short-circuit out of the retry
+        // loop to avoid wasting the user's time.
+        const specificErrorCode =
+          response.headers.get("x-error-code") ||
+          response.headers.get("X-Error-Code");
+        if (
+          response.status === 404 &&
+          !specificErrorCode &&
+          retries < maxRetries - 1
+        ) {
           console.log(
             `File not ready yet (attempt ${retries + 1}/${maxRetries}), retrying...`,
           );
-          await new Promise((resolve) => setTimeout(resolve, 500)); // Wait 500ms
+          await new Promise((resolve) => setTimeout(resolve, 500));
           retries++;
           continue;
         }
 
-        // Other errors or max retries reached
-        throw new Error("File not found");
+        // Terminal non-2xx: surface the classified error instead of a
+        // bare "File not found" string.
+        errorClassification.value = await classifyResponse(response);
+        return;
+      }
+
+      // Exhausted retries without ever getting a 2xx — still classify
+      // the last response so the user sees why (almost certainly 404
+      // without an error code at this point).
+      if (lastResponse) {
+        errorClassification.value = await classifyResponse(lastResponse);
       }
     } else {
       // For media/binary files, we don't need size upfront
@@ -552,15 +627,34 @@ async function loadFileInfo() {
       fileHeaders.value = {};
     }
   } catch (err) {
-    error.value = err.message || "Failed to load file";
+    // Transport-level failure (CORS, network, abort). Classification
+    // downgrades to `cors` / `generic` with a usable hint.
+    errorClassification.value = classifyError(err);
     console.error("Failed to load file:", err);
   } finally {
     loading.value = false;
   }
 }
 
-function downloadFile() {
-  window.open(fileUrl.value, "_blank");
+async function downloadFile() {
+  // Pre-flight probe via probeUrlAndClassify — issues a Range: 0-0 GET
+  // against the resolve endpoint so we can tell a gated/404/etc.
+  // failure apart from a successful stream. The happy path still
+  // goes through `window.open` so the browser owns the real download
+  // (filename-from-Content-Disposition, progress, cancel). On a
+  // classified failure we surface a toast with kind-specific copy
+  // instead of letting the browser render the aggregated JSON body
+  // as raw text in a new tab.
+  const { ok, classification } = await probeUrlAndClassify(fileUrl.value);
+  if (ok) {
+    window.open(fileUrl.value, "_blank");
+    return;
+  }
+  ElMessage({
+    type: "error",
+    message: downloadToastFor(classification),
+    duration: 6000,
+  });
 }
 
 async function copyFileUrl() {
@@ -582,11 +676,8 @@ async function copyContent() {
   }
 }
 
-function navigateToFolder(folderPath) {
-  // Navigate back to tree viewer with the folder path
-  router.push(
-    `/${repoType.value}s/${namespace.value}/${name.value}/tree/${branch.value}/${folderPath}`,
-  );
+function getFolderPath(folderPath) {
+  return `/${repoType.value}s/${namespace.value}/${name.value}/tree/${branch.value}/${folderPath}`;
 }
 
 function editFile() {

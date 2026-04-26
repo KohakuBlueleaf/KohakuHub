@@ -184,13 +184,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -218,10 +221,14 @@
                   class="i-carbon-model text-blue-500 text-xl flex-shrink-0"
                 />
                 <div class="flex-1 min-w-0">
-                  <h3
-                    class="font-semibold text-blue-600 dark:text-blue-400 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h3 class="font-semibold">
+                    <RouterLink
+                      :to="getRepoPath('model', repo)"
+                      class="block text-blue-600 dark:text-blue-400 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h3>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     Updated {{ formatDate(repo.lastModified) }}
@@ -293,13 +300,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -327,10 +337,14 @@
                   class="i-carbon-data-table text-green-500 text-xl flex-shrink-0"
                 />
                 <div class="flex-1 min-w-0">
-                  <h3
-                    class="font-semibold text-green-600 dark:text-green-400 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h3 class="font-semibold">
+                    <RouterLink
+                      :to="getRepoPath('dataset', repo)"
+                      class="block text-green-600 dark:text-green-400 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h3>
                   <div class="text-xs text-gray-600 mt-1">
                     Updated {{ formatDate(repo.lastModified) }}
@@ -389,13 +403,16 @@
 
             <div class="flex gap-3">
               <el-select
-                v-model="sortBy"
+                v-model="selectedSort"
                 placeholder="Sort by"
                 style="width: 200px"
               >
-                <el-option label="Recently Updated" value="recent" />
-                <el-option label="Most Downloads" value="downloads" />
-                <el-option label="Most Likes" value="likes" />
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
               </el-select>
 
               <el-input
@@ -423,10 +440,14 @@
                   class="i-carbon-application text-purple-500 text-xl flex-shrink-0"
                 />
                 <div class="flex-1 min-w-0">
-                  <h3
-                    class="font-semibold text-purple-600 dark:text-purple-400 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h3 class="font-semibold">
+                    <RouterLink
+                      :to="getRepoPath('space', repo)"
+                      class="block text-purple-600 dark:text-purple-400 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h3>
                   <div class="text-xs text-gray-600 mt-1">
                     Updated {{ formatDate(repo.lastModified) }}
@@ -479,10 +500,11 @@
 <script setup>
 import { repoAPI, orgAPI } from "@/utils/api";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 
 const route = useRoute();
 const router = useRouter();
@@ -495,7 +517,6 @@ const userNotFound = ref(false);
 const userInfo = ref(null);
 const repos = ref({ model: [], dataset: [], space: [] });
 const searchQuery = ref("");
-const sortBy = ref("recent");
 
 // Map route type to API type
 const repoType = computed(() => {
@@ -504,6 +525,22 @@ const repoType = computed(() => {
   if (currentType.value === "spaces") return "space";
   return "model";
 });
+
+const selectedSort = ref(
+  getRepoSortPreference({
+    scope: "user",
+    repoType: repoType.value,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+);
+
+const sortOptions = [
+  { label: "Recently Created", value: "recent" },
+  { label: "Recently Updated", value: "updated" },
+  { label: "Most Downloads", value: "downloads" },
+  { label: "Most Likes", value: "likes" },
+];
 
 const filteredRepos = computed(() => {
   const query = searchQuery.value.toLowerCase();
@@ -524,12 +561,16 @@ function getCount(type) {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "never";
+  return formatRelativeTime(date, "never");
+}
+
+function getRepoPath(type, repo) {
+  const [namespace, name] = repo.id.split("/");
+  return `/${type}s/${namespace}/${name}`;
 }
 
 function goToRepo(type, repo) {
-  const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  router.push(getRepoPath(type, repo));
 }
 
 function openExternalRepo(repo) {
@@ -601,17 +642,41 @@ async function loadRepos() {
     const [models, datasets, spaces] = await Promise.all([
       repoAPI.listRepos("model", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "model"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "model",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000, // Very high limit to get all repos
       }),
       repoAPI.listRepos("dataset", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "dataset"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "dataset",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000,
       }),
       repoAPI.listRepos("space", {
         author: username.value,
-        sort: sortBy.value,
+        sort:
+          repoType.value === "space"
+            ? selectedSort.value
+            : getRepoSortPreference({
+                scope: "user",
+                repoType: "space",
+                allowedValues: ["recent", "updated", "downloads", "likes"],
+                fallback: "recent",
+              }),
         limit: 100000,
       }),
     ]);
@@ -627,13 +692,30 @@ async function loadRepos() {
 }
 
 // Reload when sort changes
-watch(sortBy, () => {
-  loadRepos();
+watch(selectedSort, () => {
+  setRepoSortPreference({
+    scope: "user",
+    repoType: repoType.value,
+    value: selectedSort.value,
+  });
+
+  if (!loading.value && !userNotFound.value) {
+    loadRepos();
+  }
 });
 
 // Reset search when type changes
 watch(currentType, () => {
   searchQuery.value = "";
+});
+
+watch(repoType, (type) => {
+  selectedSort.value = getRepoSortPreference({
+    scope: "user",
+    repoType: type,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  });
 });
 
 onMounted(async () => {

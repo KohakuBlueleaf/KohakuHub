@@ -8,6 +8,14 @@ kohakuboard/
 *_refactor.*
 CLAUDE.md
 .claude/
+# Local agent scratch files should never leak into the repo.
+AGENTS.md
+**/AGENTS.md
+.agents/
+# Local dev secrets belong in the tracked example file, not the real env file.
+.env.dev
+node_modules/
+**/node_modules/
 example.md
 hub-meta/
 hub-storage/
@@ -71,6 +79,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage-ui*/
 *.cover
 *.py.cover
 .hypothesis/
@@ -240,3 +249,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+/DELIVERY_NOTES.md
+/ROLLBACK_GUARDRAILS.md
+/tests

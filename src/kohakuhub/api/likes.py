@@ -192,17 +192,14 @@ async def list_repository_likers_endpoint(
 
     # Get likers
     likers = list_repository_likers(repo, limit=limit)
-
-    return {
-        "likers": [
-            {
-                "username": liker.username,
-                "full_name": liker.full_name,
-            }
-            for liker in likers
-        ],
-        "total": repo.likes_count,
-    }
+    return [
+        {
+            "user": liker.username,
+            "fullname": liker.full_name or liker.username,
+            "avatarUrl": None,
+        }
+        for liker in likers
+    ]
 
 
 @router.get("/users/{username}/likes")
@@ -241,14 +238,15 @@ async def list_user_likes(
             check_repo_read_permission(repo, user)
             repos.append(
                 {
-                    "id": repo.full_id,
-                    "type": repo.repo_type,
-                    "private": repo.private,
-                    "liked_at": like.created_at.isoformat(),
+                    "createdAt": like.created_at.isoformat(),
+                    "repo": {
+                        "name": repo.full_id,
+                        "type": repo.repo_type,
+                    },
                 }
             )
         except HTTPException:
             # Skip private repos user can't access
             continue
 
-    return {"likes": repos, "total": len(repos)}
+    return repos

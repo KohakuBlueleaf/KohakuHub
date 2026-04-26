@@ -194,6 +194,7 @@ async def create_user_admin(
         email=user.email,
         email_verified=user.email_verified,
         is_active=user.is_active,
+        is_org=user.is_org,
         private_quota_bytes=user.private_quota_bytes,
         public_quota_bytes=user.public_quota_bytes,
         private_used_bytes=user.private_used_bytes,

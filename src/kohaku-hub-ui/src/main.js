@@ -4,6 +4,7 @@ import { createPinia } from "pinia";
 import { createRouter, createWebHistory } from "vue-router";
 import { routes } from "vue-router/auto-routes";
 import App from "./App.vue";
+import { initializeBrowserTimezone } from "./utils/datetime";
 
 // Import UnoCSS
 import "virtual:uno.css";
@@ -22,6 +23,8 @@ import "./style.css";
 
 const app = createApp(App);
 const pinia = createPinia();
+
+initializeBrowserTimezone();
 
 // Create router
 const router = createRouter({

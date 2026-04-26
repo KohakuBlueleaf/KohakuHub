@@ -181,14 +181,28 @@
       <main class="space-y-8">
         <section>
           <div
-            class="flex items-center justify-between mb-4 pb-3 border-b-2"
+            class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2"
             :class="borderColor"
           >
             <div class="flex items-center gap-2">
               <div :class="iconClass" class="text-xl md:text-2xl" />
               <h2 class="text-xl md:text-2xl font-bold">{{ typeTitle }}</h2>
             </div>
-            <el-tag :type="tagType" size="large">{{ repoCount }}</el-tag>
+            <div class="flex items-center gap-3 ml-auto">
+              <el-select
+                v-model="selectedSort"
+                placeholder="Sort repositories"
+                class="w-44 sm:w-56"
+              >
+                <el-option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <el-tag :type="tagType" size="large">{{ repoCount }}</el-tag>
+            </div>
           </div>
 
           <div v-if="repoCount > 0" class="space-y-4">
@@ -202,11 +216,15 @@
                 <div class="flex items-start gap-2 mb-2">
                   <div :class="iconClass" class="text-xl flex-shrink-0" />
                   <div class="flex-1 min-w-0">
-                    <h3
-                      class="font-semibold hover:underline truncate"
-                      :class="titleColor"
-                    >
-                      {{ repo.id }}
+                    <h3 class="font-semibold">
+                      <RouterLink
+                        :to="getRepoPath(repo)"
+                        class="block hover:underline truncate"
+                        :class="titleColor"
+                        @click.stop
+                      >
+                        {{ repo.id }}
+                      </RouterLink>
                     </h3>
                     <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                       Updated {{ formatDate(repo.lastModified) }}
@@ -276,27 +294,45 @@
 <script setup>
 import { repoAPI, orgAPI } from "@/utils/api";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 
 const route = useRoute();
 const router = useRouter();
 const orgname = computed(() => route.params.orgname);
 const currentType = computed(() => route.params.type);
 
-const loading = ref(true);
-const orgNotFound = ref(false);
-const orgInfo = ref(null);
-const members = ref([]);
-const repos = ref({ model: [], dataset: [], space: [] });
-
 const typeMapping = {
   models: "model",
   datasets: "dataset",
   spaces: "space",
 };
+
+const currentRepoType = computed(() => typeMapping[currentType.value] || "model");
+
+const loading = ref(true);
+const orgNotFound = ref(false);
+const orgInfo = ref(null);
+const members = ref([]);
+const repos = ref({ model: [], dataset: [], space: [] });
+const selectedSort = ref(
+  getRepoSortPreference({
+    scope: "org",
+    repoType: currentRepoType.value,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+);
+
+const sortOptions = [
+  { label: "Recently Created", value: "recent" },
+  { label: "Recently Updated", value: "updated" },
+  { label: "Most Downloads", value: "downloads" },
+  { label: "Most Likes", value: "likes" },
+];
 
 const currentRepos = computed(() => {
   const type = typeMapping[currentType.value] || "model";
@@ -362,13 +398,17 @@ const tagType = computed(() => {
 });
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "never";
+  return formatRelativeTime(date, "never");
+}
+
+function getRepoPath(repo) {
+  const type = typeMapping[currentType.value] || "model";
+  const [namespace, name] = repo.id.split("/");
+  return `/${type}s/${namespace}/${name}`;
 }
 
 function goToRepo(repo) {
-  const type = typeMapping[currentType.value] || "model";
-  const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  router.push(getRepoPath(repo));
 }
 
 function goToUser(username) {
@@ -438,20 +478,60 @@ async function loadMembers() {
 async function loadRepos() {
   try {
     const [models, datasets, spaces] = await Promise.all([
-      repoAPI.listRepos("model", { author: orgname.value, limit: 100000 }),
-      repoAPI.listRepos("dataset", { author: orgname.value, limit: 100000 }),
-      repoAPI.listRepos("space", { author: orgname.value, limit: 100000 }),
+      loadRepoType("model"),
+      loadRepoType("dataset"),
+      loadRepoType("space"),
     ]);
 
     repos.value = {
-      model: models.data,
-      dataset: datasets.data,
-      space: spaces.data,
+      model: models,
+      dataset: datasets,
+      space: spaces,
     };
   } catch (err) {
     console.error("Failed to load repos:", err);
   }
 }
+
+async function loadRepoType(repoType) {
+  const { data } = await repoAPI.listRepos(repoType, {
+    author: orgname.value,
+    limit: 100000,
+    sort:
+      repoType === currentRepoType.value
+        ? selectedSort.value
+        : getRepoSortPreference({
+            scope: "org",
+            repoType,
+            allowedValues: ["recent", "updated", "downloads", "likes"],
+            fallback: "recent",
+          }),
+  });
+  return data;
+}
+
+watch(selectedSort, () => {
+  setRepoSortPreference({
+    scope: "org",
+    repoType: currentRepoType.value,
+    value: selectedSort.value,
+  });
+
+  if (!loading.value && !orgNotFound.value) {
+    loadRepoType(currentRepoType.value).then((data) => {
+      repos.value[currentRepoType.value] = data;
+    });
+  }
+});
+
+watch(currentRepoType, (repoType) => {
+  selectedSort.value = getRepoSortPreference({
+    scope: "org",
+    repoType,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  });
+});
 
 onMounted(async () => {
   try {

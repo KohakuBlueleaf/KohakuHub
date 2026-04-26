@@ -34,7 +34,27 @@
 
     <!-- Recent Repos - Three Columns -->
     <div class="container-main py-8">
-      <h2 class="text-2xl md:text-3xl font-bold mb-6 md:mb-8">🔥 Trending</h2>
+      <div
+        class="flex flex-col gap-4 mb-6 md:mb-8 md:flex-row md:items-center"
+      >
+        <h2 class="text-2xl md:text-3xl font-bold">
+          {{ repoSectionTitle }}
+        </h2>
+
+        <div class="w-full md:w-80 md:ml-auto md:flex-none">
+          <el-select
+            v-model="selectedSort"
+            placeholder="Sort repositories"
+            class="w-full"
+          >
+            <el-option label="Trending" value="trending" />
+            <el-option label="Recently Created" value="recent" />
+            <el-option label="Recently Updated" value="updated" />
+            <el-option label="Most Downloads" value="downloads" />
+            <el-option label="Most Likes" value="likes" />
+          </el-select>
+        </div>
+      </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <!-- Models Column -->
@@ -59,10 +79,14 @@
               <div class="flex items-start gap-2 mb-2">
                 <div class="i-carbon-model text-blue-500 flex-shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-blue-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('model', repo)"
+                      class="block text-blue-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -112,10 +136,14 @@
               <div class="flex items-start gap-2 mb-2">
                 <div class="i-carbon-data-table text-green-500 flex-shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-green-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('dataset', repo)"
+                      class="block text-green-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -167,10 +195,14 @@
                   class="i-carbon-application text-purple-500 flex-shrink-0"
                 />
                 <div class="flex-1 min-w-0">
-                  <h4
-                    class="font-semibold text-sm text-purple-600 hover:underline truncate"
-                  >
-                    {{ repo.id }}
+                  <h4 class="font-semibold text-sm">
+                    <RouterLink
+                      :to="getRepoPath('space', repo)"
+                      class="block text-purple-600 hover:underline truncate"
+                      @click.stop
+                    >
+                      {{ repo.id }}
+                    </RouterLink>
                   </h4>
                   <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">
                     {{ formatDate(repo.lastModified) }}
@@ -205,11 +237,12 @@
 <script setup>
 import { repoAPI } from "@/utils/api";
 import { useAuthStore } from "@/stores/auth";
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 import { ElMessage } from "element-plus";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
 
 const router = useRouter();
 const route = useRoute();
@@ -220,14 +253,41 @@ const stats = ref({ models: 0, datasets: 0, spaces: 0 });
 const recentModels = ref([]);
 const recentDatasets = ref([]);
 const recentSpaces = ref([]);
+const selectedSort = ref(
+  getRepoSortPreference({
+    scope: "home",
+    repoType: "all",
+    allowedValues: ["trending", "recent", "updated", "downloads", "likes"],
+    fallback: "trending",
+  }),
+);
+
+const repoSectionTitle = computed(() => {
+  switch (selectedSort.value) {
+    case "recent":
+      return "🆕 Recently Created";
+    case "updated":
+      return "🕒 Recently Updated";
+    case "downloads":
+      return "⬇️ Most Downloaded";
+    case "likes":
+      return "❤️ Most Liked";
+    default:
+      return "🔥 Trending";
+  }
+});
 
 function formatDate(date) {
-  return dayjs(date).fromNow();
+  return formatRelativeTime(date, "never");
+}
+
+function getRepoPath(type, repo) {
+  const [namespace, name] = repo.id.split("/");
+  return `/${type}s/${namespace}/${name}`;
 }
 
 function goToRepo(type, repo) {
-  const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  router.push(getRepoPath(type, repo));
 }
 
 async function loadStats() {
@@ -235,17 +295,17 @@ async function loadStats() {
     const [models, datasets, spaces] = await Promise.all([
       repoAPI.listRepos("model", {
         limit: 100,
-        sort: "trending",
+        sort: selectedSort.value,
         fallback: false,
       }),
       repoAPI.listRepos("dataset", {
         limit: 100,
-        sort: "trending",
+        sort: selectedSort.value,
         fallback: false,
       }),
       repoAPI.listRepos("space", {
         limit: 100,
-        sort: "trending",
+        sort: selectedSort.value,
         fallback: false,
       }),
     ]);
@@ -256,7 +316,7 @@ async function loadStats() {
       spaces: spaces.data.length,
     };
 
-    // Get top 3 trending repos for each type (already sorted by backend)
+    // Get top 3 repos for each type (already sorted by backend)
     recentModels.value = models.data.slice(0, 3);
     recentDatasets.value = datasets.data.slice(0, 3);
     recentSpaces.value = spaces.data.slice(0, 3);
@@ -264,6 +324,15 @@ async function loadStats() {
     console.error("Failed to load stats:", err);
   }
 }
+
+watch(selectedSort, () => {
+  setRepoSortPreference({
+    scope: "home",
+    repoType: "all",
+    value: selectedSort.value,
+  });
+  loadStats();
+});
 
 onMounted(() => {
   // Check for verification error messages in query params

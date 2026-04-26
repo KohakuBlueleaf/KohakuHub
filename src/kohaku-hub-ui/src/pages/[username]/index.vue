@@ -370,19 +370,6 @@
 
         <!-- Main Content -->
         <main class="space-y-8">
-          <!-- Sort Dropdown (applies to all sections) -->
-          <div class="card">
-            <el-select
-              v-model="sortBy"
-              placeholder="Sort by"
-              class="w-full sm:w-50"
-            >
-              <el-option label="Recently Updated" value="recent" />
-              <el-option label="Most Downloads" value="downloads" />
-              <el-option label="Most Likes" value="likes" />
-            </el-select>
-          </div>
-
           <!-- User Card (from Username/Username space repo if exists) -->
           <section v-if="userCard" class="card">
             <div class="markdown-body">
@@ -393,13 +380,29 @@
           <!-- Models Section -->
           <section class="mb-8">
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-blue-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-blue-500"
             >
               <div class="flex items-center gap-2">
                 <div class="i-carbon-model text-blue-500 text-xl md:text-2xl" />
                 <h2 class="text-xl md:text-2xl font-bold">Models</h2>
               </div>
-              <el-tag type="info" size="large">{{ getCount("model") }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.model"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="info" size="large">{{ getCount("model") }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('model') > 0" class="space-y-4">
@@ -416,10 +419,14 @@
                       class="i-carbon-model text-blue-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-blue-600 dark:text-blue-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('model', repo)"
+                          class="block text-blue-600 dark:text-blue-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -494,7 +501,7 @@
           <!-- Datasets Section -->
           <section class="mb-8">
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-green-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-green-500"
             >
               <div class="flex items-center gap-2">
                 <div
@@ -502,9 +509,25 @@
                 />
                 <h2 class="text-xl md:text-2xl font-bold">Datasets</h2>
               </div>
-              <el-tag type="success" size="large">{{
-                getCount("dataset")
-              }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.dataset"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="success" size="large">{{
+                  getCount("dataset")
+                }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('dataset') > 0" class="space-y-4">
@@ -521,10 +544,14 @@
                       class="i-carbon-data-table text-green-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-green-600 dark:text-green-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('dataset', repo)"
+                          class="block text-green-600 dark:text-green-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -599,7 +626,7 @@
           <!-- Spaces Section -->
           <section>
             <div
-              class="flex items-center justify-between mb-4 pb-3 border-b-2 border-purple-500"
+              class="flex items-center justify-between gap-3 flex-wrap mb-4 pb-3 border-b-2 border-purple-500"
             >
               <div class="flex items-center gap-2">
                 <div
@@ -607,9 +634,25 @@
                 />
                 <h2 class="text-xl md:text-2xl font-bold">Spaces</h2>
               </div>
-              <el-tag type="warning" size="large">{{
-                getCount("space")
-              }}</el-tag>
+              <div class="flex items-center gap-3 ml-auto shrink-0">
+                <div class="w-56 sm:w-64 lg:w-72 shrink-0">
+                  <el-select
+                    v-model="selectedSorts.space"
+                    placeholder="Sort repositories"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in sortOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </div>
+                <el-tag type="warning" size="large">{{
+                  getCount("space")
+                }}</el-tag>
+              </div>
             </div>
 
             <div v-if="getCount('space') > 0" class="space-y-4">
@@ -626,10 +669,14 @@
                       class="i-carbon-application text-purple-500 text-xl flex-shrink-0"
                     />
                     <div class="flex-1 min-w-0">
-                      <h3
-                        class="font-semibold text-purple-600 dark:text-purple-400 hover:underline truncate"
-                      >
-                        {{ repo.id }}
+                      <h3 class="font-semibold">
+                        <RouterLink
+                          :to="getRepoPath('space', repo)"
+                          class="block text-purple-600 dark:text-purple-400 hover:underline truncate"
+                          @click.stop
+                        >
+                          {{ repo.id }}
+                        </RouterLink>
                       </h3>
                       <div
                         class="text-xs text-gray-600 dark:text-gray-400 mt-1"
@@ -710,11 +757,12 @@
 import { repoAPI, orgAPI, settingsAPI } from "@/utils/api";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import SocialLinks from "@/components/profile/SocialLinks.vue";
+import { formatRelativeTime } from "@/utils/datetime";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
 
 const route = useRoute();
 const router = useRouter();
@@ -728,9 +776,34 @@ const userCard = ref("");
 const userNotFound = ref(false);
 const quotaInfo = ref(null);
 const hasAvatar = ref(true); // Assume avatar exists, will be set to false on error
-const sortBy = ref("recent"); // Sort option
+const selectedSorts = reactive({
+  model: getRepoSortPreference({
+    scope: "user",
+    repoType: "model",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+  dataset: getRepoSortPreference({
+    scope: "user",
+    repoType: "dataset",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+  space: getRepoSortPreference({
+    scope: "user",
+    repoType: "space",
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+});
 
 const MAX_DISPLAYED = 6; // 2 per row × 3 rows
+const sortOptions = [
+  { label: "Recently Created", value: "recent" },
+  { label: "Recently Updated", value: "updated" },
+  { label: "Most Downloads", value: "downloads" },
+  { label: "Most Likes", value: "likes" },
+];
 
 // External user detection (check both profile and repos)
 const isExternalUser = computed(() => {
@@ -811,7 +884,7 @@ function hasMoreRepos(type) {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "never";
+  return formatRelativeTime(date, "never");
 }
 
 function formatBytes(bytes) {
@@ -830,9 +903,13 @@ function getQuotaStatus(percentage) {
   return "success";
 }
 
-function goToRepo(type, repo) {
+function getRepoPath(type, repo) {
   const [namespace, name] = repo.id.split("/");
-  router.push(`/${type}s/${namespace}/${name}`);
+  return `/${type}s/${namespace}/${name}`;
+}
+
+function goToRepo(type, repo) {
+  router.push(getRepoPath(type, repo));
 }
 
 function openExternalRepo(repo, type) {
@@ -898,13 +975,17 @@ async function checkUserExists() {
 
 async function loadUserData() {
   try {
-    // Get user overview which returns all repos (use very high limit to get all repos)
-    const response = await repoAPI.getUserOverview(
-      username.value,
-      sortBy.value,
-      100000, // Very high limit to get all repos
-    );
-    repos.value = response.data;
+    const [models, datasets, spaces] = await Promise.all([
+      loadRepoType("model"),
+      loadRepoType("dataset"),
+      loadRepoType("space"),
+    ]);
+
+    repos.value = {
+      models,
+      datasets,
+      spaces,
+    };
     return true;
   } catch (err) {
     // Even if repos fail to load, if user exists we show empty state
@@ -914,10 +995,59 @@ async function loadUserData() {
   }
 }
 
-// Watch sortBy changes and reload
-watch(sortBy, () => {
-  loadUserData();
-});
+async function loadRepoType(type) {
+  const { data } = await repoAPI.listRepos(type, {
+    author: username.value,
+    sort: selectedSorts[type],
+    limit: 100000,
+  });
+  return data;
+}
+
+watch(
+  () => selectedSorts.model,
+  async () => {
+    setRepoSortPreference({
+      scope: "user",
+      repoType: "model",
+      value: selectedSorts.model,
+    });
+
+    if (!loading.value && !userNotFound.value) {
+      repos.value.models = await loadRepoType("model");
+    }
+  },
+);
+
+watch(
+  () => selectedSorts.dataset,
+  async () => {
+    setRepoSortPreference({
+      scope: "user",
+      repoType: "dataset",
+      value: selectedSorts.dataset,
+    });
+
+    if (!loading.value && !userNotFound.value) {
+      repos.value.datasets = await loadRepoType("dataset");
+    }
+  },
+);
+
+watch(
+  () => selectedSorts.space,
+  async () => {
+    setRepoSortPreference({
+      scope: "user",
+      repoType: "space",
+      value: selectedSorts.space,
+    });
+
+    if (!loading.value && !userNotFound.value) {
+      repos.value.spaces = await loadRepoType("space");
+    }
+  },
+);
 
 async function loadUserCard() {
   try {

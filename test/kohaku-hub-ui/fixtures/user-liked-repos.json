@@ -1,0 +1,16 @@
+[
+  {
+    "createdAt": "2026-04-21T10:12:00.000000Z",
+    "repo": {
+      "name": "owner/demo-model",
+      "type": "model"
+    }
+  },
+  {
+    "createdAt": "2026-04-21T10:14:00.000000Z",
+    "repo": {
+      "name": "acme-labs/private-dataset",
+      "type": "dataset"
+    }
+  }
+]

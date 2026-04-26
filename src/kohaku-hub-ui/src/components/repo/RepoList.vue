@@ -11,10 +11,14 @@
         <div class="flex-1 w-full">
           <div class="flex items-center gap-2 mb-2 flex-wrap">
             <div :class="getIconClass(type)" />
-            <h3
-              class="text-base sm:text-lg font-semibold text-blue-600 dark:text-blue-400 hover:underline break-all"
-            >
-              {{ repo.id }}
+            <h3 class="text-base sm:text-lg font-semibold">
+              <RouterLink
+                :to="getRepoPath(repo)"
+                class="block text-blue-600 dark:text-blue-400 hover:underline break-all"
+                @click.stop
+              >
+                {{ repo.id }}
+              </RouterLink>
             </h3>
             <el-tag v-if="repo.private" size="small" type="warning">
               Private
@@ -70,10 +74,7 @@
 </template>
 
 <script setup>
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-
-dayjs.extend(relativeTime);
+import { formatRelativeTime } from "@/utils/datetime";
 
 /**
  * @typedef {Object} Props
@@ -104,11 +105,15 @@ function getIconClass(type) {
 }
 
 function formatDate(date) {
-  return dayjs(date).fromNow();
+  return formatRelativeTime(date, "never");
+}
+
+function getRepoPath(repo) {
+  const [namespace, name] = repo.id.split("/");
+  return `/${props.type}s/${namespace}/${name}`;
 }
 
 function goToRepo(repo) {
-  const [namespace, name] = repo.id.split("/");
-  router.push(`/${props.type}s/${namespace}/${name}`);
+  router.push(getRepoPath(repo));
 }
 </script>

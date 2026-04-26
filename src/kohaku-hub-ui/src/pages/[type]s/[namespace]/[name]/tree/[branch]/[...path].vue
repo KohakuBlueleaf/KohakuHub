@@ -12,6 +12,7 @@
 
 <script setup>
 import RepoViewer from "@/components/repo/RepoViewer.vue";
+import { normalizeCatchAllParam } from "@/utils/repo-paths";
 
 const route = useRoute();
 
@@ -26,5 +27,5 @@ const repoType = computed(() => {
 const namespace = computed(() => route.params.namespace);
 const name = computed(() => route.params.name);
 const branch = computed(() => route.params.branch || "main");
-const currentPath = computed(() => route.params.path || "");
+const currentPath = computed(() => normalizeCatchAllParam(route.params.path));
 </script>

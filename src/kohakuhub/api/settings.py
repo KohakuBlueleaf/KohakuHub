@@ -296,6 +296,7 @@ class UpdateRepoSettingsPayload(BaseModel):
     """Payload for repository settings update."""
 
     private: Optional[bool] = None
+    visibility: Optional[str] = None
     gated: Optional[str] = None  # "auto", "manual", or False/None
     lfs_threshold_bytes: Optional[int] = None  # NULL = use server default
     lfs_keep_versions: Optional[int] = None  # NULL = use server default
@@ -374,9 +375,26 @@ async def update_repo_settings(
         # Store as JSON string
         update_fields["lfs_suffix_rules"] = json.dumps(payload.lfs_suffix_rules)
 
-    if payload.private is not None:
+    requested_private = payload.private
+    if requested_private is None and payload.visibility is not None:
+        if payload.visibility == "private":
+            requested_private = True
+        elif payload.visibility == "public":
+            requested_private = False
+        else:
+            raise HTTPException(
+                400,
+                detail={
+                    "error": (
+                        "Unsupported repository visibility. "
+                        "Only 'public' and 'private' are supported."
+                    )
+                },
+            )
+
+    if requested_private is not None:
         # Check if visibility is actually changing
-        if repo_row.private != payload.private:
+        if repo_row.private != requested_private:
             # Calculate repository storage
             logger.info(
                 f"Checking quota for visibility change: {repo_id} from "
@@ -395,7 +413,7 @@ async def update_repo_settings(
             allowed, error_msg = check_quota(
                 namespace=namespace,
                 additional_bytes=repo_size,
-                is_private=payload.private,
+                is_private=requested_private,
                 is_org=is_org,
             )
 
@@ -412,7 +430,7 @@ async def update_repo_settings(
                 )
 
         # Update repository visibility
-        update_fields["private"] = payload.private
+        update_fields["private"] = requested_private
 
     # Apply all updates if there are any
     if update_fields:

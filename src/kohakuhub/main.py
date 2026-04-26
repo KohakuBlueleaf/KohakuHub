@@ -1,9 +1,11 @@
 """Main FastAPI application for Kohaku Hub."""
 
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from kohakuhub.api import (
     admin,
@@ -16,6 +18,7 @@ from kohakuhub.api import (
     stats,
     validation,
 )
+from kohakuhub.api.repo.utils.hf import HFErrorCode
 from kohakuhub.api.invitation import router as invitation
 from kohakuhub.auth import router as auth_router
 from kohakuhub.api.auth import external_tokens
@@ -38,6 +41,7 @@ from kohakuhub.api.repo.routers import info as repo_info
 from kohakuhub.api.repo.routers import tree as repo_tree
 from kohakuhub.api.xet.routers import cas as xet_cas
 from kohakuhub.api.xet.routers import xet as xet_token
+from kohakuhub.api import not_implemented as not_implemented_router
 
 # Conditional import for Dataset Viewer
 if not cfg.app.disable_dataset_viewer:
@@ -74,12 +78,52 @@ app = FastAPI(
 )
 
 
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Attach an ``X-Request-Id`` header to every response.
+
+    ``huggingface_hub.HfHubHTTPError`` reads this header (falling back to
+    ``X-Amzn-Trace-Id`` / ``X-Amz-Cf-Id``) and embeds the value in the
+    exception's ``request_id`` attribute. Surfacing it on every response —
+    success and failure alike — gives operators a correlation token for
+    debugging across the backend logs and the client traceback.
+
+    If the client already supplied an ``X-Request-Id`` header (e.g. upstream
+    gateway, load test rig), we echo it back rather than overwriting.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        incoming = request.headers.get("x-request-id")
+        request_id = incoming or uuid.uuid4().hex
+        response = await call_next(request)
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response
+
+
+app.add_middleware(RequestIdMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Needed for the pure-client preview path (safetensors/parquet): the SPA
+    # issues cross-origin Range reads against /resolve/ and follows the 302 to
+    # MinIO. Without explicit expose_headers, browsers strip everything beyond
+    # the "CORS-safelisted" set, hiding Content-Range / X-Linked-* / ETag from
+    # JS. Keep in sync with the header set emitted by _get_file_metadata in
+    # src/kohakuhub/api/files.py.
+    expose_headers=[
+        "Accept-Ranges",
+        "Content-Range",
+        "Content-Length",
+        "ETag",
+        "Location",
+        "X-Repo-Commit",
+        "X-Linked-Etag",
+        "X-Linked-Size",
+        "X-Xet-Hash",
+    ],
 )
 
 app.include_router(auth_router, prefix=cfg.app.api_base)
@@ -114,6 +158,15 @@ if not cfg.app.disable_dataset_viewer:
 else:
     logger.info("Dataset Viewer disabled (AGPL-3 only build)")
 
+# Registered last so catch-all 501 routes for won't-support features
+# (discussions, space runtime, collections, webhooks) never shadow the
+# real endpoints defined above.
+app.include_router(
+    not_implemented_router.router,
+    prefix=cfg.app.api_base,
+    tags=["not-implemented"],
+)
+
 
 @app.head("/{namespace}/{name}/resolve/{revision}/{path:path}")
 @app.head("/{type}s/{namespace}/{name}/resolve/{revision}/{path:path}")
@@ -134,7 +187,19 @@ async def public_resolve_head(
     repo = get_repository(type, namespace, name)
     if not repo:
         logger.warning(f"Repository not found: {type}/{namespace}/{name}")
-        raise HTTPException(404, detail={"error": "Repository not found"})
+        # Public resolve is on the critical `huggingface_hub` download path;
+        # emit the HF-compatible headers so the client raises
+        # `RepositoryNotFoundError` with a useful server_message instead of
+        # a generic HfHubHTTPError — transformers / datasets / etc. all
+        # special-case the named exception.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Repository '{namespace}/{name}' not found"},
+            headers={
+                "X-Error-Code": HFErrorCode.REPO_NOT_FOUND,
+                "X-Error-Message": f"Repository '{namespace}/{name}' ({type}) not found",
+            },
+        )
 
     return await resolve_file_head(
         repo_type=type,
@@ -166,7 +231,19 @@ async def public_resolve_get(
     repo = get_repository(type, namespace, name)
     if not repo:
         logger.warning(f"Repository not found: {type}/{namespace}/{name}")
-        raise HTTPException(404, detail={"error": "Repository not found"})
+        # Public resolve is on the critical `huggingface_hub` download path;
+        # emit the HF-compatible headers so the client raises
+        # `RepositoryNotFoundError` with a useful server_message instead of
+        # a generic HfHubHTTPError — transformers / datasets / etc. all
+        # special-case the named exception.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Repository '{namespace}/{name}' not found"},
+            headers={
+                "X-Error-Code": HFErrorCode.REPO_NOT_FOUND,
+                "X-Error-Message": f"Repository '{namespace}/{name}' ({type}) not found",
+            },
+        )
 
     return await resolve_file_get(
         repo_type=type,

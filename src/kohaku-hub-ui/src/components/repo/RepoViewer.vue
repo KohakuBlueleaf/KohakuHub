@@ -2,14 +2,38 @@
 <template>
   <div class="container-main">
     <el-breadcrumb separator="/" class="mb-6 text-gray-700 dark:text-gray-300">
-      <el-breadcrumb-item :to="{ path: '/' }">Home</el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: `/${repoType}s` }">
-        {{ repoTypeLabel }}
+      <el-breadcrumb-item>
+        <RouterLink
+          to="/"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Home
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item :to="{ path: namespaceLink }">
-        {{ namespace }}
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ repoTypeLabel }}
+        </RouterLink>
       </el-breadcrumb-item>
-      <el-breadcrumb-item>{{ name }}</el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="namespaceLink"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ namespace }}
+        </RouterLink>
+      </el-breadcrumb-item>
+      <el-breadcrumb-item>
+        <RouterLink
+          :to="`/${repoType}s/${namespace}/${name}`"
+          class="text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          {{ name }}
+        </RouterLink>
+      </el-breadcrumb-item>
     </el-breadcrumb>
 
     <div v-if="loading" class="text-center py-20">
@@ -278,6 +302,19 @@
                 :branch="currentBranch"
               />
             </div>
+            <!--
+              When the README fetch itself errored (gated / unavailable /
+              not-found on any fallback source), show the classified
+              state instead of the "No README.md found" placeholder —
+              the latter implied "the repo has no README", when actually
+              we just couldn't read it.
+            -->
+            <ErrorState
+              v-else-if="readmeErrorClassification"
+              :classification="readmeErrorClassification"
+              mode="inline-panel"
+              :retry="loadReadme"
+            />
             <div
               v-else
               class="text-center py-12 text-gray-500 dark:text-gray-400"
@@ -330,11 +367,11 @@
           <div
             class="mb-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3"
           >
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <el-select
                 v-model="currentBranch"
                 size="small"
-                class="w-full sm:w-37"
+                class="w-full min-w-28 sm:w-37 sm:min-w-37 sm:flex-none"
                 @change="handleBranchChange"
               >
                 <el-option label="main" value="main" />
@@ -424,25 +461,54 @@
                 Loading files...
               </p>
             </div>
+            <!--
+              Root-tree fetch failed (classified by the axios
+              interceptor → err.classification). Render the shared
+              ErrorState instead of silently showing an empty file
+              list — that was the preview-of-gated-repo symptom in
+              the linked tracking issue.
+            -->
+            <ErrorState
+              v-else-if="treeErrorClassification"
+              :classification="treeErrorClassification"
+              mode="inline-panel"
+              :retry="loadFileTree"
+            />
             <template v-else>
               <!-- Header Row (desktop only) -->
               <div
-                class="hidden md:grid md:grid-cols-[auto_1fr_120px_150px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
+                class="hidden md:grid md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 py-2 px-2 text-sm font-medium text-gray-600 dark:text-gray-400 border-b"
               >
                 <div></div>
                 <!-- Icon column -->
                 <div>Name</div>
+                <div>Last Commit</div>
+                <div class="text-right">Updated</div>
                 <div class="text-right">Size</div>
-                <div class="text-right">Last Modified</div>
               </div>
 
               <!-- File Rows -->
+              <!--
+                Each row is anchored with a stretched <RouterLink> that
+                covers the whole row (absolute inset-0). That makes the
+                entry a real <a href> element, so right-click → "Open in
+                New Tab", middle-click, and Cmd/Ctrl-click all work like
+                they do on any other link. Interactive children (the
+                preview button, the commit RouterLink) sit above the
+                overlay with a higher z-index + their own @click.stop so
+                they don't trigger the row navigation.
+              -->
               <div
                 v-for="file in filteredFiles"
                 :key="file.path"
-                class="py-3 grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_120px_150px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
-                @click="handleFileClick(file)"
+                class="relative py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
               >
+                <RouterLink
+                  :to="getEntryHref(file)"
+                  :aria-label="`Open ${getFileName(file.path)}`"
+                  class="absolute inset-0 z-10"
+                  data-testid="filelist-row-link"
+                />
                 <div
                   :class="
                     file.type === 'directory'
@@ -452,19 +518,65 @@
                   class="text-xl flex-shrink-0"
                 />
                 <div class="min-w-0">
-                  <div class="font-medium truncate">
-                    {{ getFileName(file.path) }}
+                  <div class="font-medium truncate flex items-center gap-2">
+                    <span class="truncate">{{ getFileName(file.path) }}</span>
+                    <button
+                      v-if="canPreviewFile(file)"
+                      type="button"
+                      class="relative z-20 flex-shrink-0 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+                      :title="`Preview ${getPreviewKind(file.path)} metadata (Range-read, no download)`"
+                      :aria-label="`Preview metadata for ${getFileName(file.path)}`"
+                      @click.stop="openFilePreview(file)"
+                    >
+                      <div class="i-carbon-chart-line-data text-base" />
+                    </button>
+                  </div>
+                  <div
+                    class="mt-1 text-sm text-gray-500 dark:text-gray-400 truncate md:hidden"
+                  >
+                    <RouterLink
+                      v-if="file.lastCommit"
+                      :to="getCommitPath(file.lastCommit.id)"
+                      class="relative z-20 text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                      :title="file.lastCommit.title"
+                      @click.stop
+                    >
+                      {{ getEntryCommitTitle(file) }}
+                    </RouterLink>
+                    <span v-else>{{ getEntryCommitTitle(file) }}</span>
+                  </div>
+                  <div
+                    class="mt-1 text-xs text-gray-400 dark:text-gray-500 md:hidden"
+                  >
+                    {{ getEntryUpdatedAt(file) }}
+                    <span v-if="formatEntrySize(file) !== '-'">
+                      · {{ formatEntrySize(file) }}
+                    </span>
                   </div>
                 </div>
                 <div
-                  class="text-sm text-gray-500 dark:text-gray-400 text-right"
+                  class="hidden md:block min-w-0 text-sm text-gray-500 dark:text-gray-400 truncate"
                 >
-                  {{ formatSize(file.size) }}
+                  <RouterLink
+                    v-if="file.lastCommit"
+                    :to="getCommitPath(file.lastCommit.id)"
+                    class="relative z-20 text-gray-700 dark:text-gray-300 underline underline-offset-2 decoration-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                    :title="file.lastCommit.title"
+                    @click.stop
+                  >
+                    {{ getEntryCommitTitle(file) }}
+                  </RouterLink>
+                  <span v-else>{{ getEntryCommitTitle(file) }}</span>
                 </div>
                 <div
                   class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
                 >
-                  {{ formatLastModified(file.lastModified) }}
+                  {{ getEntryUpdatedAt(file) }}
+                </div>
+                <div
+                  class="hidden md:block text-sm text-gray-500 dark:text-gray-400 text-right"
+                >
+                  {{ formatEntrySize(file) }}
                 </div>
               </div>
 
@@ -529,10 +641,14 @@
                     class="i-carbon-commit text-2xl text-blue-500 flex-shrink-0 mt-1"
                   />
                   <div class="flex-1 min-w-0">
-                    <div
-                      class="font-medium text-sm mb-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                    >
-                      {{ commit.title }}
+                    <div class="font-medium text-sm mb-1">
+                      <RouterLink
+                        :to="getCommitPath(commit.id)"
+                        class="block text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                        @click.stop
+                      >
+                        {{ commit.title }}
+                      </RouterLink>
                     </div>
                     <div
                       class="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400"
@@ -774,28 +890,45 @@ huggingface-cli download {{ repoInfo?.id }}</pre
         </div>
       </div>
     </el-dialog>
+
+    <FilePreviewDialog
+      v-if="previewTarget"
+      v-model:visible="previewDialogVisible"
+      :kind="previewTarget.kind"
+      :resolve-url="previewTarget.resolveUrl"
+      :filename="previewTarget.filename"
+    />
   </div>
 </template>
 
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
 import axios from "axios";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  formatRelativeTime,
+  formatUnixRelativeTime,
+} from "@/utils/datetime";
 
 import { useAuthStore } from "@/stores/auth";
 import { copyToClipboard } from "@/utils/clipboard";
 import { parseYAMLFrontmatter, normalizeMetadata } from "@/utils/yaml-parser";
 import { parseTags } from "@/utils/tag-parser";
 import { likesAPI, repoAPI } from "@/utils/api";
+import { classifyError, classifyResponse } from "@/utils/http-errors";
+import { resolveRepoTreeEntryPath } from "@/utils/repo-paths";
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import MetadataHeader from "@/components/repo/metadata/MetadataHeader.vue";
 import DetailedMetadataPanel from "@/components/repo/metadata/DetailedMetadataPanel.vue";
 import ReferencedDatasetsCard from "@/components/repo/metadata/ReferencedDatasetsCard.vue";
 import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelationshipsCard.vue";
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
-
-dayjs.extend(relativeTime);
+import ErrorState from "@/components/common/ErrorState.vue";
+import FilePreviewDialog from "@/components/repo/preview/FilePreviewDialog.vue";
+import {
+  buildResolveUrl,
+  canPreviewFile,
+  getPreviewKind,
+} from "@/utils/file-preview";
 
 /**
  * @typedef {Object} Props
@@ -829,6 +962,11 @@ const commitsLoading = ref(false);
 const commitsHasMore = ref(false);
 const commitsNextCursor = ref(null);
 const filesLoading = ref(true);
+// Classified tree / readme errors (utils/http-errors.js shape). A
+// 4xx/5xx fallback failure used to silently render an empty file list
+// or "No README.md found" — now drives the shared <ErrorState> panel.
+const treeErrorClassification = ref(null);
+const readmeErrorClassification = ref(null);
 const readmeContent = ref("");
 const readmeLoading = ref(true);
 const readmeMetadata = ref({});
@@ -838,8 +976,36 @@ const isLiked = ref(false);
 const likesCount = ref(0);
 const likingInProgress = ref(false);
 const deletingFolder = ref(false);
+const fileTreeRequestId = ref(0);
+
+// Client-side metadata preview (issue #27 v4): a small icon appears next
+// to .safetensors / .parquet rows; clicking opens a modal that reads the
+// file header via HTTP Range against /resolve/ (no backend parsing).
+// Predicate + URL builder live in @/utils/file-preview so they stay
+// directly unit-testable; everything here is Vue glue.
+const previewDialogVisible = ref(false);
+const previewTarget = ref(null); // { kind, resolveUrl, filename }
+
+function openFilePreview(file) {
+  const kind = getPreviewKind(file.path);
+  if (!kind) return;
+  previewTarget.value = {
+    kind,
+    resolveUrl: buildResolveUrl({
+      baseUrl,
+      repoType: props.repoType,
+      namespace: props.namespace,
+      name: props.name,
+      branch: currentBranch.value,
+      path: file.path,
+    }),
+    filename: getFileName(file.path),
+  };
+  previewDialogVisible.value = true;
+}
 
 const baseUrl = window.location.origin;
+const PATHS_INFO_BATCH_SIZE = 1000;
 
 // Computed
 const activeTab = computed(() => props.tab);
@@ -875,7 +1041,6 @@ const pathSegments = computed(() => {
 });
 
 const filteredFiles = computed(() => {
-  // Backend now provides folder stats, so just filter
   if (!fileSearchQuery.value) return fileTree.value;
 
   const query = fileSearchQuery.value.toLowerCase();
@@ -966,7 +1131,7 @@ function openExternalRepo() {
 }
 
 function formatDate(date) {
-  return date ? dayjs(date).fromNow() : "Unknown";
+  return formatRelativeTime(date, "Unknown");
 }
 
 function formatSize(bytes) {
@@ -978,18 +1143,37 @@ function formatSize(bytes) {
   return (bytes / (1000 * 1000 * 1000)).toFixed(1) + " GB";
 }
 
-function formatLastModified(dateString) {
-  if (!dateString) return "-";
-  try {
-    return dayjs(dateString).fromNow();
-  } catch (e) {
-    return "-";
-  }
+function formatEntrySize(file) {
+  return formatSize(file.size);
+}
+
+function getEntryCommitTitle(file) {
+  return file.lastCommit?.title || "-";
+}
+
+function getEntryUpdatedAt(file) {
+  return formatRelativeTime(file.lastCommit?.date || file.lastModified, "-");
 }
 
 function getFileName(path) {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
+}
+
+function sortFileEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type === "directory" && b.type !== "directory") return -1;
+    if (a.type !== "directory" && b.type === "directory") return 1;
+    return a.path.localeCompare(b.path);
+  });
+}
+
+function chunkPaths(paths, size) {
+  const chunks = [];
+  for (let index = 0; index < paths.length; index += size) {
+    chunks.push(paths.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function navigateToTab(tab) {
@@ -1031,10 +1215,12 @@ function navigateToUpload() {
   );
 }
 
+function getCommitPath(commitId) {
+  return `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`;
+}
+
 function viewCommit(commitId) {
-  router.push(
-    `/${props.repoType}s/${props.namespace}/${props.name}/commit/${commitId}`,
-  );
+  router.push(getCommitPath(commitId));
 }
 
 function handleBranchChange() {
@@ -1139,8 +1325,14 @@ async function toggleLike() {
 
 async function loadFileTree() {
   filesLoading.value = true;
+  treeErrorClassification.value = null;
+  const requestId = fileTreeRequestId.value + 1;
+  fileTreeRequestId.value = requestId;
+
+  let sortedEntries = [];
+
   try {
-    const { data } = await repoAPI.listTree(
+    const data = await repoAPI.listTreeAll(
       props.repoType,
       props.namespace,
       props.name,
@@ -1149,21 +1341,71 @@ async function loadFileTree() {
       { recursive: false },
     );
 
-    fileTree.value = data.sort((a, b) => {
-      if (a.type === "directory" && b.type !== "directory") return -1;
-      if (a.type !== "directory" && b.type === "directory") return 1;
-      return a.path.localeCompare(b.path);
-    });
+    if (requestId !== fileTreeRequestId.value) return;
+
+    sortedEntries = sortFileEntries(data || []);
+    fileTree.value = sortedEntries;
+
+    if (sortedEntries.length === 0) {
+      return;
+    }
+
   } catch (err) {
     console.error("Failed to load file tree:", err);
-    fileTree.value = [];
+    if (requestId === fileTreeRequestId.value) {
+      fileTree.value = [];
+      // Axios interceptor in utils/api.js attaches `.classification`.
+      // Prefer it; fall back to classifying the bare error ourselves
+      // if a future refactor changes the interceptor.
+      treeErrorClassification.value =
+        err?.classification || classifyError(err);
+    }
   } finally {
-    filesLoading.value = false;
+    if (requestId === fileTreeRequestId.value) {
+      filesLoading.value = false;
+    }
+  }
+
+  if (sortedEntries.length === 0 || requestId !== fileTreeRequestId.value) {
+    return;
+  }
+
+  try {
+    const pathInfoByPath = new Map();
+    const pathBatches = chunkPaths(
+      sortedEntries.map((file) => file.path),
+      PATHS_INFO_BATCH_SIZE,
+    );
+
+    for (const pathBatch of pathBatches) {
+      const { data: expandedEntries } = await repoAPI.getPathsInfo(
+        props.repoType,
+        props.namespace,
+        props.name,
+        currentBranch.value,
+        pathBatch,
+        true,
+      );
+
+      if (requestId !== fileTreeRequestId.value) return;
+
+      for (const entry of expandedEntries || []) {
+        pathInfoByPath.set(entry.path, entry);
+      }
+    }
+
+    fileTree.value = sortedEntries.map((file) => ({
+      ...file,
+      ...(pathInfoByPath.get(file.path) || {}),
+    }));
+  } catch (err) {
+    console.error("Failed to load expanded path info:", err);
   }
 }
 
 async function loadReadme() {
   readmeLoading.value = true;
+  readmeErrorClassification.value = null;
   try {
     const readmeFile = fileTree.value.find(
       (f) => f.type === "file" && f.path.toLowerCase().endsWith("readme.md"),
@@ -1185,9 +1427,20 @@ async function loadReadme() {
       const { metadata, content } = parseYAMLFrontmatter(rawContent);
       readmeMetadata.value = normalizeMetadata(metadata);
       readmeContent.value = content ? content : " "; // Content without frontmatter for display, single space if remainder empty
+    } else {
+      // README fetch failed (gated / not-found / unavailable). Surface
+      // the classification so the card tab shows an actionable
+      // ErrorState instead of the "No README.md found" placeholder,
+      // which would be misleading — the repo has a README, we just
+      // couldn't read it.
+      readmeErrorClassification.value = await classifyResponse(response);
+      readmeContent.value = "";
+      readmeMetadata.value = {};
     }
   } catch (err) {
     console.error("Failed to load README:", err);
+    readmeErrorClassification.value =
+      err?.classification || classifyError(err);
     readmeContent.value = "";
     readmeMetadata.value = {};
   } finally {
@@ -1240,24 +1493,14 @@ async function loadMoreCommits() {
   }
 }
 
-function handleFileClick(file) {
-  if (file.type === "directory") {
-    // Navigate to folder using tree route
-    const newPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
-    router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/tree/${currentBranch.value}/${newPath}`,
-    );
-  } else {
-    // Navigate to file viewer using blob route
-    const fullPath = props.currentPath
-      ? `${props.currentPath}/${file.path}`
-      : file.path;
-    router.push(
-      `/${props.repoType}s/${props.namespace}/${props.name}/blob/${currentBranch.value}/${fullPath}`,
-    );
-  }
+function getEntryHref(file) {
+  // Builds the route path used by the stretched row RouterLink.
+  // Kept as a pure function (no router.push) so right-click / middle-click
+  // / Cmd-click all use the browser's native link behavior — SPA
+  // left-click navigation is handled by RouterLink itself.
+  const targetPath = resolveRepoTreeEntryPath(props.currentPath, file.path);
+  const kind = file.type === "directory" ? "tree" : "blob";
+  return `/${props.repoType}s/${props.namespace}/${props.name}/${kind}/${currentBranch.value}/${targetPath}`;
 }
 
 function downloadRepo() {
@@ -1265,8 +1508,7 @@ function downloadRepo() {
 }
 
 function formatCommitDate(timestamp) {
-  if (!timestamp) return "Unknown";
-  return dayjs.unix(timestamp).fromNow();
+  return formatUnixRelativeTime(timestamp, "Unknown");
 }
 
 function getProgressColor(percentage) {

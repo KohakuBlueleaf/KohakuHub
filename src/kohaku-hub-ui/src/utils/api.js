@@ -1,6 +1,7 @@
 // src/kohaku-hub-ui/src/utils/api.js
 import axios from "axios";
 import { formatAuthHeader, getExternalTokens } from "./externalTokens";
+import { classifyError } from "./http-errors";
 
 const api = axios.create({
   timeout: 30000,
@@ -32,12 +33,87 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     // Don't auto-redirect on 401, let components handle it
-    // This allows visitors to browse public content without login
+    // This allows visitors to browse public content without login.
+    //
+    // Attach an HF-aligned classification (gated / forbidden /
+    // not-found / upstream-unavailable / cors / generic) onto the
+    // error so callers can `catch (err) { render(err.classification) }`
+    // without re-reading X-Error-Code + body every time. See
+    // `utils/http-errors.js` for the truth table.
+    try {
+      error.classification = classifyError(error);
+    } catch {
+      // Never let the interceptor itself throw — falling back to
+      // the raw error is always safer than masking the original.
+    }
     return Promise.reject(error);
   },
 );
 
 export default api;
+
+function getNextLinkFromHeader(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/i);
+  return match ? match[1] : null;
+}
+
+function getQueryParamFromUrl(url, key) {
+  if (!url) return null;
+  try {
+    return new URL(url, "http://localhost").searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCommitListResponse(response) {
+  if (!Array.isArray(response.data)) {
+    return response;
+  }
+
+  const nextLink = getNextLinkFromHeader(response.headers?.link);
+  const nextCursor = getQueryParamFromUrl(nextLink, "after");
+
+  return {
+    ...response,
+    data: {
+      commits: response.data.map((commit) => ({
+        id: commit.id,
+        oid: commit.oid || commit.id,
+        title: commit.title || "",
+        message: commit.message || "",
+        date: commit.date || null,
+        author:
+          commit.author ||
+          commit.authors?.[0]?.user ||
+          commit.authors?.[0] ||
+          "unknown",
+        email: commit.email || commit.authors?.[0]?.email || "",
+        parents: commit.parents || [],
+      })),
+      hasMore: Boolean(nextCursor),
+      nextCursor,
+    },
+  };
+}
+
+function normalizeLikersResponse(response) {
+  if (!Array.isArray(response.data)) {
+    return response;
+  }
+
+  return {
+    ...response,
+    data: {
+      likers: response.data.map((user) => ({
+        username: user.user || user.username,
+        full_name: user.fullname || user.full_name || user.user || user.username,
+      })),
+      total: response.data.length,
+    },
+  };
+}
 
 /**
  * Auth API
@@ -139,6 +215,65 @@ export const repoAPI = {
     api.get(`/api/${type}s/${namespace}/${name}/tree/${revision}${path}`, {
       params,
     }),
+
+  /**
+   * List all repository file tree entries by following Link pagination
+   * @param {string} type - Repository type
+   * @param {string} namespace - Owner namespace
+   * @param {string} name - Repository name
+   * @param {string} revision - Branch name or commit hash
+   * @param {string} path - Path within repository (with leading /)
+   * @param {Object} params - Query parameters { recursive?, expand? }
+   * @returns {Promise<Array>} - Array of files and directories across all pages
+   */
+  listTreeAll: async (type, namespace, name, revision, path, params) => {
+    const entries = [];
+    let response = await repoAPI.listTree(
+      type,
+      namespace,
+      name,
+      revision,
+      path,
+      params,
+    );
+
+    entries.push(...(response.data || []));
+
+    let nextUrl = getNextLinkFromHeader(response.headers?.link);
+    while (nextUrl) {
+      response = await api.get(nextUrl);
+      entries.push(...(response.data || []));
+      nextUrl = getNextLinkFromHeader(response.headers?.link);
+    }
+
+    return entries;
+  },
+
+  /**
+   * Get repository metadata for specific paths
+   * @param {string} type - Repository type
+   * @param {string} namespace - Owner namespace
+   * @param {string} name - Repository name
+   * @param {string} revision - Branch name or commit hash
+   * @param {Array<string>} paths - Repository-relative paths
+   * @param {boolean} expand - Whether to request expanded metadata
+   * @returns {Promise} - Array of files and directories
+   */
+  getPathsInfo: (type, namespace, name, revision, paths, expand = false) => {
+    const formData = new URLSearchParams();
+    paths.forEach((path) => formData.append("paths", path));
+    formData.append("expand", expand ? "true" : "false");
+
+    return api.post(
+      `/api/${type}s/${namespace}/${name}/paths-info/${revision}`,
+      formData,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      },
+    );
+  },
 
   /**
    * Upload files to repository
@@ -415,7 +550,9 @@ export const repoAPI = {
    * @returns {Promise} - { commits: Array, hasMore: boolean, nextCursor: string }
    */
   listCommits: (type, namespace, name, branch, params) =>
-    api.get(`/api/${type}s/${namespace}/${name}/commits/${branch}`, { params }),
+    api
+      .get(`/api/${type}s/${namespace}/${name}/commits/${branch}`, { params })
+      .then(normalizeCommitListResponse),
 };
 
 /**
@@ -787,9 +924,11 @@ export const likesAPI = {
    * @returns {Promise} - { likers: Array, total: number }
    */
   getLikers: (repoType, namespace, name, limit = 50) =>
-    api.get(`/api/${repoType}s/${namespace}/${name}/likers`, {
-      params: { limit },
-    }),
+    api
+      .get(`/api/${repoType}s/${namespace}/${name}/likers`, {
+        params: { limit },
+      })
+      .then(normalizeLikersResponse),
 };
 
 /**

@@ -56,6 +56,7 @@ max_concurrent_requests = 5
 
 [app]
 base_url = "http://127.0.0.1:28080"  # Use nginx port (28080), not direct backend (48888)
+internal_base_url = "http://127.0.0.1:48888"  # Optional: backend self-calls use this instead of base_url
 api_base = "/api"
 db_backend = "postgres"  # or "sqlite"
 database_url = "postgresql://hub:hubpass@127.0.0.1:25432/hubdb"

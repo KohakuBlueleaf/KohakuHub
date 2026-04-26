@@ -1,0 +1,17 @@
+[
+  {
+    "id": "commit-2",
+    "title": "Add weights",
+    "message": "Add weights",
+    "date": "2026-04-21T11:00:00.000000Z",
+    "authors": [
+      {
+        "user": "alice",
+        "email": "alice@example.com"
+      }
+    ],
+    "parents": [
+      "commit-1"
+    ]
+  }
+]

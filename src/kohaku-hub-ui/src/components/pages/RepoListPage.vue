@@ -26,29 +26,33 @@
     <!-- Filters -->
     <div class="card mb-6">
       <div
-        class="flex flex-col sm:flex-row items-stretch sm:items-center gap-4"
+        class="flex flex-col gap-4 md:flex-row md:items-center"
       >
-        <el-input
-          v-model="searchQuery"
-          :placeholder="`Search ${repoType}s...`"
-          clearable
-          class="flex-1"
-        >
-          <template #prefix>
-            <div class="i-carbon-search" />
-          </template>
-        </el-input>
+        <div class="w-full md:flex-1 md:min-w-0">
+          <el-input
+            v-model="searchQuery"
+            :placeholder="`Search ${repoType}s...`"
+            clearable
+            class="w-full"
+          >
+            <template #prefix>
+              <div class="i-carbon-search" />
+            </template>
+          </el-input>
+        </div>
 
-        <el-select
-          v-model="sortBy"
-          placeholder="Sort by"
-          class="w-full sm:w-50"
-        >
-          <el-option label="Recently Updated" value="updated" />
-          <el-option label="Recently Created" value="created" />
-          <el-option label="Most Downloads" value="downloads" />
-          <el-option label="Most Likes" value="likes" />
-        </el-select>
+        <div class="w-full md:w-72 md:flex-none md:shrink-0">
+          <el-select
+            v-model="sortBy"
+            placeholder="Sort by"
+            class="w-full"
+          >
+            <el-option label="Recently Created" value="recent" />
+            <el-option label="Recently Updated" value="updated" />
+            <el-option label="Most Downloads" value="downloads" />
+            <el-option label="Most Likes" value="likes" />
+          </el-select>
+        </div>
       </div>
     </div>
 
@@ -108,6 +112,10 @@
 import { repoAPI, orgAPI } from "@/utils/api";
 import { useAuthStore } from "@/stores/auth";
 import RepoList from "@/components/repo/RepoList.vue";
+import {
+  getRepoSortPreference,
+  setRepoSortPreference,
+} from "@/utils/repoSortPreference";
 import { ElMessage } from "element-plus";
 
 const props = defineProps({
@@ -144,7 +152,14 @@ const pageDescription = computed(() => {
 const loading = ref(true);
 const repos = ref([]);
 const searchQuery = ref("");
-const sortBy = ref("updated");
+const sortBy = ref(
+  getRepoSortPreference({
+    scope: "repo",
+    repoType: props.repoType,
+    allowedValues: ["recent", "updated", "downloads", "likes"],
+    fallback: "recent",
+  }),
+);
 const showCreateDialog = ref(false);
 const creating = ref(false);
 const userOrgs = ref([]);
@@ -190,24 +205,9 @@ const filteredRepos = computed(() => {
 async function loadRepos() {
   loading.value = true;
   try {
-    // Map frontend sort values to backend API values
-    let apiSort = "recent"; // default
-    switch (sortBy.value) {
-      case "updated":
-      case "created":
-        apiSort = "recent";
-        break;
-      case "downloads":
-        apiSort = "downloads";
-        break;
-      case "likes":
-        apiSort = "likes";
-        break;
-    }
-
     const { data } = await repoAPI.listRepos(props.repoType, {
       limit: 100,
-      sort: apiSort,
+      sort: sortBy.value,
       fallback: false, // Don't aggregate external repos on main list pages
     });
     repos.value = data;
@@ -253,8 +253,15 @@ async function handleCreate() {
         `${form.organization || currentUser.value}/${form.name}`;
       router.push(`/${props.repoType}s/${repoId}`);
     } catch (err) {
+      // `POST /api/repos/create` returns a 409 with a top-level `{url,
+      // repo_id, error}` body when the repo already exists (HF-compatible
+      // exist-ok contract). Read `.error` before falling back to the
+      // legacy `.detail` shape so the user sees the actual conflict
+      // message instead of a generic "Failed to create ..." toast.
       ElMessage.error(
-        err.response?.data?.detail || `Failed to create ${props.repoType}`,
+        err.response?.data?.error ||
+          err.response?.data?.detail ||
+          `Failed to create ${props.repoType}`,
       );
     } finally {
       creating.value = false;
@@ -274,6 +281,11 @@ watch(showCreateDialog, (val) => {
 
 // Reload repos when sort changes
 watch(sortBy, () => {
+  setRepoSortPreference({
+    scope: "repo",
+    repoType: props.repoType,
+    value: sortBy.value,
+  });
   loadRepos();
 });
 

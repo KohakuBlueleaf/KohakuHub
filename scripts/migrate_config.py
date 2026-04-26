@@ -17,7 +17,10 @@ import re
 import secrets
 import shutil
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 from datetime import datetime
 from pathlib import Path
 
