@@ -249,3 +249,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+/DELIVERY_NOTES.md
+/ROLLBACK_GUARDRAILS.md
+/tests
