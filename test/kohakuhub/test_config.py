@@ -179,3 +179,64 @@ def test_load_config_uses_defaults_when_file_is_missing(monkeypatch):
     assert cfg.lakefs.endpoint == "http://localhost:8000"
     assert cfg.app.base_url == "http://localhost:48888"
     hub_config.load_config.cache_clear()
+
+
+def test_load_config_cache_env_vars(monkeypatch):
+    """Cover every ``KOHAKU_HUB_CACHE_*`` env var the loader honors —
+    plus the implicit-enable rule (URL set without ENABLED → enabled).
+
+    The matching block in ``load_config`` is the only entry point for
+    cache config in production, so a regression here would silently
+    drop cache settings on .env.dev parsing.
+    """
+    hub_config.load_config.cache_clear()
+    monkeypatch.setattr(hub_config.os.path, "exists", lambda _path: False)
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_ENABLED", "true")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_URL", "redis://example:6379/3")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_NAMESPACE", "demo")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_DEFAULT_TTL", "777")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_JITTER_FRACTION", "0.05")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_MAX_CONNECTIONS", "32")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_SOCKET_TIMEOUT", "0.25")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_SOCKET_CONNECT_TIMEOUT", "0.4")
+
+    cfg = hub_config.load_config()
+    assert cfg.cache.enabled is True
+    assert cfg.cache.url == "redis://example:6379/3"
+    assert cfg.cache.namespace == "demo"
+    assert cfg.cache.default_ttl_seconds == 777
+    assert cfg.cache.jitter_fraction == pytest.approx(0.05)
+    assert cfg.cache.max_connections == 32
+    assert cfg.cache.socket_timeout_seconds == pytest.approx(0.25)
+    assert cfg.cache.socket_connect_timeout_seconds == pytest.approx(0.4)
+
+
+def test_load_config_cache_url_implicit_enables(monkeypatch):
+    """Setting only ``KOHAKU_HUB_CACHE_URL`` (no ENABLED) flips the
+    cache to enabled — this is the dev-friendly path that prevents
+    the "stale .env.dev" failure mode users hit on first upgrade.
+    """
+    hub_config.load_config.cache_clear()
+    monkeypatch.setattr(hub_config.os.path, "exists", lambda _path: False)
+    # KOHAKU_HUB_CACHE_ENABLED is intentionally NOT set. ``delenv`` with
+    # raising=False handles the "wasn't set in this process" case.
+    monkeypatch.delenv("KOHAKU_HUB_CACHE_ENABLED", raising=False)
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_URL", "redis://implicit:6379/0")
+
+    cfg = hub_config.load_config()
+    assert cfg.cache.enabled is True
+    assert cfg.cache.url == "redis://implicit:6379/0"
+
+
+def test_load_config_explicit_disable_wins_over_implicit_enable(monkeypatch):
+    """``KOHAKU_HUB_CACHE_ENABLED=false`` plus a URL must keep the cache
+    disabled. Otherwise the dedicated cache-disabled CI matrix can't
+    actually run with the cache off when CACHE_URL is also defined.
+    """
+    hub_config.load_config.cache_clear()
+    monkeypatch.setattr(hub_config.os.path, "exists", lambda _path: False)
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_ENABLED", "false")
+    monkeypatch.setenv("KOHAKU_HUB_CACHE_URL", "redis://implicit:6379/0")
+
+    cfg = hub_config.load_config()
+    assert cfg.cache.enabled is False

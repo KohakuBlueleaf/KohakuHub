@@ -2,14 +2,18 @@
 """Deploy KohakuHub using Docker Compose.
 
 This script:
-1. Builds frontend (UI and Admin)
-2. Runs docker compose up -d --build
+1. Installs frontend workspace dependencies with pnpm
+2. Builds frontend bundles from the repo root
+3. Runs docker compose up -d --build
 """
 
 import platform
 import subprocess
 import sys
 from pathlib import Path
+
+
+PNPM_CMD = "pnpm.cmd" if platform.system() == "Windows" else "pnpm"
 
 
 def run_command(cmd: list[str], cwd: Path | None = None, description: str = ""):
@@ -38,17 +42,15 @@ def run_command(cmd: list[str], cwd: Path | None = None, description: str = ""):
 def main():
     """Main function."""
     root_dir = Path(__file__).parent.parent
-    ui_dir = root_dir / "src" / "kohaku-hub-ui"
-    admin_dir = root_dir / "src" / "kohaku-hub-admin"
 
     print("\nKohakuHub Deployment")
     print("=" * 60)
 
-    # Step 1: Build UI
-    run_command(["npm", "run", "build"], cwd=ui_dir, description="Building UI")
+    # Step 1: Install frontend workspace dependencies
+    run_command([PNPM_CMD, "install"], cwd=root_dir, description="Installing frontend dependencies")
 
-    # Step 2: Build Admin
-    run_command(["npm", "run", "build"], cwd=admin_dir, description="Building Admin")
+    # Step 2: Build frontend bundles
+    run_command([PNPM_CMD, "run", "build"], cwd=root_dir, description="Building frontend bundles")
 
     # Step 3: Docker Compose up
     run_command(

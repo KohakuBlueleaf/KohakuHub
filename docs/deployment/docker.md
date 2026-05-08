@@ -59,10 +59,8 @@ cp docker-compose.example.yml docker-compose.yml
 Before starting the services, you need to build the frontend applications:
 
 ```bash
-npm install --prefix src/kohaku-hub-ui
-npm install --prefix src/kohaku-hub-admin
-npm run build --prefix src/kohaku-hub-ui
-npm run build --prefix src/kohaku-hub-admin
+pnpm install
+pnpm run build
 ```
 
 ### 4. Start the Services
@@ -102,7 +100,11 @@ The Docker Compose setup includes the following services:
 - **hub-ui**: Nginx server for the frontend application (port `28080`).
 - **hub-api**: The main FastAPI backend (port `48888`).
 - **postgres**: PostgreSQL database for metadata (port `5432`).
-- **lakefs**: LakeFS for data versioning (port `28000`).
+- **lakefs**: LakeFS for data versioning (port `28000`). Pinned to
+  `treeverse/lakefs:latest`; **minimum supported LakeFS is v0.54.0**
+  (2021-11-08) because the file-list `expand=true` path uses
+  `logCommits`'s `objects=` / `prefixes=` / `limit=` filters introduced
+  in that release.
 - **minio**: MinIO for S3-compatible object storage (ports `29000` and `29001`).
 
 ## Managing the Application

@@ -43,6 +43,17 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+# Provide a sensible default for the L2 cache URL if .env.dev predates
+# the cache feature and the contributor hasn't synced it from
+# .env.dev.example. The companion ``ensure_valkey`` step in
+# scripts/dev/up_infra.sh always runs Valkey on host port 26379, so this
+# default is correct for any standard local-dev setup. Explicit
+# ``KOHAKU_HUB_CACHE_URL`` / ``KOHAKU_HUB_CACHE_ENABLED`` lines in
+# .env.dev still win — this only fills the gap when the contributor has
+# neither, and the implicit-enable in config.py picks it up from there.
+: "${KOHAKU_HUB_CACHE_URL:=redis://127.0.0.1:26379/0}"
+export KOHAKU_HUB_CACHE_URL
+
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 # LakeFS bootstrap credentials are only returned once, so persist and reuse them locally.

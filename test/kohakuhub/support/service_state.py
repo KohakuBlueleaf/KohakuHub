@@ -241,23 +241,56 @@ class ServiceTestState:
                 return repos
 
     async def _clear_lakefs(self) -> None:
+        # Use a per-call ``httpx.AsyncClient`` here — pointedly NOT the pooled
+        # singleton inside ``LakeFSRestClient``. ``_restore_active_state`` is
+        # driven from ``asyncio.run(...)`` (fresh short-lived loop per call);
+        # any pooled client would carry connections from a previous loop and
+        # raise "is bound to a different event loop". A non-pooled client
+        # opens a fresh connection per request, which is fine here because
+        # the cleanup runs at most a handful of repos per iteration.
+        lakefs_client = self.lakefs_client
         for repository in await self._list_lakefs_repositories():
             repo_id = repository.get("id")
-            if repo_id:
-                await self.lakefs_client.delete_repository(
-                    repository=repo_id,
-                    force=True,
+            if not repo_id:
+                continue
+            async with httpx.AsyncClient() as raw:
+                delete_response = await raw.delete(
+                    f"{lakefs_client.base_url}/repositories/{repo_id}",
+                    params={"force": "true"},
+                    auth=lakefs_client.auth,
+                    timeout=None,
                 )
-                deadline = time.monotonic() + 20.0
-                while time.monotonic() < deadline:
-                    if not await self.lakefs_client.repository_exists(repo_id):
-                        break
-                    await asyncio.sleep(0.25)
-                else:
-                    raise TimeoutError(f"Timed out deleting LakeFS repository: {repo_id}")
+            if delete_response.status_code not in (200, 204, 404):
+                lakefs_client._check_response(delete_response)
+
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline:
+                async with httpx.AsyncClient() as raw:
+                    exists_response = await raw.get(
+                        f"{lakefs_client.base_url}/repositories/{repo_id}",
+                        auth=lakefs_client.auth,
+                        timeout=None,
+                    )
+                if exists_response.status_code == 404:
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                raise TimeoutError(f"Timed out deleting LakeFS repository: {repo_id}")
 
     async def _restore_active_state(self, *, emit_progress: bool) -> None:
         report = self._report if emit_progress else (lambda _message: None)
+
+        # The FastAPI handlers' shared ``LakeFSRestClient`` singleton holds
+        # a pooled ``httpx.AsyncClient`` bound to whichever event loop it
+        # was first used in. ``restore_active_state`` runs from
+        # ``asyncio.run(...)`` (a fresh, short-lived loop) and the
+        # baseline-seed phase below drives traffic through the FastAPI app
+        # which would re-use that pool. Clearing the singleton forces the
+        # next handler to lazily rebuild a pool bound to the current loop.
+        # (The dedicated ``self.lakefs_client`` is *not* used through the
+        # pool by this state plumbing — see ``_clear_lakefs`` for the raw
+        # per-call ``httpx.AsyncClient`` form.)
+        self.modules.lakefs_rest_client_module._singleton_client = None
 
         report("clearing LakeFS repositories")
         await self._clear_lakefs()
@@ -301,7 +334,22 @@ def create_service_test_state(
     _ensure_services_ready(progress_callback=progress_callback)
     modules = load_backend_modules(force_reload=True, apply_env=apply_service_test_env)
     s3_client = modules.s3_module.get_s3_client()
-    lakefs_client = modules.lakefs_rest_client_module.get_lakefs_rest_client()
+    # Construct a *dedicated* LakeFSRestClient for the test-state plumbing
+    # rather than reusing the module-level singleton from
+    # ``get_lakefs_rest_client()``. Both the FastAPI handlers and the
+    # test-state plumbing would otherwise share the same pooled
+    # ``httpx.AsyncClient``; because ``restore_active_state`` runs its work
+    # under ``asyncio.run(...)`` (which creates and closes a fresh event
+    # loop per call), and pytest-asyncio in turn gives each test a separate
+    # loop, the shared pooled client would end up bound to a closed loop
+    # and the next handler call would raise ``Event loop is closed``.
+    # Keeping the test plumbing on its own client isolates that lifecycle.
+    lakefs_cfg = modules.config_module.cfg.lakefs
+    lakefs_client = modules.lakefs_rest_client_module.LakeFSRestClient(
+        endpoint=lakefs_cfg.endpoint,
+        access_key=lakefs_cfg.access_key,
+        secret_key=lakefs_cfg.secret_key,
+    )
     return ServiceTestState(
         modules=modules,
         s3_client=s3_client,

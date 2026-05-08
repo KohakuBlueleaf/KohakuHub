@@ -6,6 +6,8 @@ for users and organizations with separate tracking for private and public reposi
 
 import asyncio
 
+from peewee import fn
+
 from kohakuhub.config import cfg
 from kohakuhub.db import File, LFSObjectHistory, Repository, User
 from kohakuhub.db_operations import get_organization
@@ -40,6 +42,18 @@ async def calculate_repository_storage(repo: Repository) -> dict[str, int]:
     lakefs_repo = lakefs_repo_name(repo.repo_type, repo.full_id)
     client = get_lakefs_client()
 
+    # Bulk-load LFS flag for every active file in this repo *once* up front,
+    # so the per-object loop below is O(1) lookup instead of O(N) DB queries.
+    # The (repository, path_in_repo) composite index makes this scan cheap
+    # even for repos with tens of thousands of files.
+    file_is_lfs: dict[str, bool] = {
+        path: lfs
+        for path, lfs in File.select(File.path_in_repo, File.lfs)
+        .where((File.repository == repo) & (File.is_deleted == False))
+        .tuples()
+        .iterator()
+    }
+
     # Calculate current branch storage (all files)
     current_branch_bytes = 0
     current_branch_lfs_bytes = 0
@@ -63,16 +77,12 @@ async def calculate_repository_storage(repo: Repository) -> dict[str, int]:
                     size = obj.get("size_bytes") or 0
                     current_branch_bytes += size
 
-                    # Check if this file is LFS (stored in File table)
-                    path = obj.get("path")
-                    if path:
-                        file_record = File.get_or_none(
-                            (File.repository == repo)
-                            & (File.path_in_repo == path)
-                            & (File.is_deleted == False)
-                        )
-                        if file_record and file_record.lfs:
-                            current_branch_lfs_bytes += size
+                    # Look up LFS flag from the bulk-loaded dict.
+                    # Missing path or non-LFS file → counted as non-LFS, matching
+                    # the previous semantics (File.get_or_none returning None or
+                    # a row with lfs=False both yielded "non-LFS").
+                    if file_is_lfs.get(obj.get("path"), False):
+                        current_branch_lfs_bytes += size
 
             if result.get("pagination") and result["pagination"].get("has_more"):
                 after = result["pagination"]["next_offset"]
@@ -88,29 +98,30 @@ async def calculate_repository_storage(repo: Repository) -> dict[str, int]:
     # Calculate non-LFS storage in current branch
     current_branch_non_lfs_bytes = current_branch_bytes - current_branch_lfs_bytes
 
-    # Calculate LFS storage from history (all versions, including deleted)
-    lfs_total = (
-        LFSObjectHistory.select().where(LFSObjectHistory.repository == repo).count()
+    # Calculate LFS storage from history (all versions, including deleted).
+    # SQL aggregation avoids pulling every history row into Python.
+    lfs_total_bytes = (
+        LFSObjectHistory.select(fn.COALESCE(fn.SUM(LFSObjectHistory.size), 0))
+        .where(LFSObjectHistory.repository == repo)
+        .scalar()
+        or 0
     )
 
-    if lfs_total > 0:
-        lfs_total_bytes = sum(
-            obj.size
-            for obj in LFSObjectHistory.select().where(
-                LFSObjectHistory.repository == repo
-            )
-        )
-    else:
-        lfs_total_bytes = 0
-
-    # Unique LFS storage (deduplicated by SHA256)
-    unique_lfs = (
+    # Unique LFS storage: SUM over distinct (sha256, size) pairs for this repo.
+    # Built as a subquery so the SUM happens server-side instead of pulling
+    # every distinct row into Python.
+    unique_subquery = (
         LFSObjectHistory.select(LFSObjectHistory.sha256, LFSObjectHistory.size)
         .where(LFSObjectHistory.repository == repo)
         .distinct()
+        .alias("u")
     )
-
-    lfs_unique_bytes = sum(obj.size for obj in unique_lfs)
+    lfs_unique_bytes = (
+        LFSObjectHistory.select(fn.COALESCE(fn.SUM(unique_subquery.c.size), 0))
+        .from_(unique_subquery)
+        .scalar()
+        or 0
+    )
 
     # Total storage = non-LFS in current branch + unique LFS storage (deduplicated)
     # Using lfs_unique_bytes ensures global deduplication works correctly for quota

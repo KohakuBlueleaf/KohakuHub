@@ -250,6 +250,87 @@ export const repoAPI = {
   },
 
   /**
+   * Fetch a single page of the repository file tree without following
+   * the `Link: rel="next"` chain.
+   *
+   * The repo file list switched from "load every page upfront" to
+   * "paginated UI" so a directory with thousands of entries no longer
+   * makes the SPA stall on the initial request. Cursor-based paging
+   * mirrors the LakeFS-backed backend, which exposes an opaque
+   * `next_offset` only — random-page jumps are intentionally not
+   * supported (no `total` or `offset` semantics on the wire).
+   *
+   * @param {string} type - Repository type
+   * @param {string} namespace - Owner namespace
+   * @param {string} name - Repository name
+   * @param {string} revision - Branch name or commit hash
+   * @param {string} path - Path within repository (with leading /)
+   * @param {Object} params - { limit?, cursor?, recursive?, expand? }
+   * @returns {Promise<{ entries: Array, nextCursor: (string|null), hasMore: boolean }>}
+   */
+  listTreePage: async (type, namespace, name, revision, path, params = {}) => {
+    const { cursor, ...rest } = params;
+    const queryParams = { ...rest };
+    if (cursor) queryParams.cursor = cursor;
+    const response = await repoAPI.listTree(
+      type,
+      namespace,
+      name,
+      revision,
+      path,
+      queryParams,
+    );
+    const nextUrl = getNextLinkFromHeader(response.headers?.link);
+    const nextCursor = getQueryParamFromUrl(nextUrl, "cursor");
+    return {
+      entries: response.data || [],
+      nextCursor,
+      hasMore: Boolean(nextCursor),
+    };
+  },
+
+  /**
+   * Probe whether a single repo-relative path exists on a given
+   * revision. Used by the indexed-tar sibling-icon path: when the
+   * `.json` sidecar is not in the loaded page (because the listing is
+   * paginated and the sibling fell off the current page), we still
+   * want the icon to light up — but only when the file actually exists.
+   *
+   * Implemented as a HEAD against `/resolve/.../path`. The backend
+   * returns 200 when the file exists (and the user is allowed to read
+   * it, which on a private repo means the SPA session cookie is being
+   * forwarded — see fix #52 for the same-origin credentials pin).
+   * Anything else (404 / 403 / network) resolves to `false` so the
+   * caller can fall back to the bare `.tar` row.
+   *
+   * @param {string} type
+   * @param {string} namespace
+   * @param {string} name
+   * @param {string} revision
+   * @param {string} path - repo-relative path, no leading slash
+   * @returns {Promise<boolean>}
+   */
+  fileExists: async (type, namespace, name, revision, path) => {
+    if (!path) return false;
+    const encodedPath = path
+      .split("/")
+      .map((seg) => encodeURIComponent(seg))
+      .join("/");
+    const url = `/api/${type}s/${namespace}/${name}/resolve/${encodeURIComponent(
+      revision,
+    )}/${encodedPath}`;
+    try {
+      const response = await api.head(url);
+      return response.status >= 200 && response.status < 300;
+    } catch {
+      // 404 / 403 / network — treat as "does not exist". The caller's
+      // UX (sibling-icon) is the only consumer right now and benefits
+      // from a soft fallback rather than a thrown error.
+      return false;
+    }
+  },
+
+  /**
    * Get repository metadata for specific paths
    * @param {string} type - Repository type
    * @param {string} namespace - Owner namespace

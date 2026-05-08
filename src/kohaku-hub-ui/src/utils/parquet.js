@@ -6,9 +6,12 @@
 //
 // Design notes:
 //   - hyparquet's asyncBufferFromUrl does HEAD + tail Range reads on its
-//     own. It accepts `requestInit` so we can pin the cross-origin CORS
-//     contract (mode "cors", credentials "omit") for presigned S3/MinIO
-//     URLs that only allow anonymous access.
+//     own. It accepts `requestInit` so we can pin the CORS contract
+//     (mode "cors", credentials "same-origin"). same-origin forwards the
+//     SPA session cookie on the /resolve/ hop — private repos return 404
+//     without it — and the browser drops cookies on the cross-origin
+//     redirect, so the presigned S3/MinIO URL is still answered with
+//     `Access-Control-Allow-Origin: *` without breaking credentialed CORS.
 //   - The default initial tail fetch is 512 KB, which easily covers the
 //     footer-only cases measured in issue #27 (≤ 264 KB). We leave the
 //     default alone; hyparquet will issue a second Range if the footer
@@ -52,7 +55,7 @@ export async function parseParquetMetadata(url, options = {}) {
 
   const requestInit = {
     mode: "cors",
-    credentials: "omit",
+    credentials: "same-origin",
     ...(signal ? { signal } : {}),
   };
 
@@ -63,6 +66,50 @@ export async function parseParquetMetadata(url, options = {}) {
   const raw = await parquetMetadataAsync(buffer);
 
   onProgress("parsing");
+  const result = decodeParquetMetadata(raw, buffer.byteLength);
+  onProgress("done");
+  return result;
+}
+
+/**
+ * Parse parquet metadata from a fully in-memory file buffer.
+ *
+ * Used for the in-archive preview path inside TarBrowserDialog. A
+ * `blob:` URL would not work — hyparquet's `asyncBufferFromUrl`
+ * issues a HEAD for the tail size and a Range request for the
+ * footer, and HEAD on `blob:` URLs is rejected by some browsers
+ * (the failure surfaced for the user as "Browser blocked the
+ * request"). Wrapping the bytes as a synthetic AsyncBuffer skips
+ * the network entirely.
+ *
+ * @param {Uint8Array|ArrayBuffer} buffer
+ * @returns {Promise<ReturnType<typeof parseParquetMetadata>>}
+ */
+export async function parseParquetMetadataFromBuffer(buffer) {
+  // Always copy into a fresh Uint8Array allocated in the current
+  // realm. hyparquet's metadata reader passes the slice straight to
+  // `new DataView(...)`, which throws under jsdom (and any other
+  // multi-realm environment) when the source ArrayBuffer was
+  // created in a different realm. The copy is one O(n) memcpy on
+  // already-in-memory bytes — negligible compared to the network
+  // path the URL variant takes.
+  const owned = new Uint8Array(
+    buffer instanceof Uint8Array ? buffer.byteLength : buffer.byteLength,
+  );
+  owned.set(
+    buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer),
+  );
+  const arrayBuffer = owned.buffer;
+  const asyncBuffer = {
+    byteLength: arrayBuffer.byteLength,
+    slice: async (start, end) =>
+      arrayBuffer.slice(start, end ?? arrayBuffer.byteLength),
+  };
+  const raw = await parquetMetadataAsync(asyncBuffer);
+  return decodeParquetMetadata(raw, arrayBuffer.byteLength);
+}
+
+function decodeParquetMetadata(raw, byteLength) {
   const schemaTree = parquetSchema(raw);
   const keyValueMetadata = (raw.key_value_metadata ?? []).map((kv) => ({
     key: String(kv.key ?? ""),
@@ -72,10 +119,8 @@ export async function parseParquetMetadata(url, options = {}) {
     numRows: normalizeCount(rg.num_rows),
     totalByteSize: normalizeCount(rg.total_byte_size),
   }));
-
-  onProgress("done");
   return {
-    byteLength: buffer.byteLength,
+    byteLength,
     numRows: normalizeCount(raw.num_rows),
     createdBy: raw.created_by ?? null,
     keyValueMetadata,

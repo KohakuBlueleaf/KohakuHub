@@ -6,10 +6,15 @@ import base64
 import hashlib
 import json
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from test.kohakuhub.support.bootstrap import DEFAULT_PASSWORD
+from test.kohakuhub.support.seed_credentials import (
+    SEED_SSH_KEYS,
+    SEED_TOKENS,
+)
 
 
 def _encode_lines(lines: Iterable[dict]) -> bytes:
@@ -24,6 +29,76 @@ async def _login(
         json={"username": username, "password": password},
     )
     response.raise_for_status()
+
+
+async def _logout(client: httpx.AsyncClient) -> None:
+    response = await client.post("/api/auth/logout")
+    if response.status_code not in (200, 204):
+        response.raise_for_status()
+
+
+def _plant_seed_tokens() -> None:
+    """Insert the deterministic token plants directly into the database.
+
+    The user-facing API only emits a fresh random token at creation, so we
+    bypass it and write the rows directly so tests can later present the
+    plaintext value as a Bearer token. ``last_used`` is backdated where the
+    fixture asks for staleness, so ``unused_for_days`` filters can be tested
+    deterministically.
+    """
+    from kohakuhub.auth.utils import hash_token
+    from kohakuhub.db import Token, User
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for spec in SEED_TOKENS:
+        user = User.get_or_none(User.username == spec.user)
+        if user is None:
+            raise RuntimeError(f"Seed user '{spec.user}' is missing from baseline")
+
+        token_hash = hash_token(spec.plaintext)
+        last_used = (
+            None
+            if spec.last_used_days_ago is None
+            else now - timedelta(days=spec.last_used_days_ago)
+        )
+        Token.create(
+            user=user,
+            token_hash=token_hash,
+            name=spec.name,
+            last_used=last_used,
+        )
+
+
+async def _plant_seed_ssh_keys(client: httpx.AsyncClient) -> None:
+    """Plant SSH keys via the user-facing API so fingerprints are computed.
+
+    Creating through the public endpoint exercises the same parsing /
+    fingerprinting code that real users hit, which means the fingerprints
+    in ``SEED_SSH_KEYS`` are the canonical ones and tests can assert
+    against them.
+    """
+    from kohakuhub.db import SSHKey, User
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for spec in SEED_SSH_KEYS:
+        await _login(client, spec.user)
+        try:
+            response = await client.post(
+                "/api/user/keys",
+                json={"title": spec.title, "key": spec.keypair.public_key},
+            )
+            response.raise_for_status()
+        finally:
+            await _logout(client)
+
+        if spec.last_used_days_ago is not None:
+            user = User.get_or_none(User.username == spec.user)
+            assert user is not None
+            cutoff = now - timedelta(days=spec.last_used_days_ago)
+            SSHKey.update(last_used=cutoff).where(
+                (SSHKey.user == user)
+                & (SSHKey.fingerprint == spec.keypair.fingerprint)
+            ).execute()
 
 
 async def build_baseline(
@@ -192,3 +267,7 @@ async def build_baseline(
 
     response = await client.post("/api/models/owner/demo-model/like")
     response.raise_for_status()
+
+    # Plant deterministic API tokens and SSH keys for credential-management tests.
+    _plant_seed_tokens()
+    await _plant_seed_ssh_keys(client)

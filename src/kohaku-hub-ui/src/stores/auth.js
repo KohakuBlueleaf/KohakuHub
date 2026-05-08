@@ -1,5 +1,5 @@
 // src/kohaku-hub-ui/src/stores/auth.js
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { authAPI, settingsAPI } from "@/utils/api";
 import { clearRepoSortPreference } from "@/utils/repoSortPreference";
 
@@ -174,3 +174,8 @@ export const useAuthStore = defineStore("auth", {
     },
   },
 });
+
+// Hot-replace this store on edit instead of full-reloading the page.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useAuthStore, import.meta.hot));
+}

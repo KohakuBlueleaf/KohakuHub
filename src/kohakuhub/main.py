@@ -18,7 +18,7 @@ from kohakuhub.api import (
     stats,
     validation,
 )
-from kohakuhub.api.repo.utils.hf import HFErrorCode
+from kohakuhub.api.repo.utils.hf import HFErrorCode, hf_repo_not_found
 from kohakuhub.api.invitation import router as invitation
 from kohakuhub.auth import router as auth_router
 from kohakuhub.api.auth import external_tokens
@@ -33,6 +33,7 @@ from kohakuhub.api.files import resolve_file_get, resolve_file_head
 from kohakuhub.api.org import router as org
 from kohakuhub.api.quota import router as quota
 from kohakuhub.auth.dependencies import get_optional_user
+from kohakuhub.auth.permissions import RepoReadDeniedError
 from kohakuhub.utils.s3 import init_storage
 from kohakuhub.api.git.routers import http as git_http
 from kohakuhub.api.git.routers import lfs, ssh_keys
@@ -67,7 +68,23 @@ async def lifespan(app: FastAPI):
         logger.warning("=" * 80)
 
     init_storage()
-    yield
+
+    # Initialize L2 cache (Valkey) — silent if disabled or unreachable.
+    # Runs the boot-time flush coordinator so Mode-B namespaces are wiped
+    # whenever Valkey's run_id has changed since the last seen value
+    # (i.e., Valkey was restarted, even if the API was not).
+    from kohakuhub.cache import init_cache, close_cache as _close_cache
+    await init_cache()
+
+    try:
+        yield
+    finally:
+        # Drop the LakeFS REST client's pooled httpx connections so the
+        # worker exits cleanly. Without this the keepalive sockets leak
+        # at shutdown and can hold the process from terminating.
+        from kohakuhub.lakefs_rest_client import close_lakefs_rest_client
+        await close_lakefs_rest_client()
+        await _close_cache()
 
 
 app = FastAPI(
@@ -101,6 +118,35 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(RequestIdMiddleware)
 
+
+@app.exception_handler(RepoReadDeniedError)
+async def _repo_read_denied_handler(request: Request, exc: RepoReadDeniedError):
+    """Convert ``RepoReadDeniedError`` into HF's ``RepoNotFound`` wire shape.
+
+    Centralizing the conversion here gives every endpoint that calls
+    ``check_repo_read_permission`` the same privacy-preserving wire shape
+    for free — info / tree / paths-info / resolve HEAD/GET / commits /
+    likes / stats / xet-lookup all stop emitting raw ``HTTPException(401|403)``
+    bodies and start emitting ``404 + X-Error-Code: RepoNotFound`` with an
+    empty body. ``huggingface_hub.utils._http.hf_raise_for_status`` then
+    raises ``RepositoryNotFoundError`` on the client, which is what
+    downstream libraries (``transformers``, ``datasets``, …) key off for
+    actionable error messages.
+
+    See ``RepoReadDeniedError``'s docstring for the full propagation
+    story. Short version: the inheritance choice (``Exception``, not
+    ``HTTPException``) keeps the fallback decorator's ``except
+    HTTPException`` from translating it into a 4xx, **and** an explicit
+    ``except RepoReadDeniedError: raise`` in
+    ``api/fallback/decorators.py`` keeps the generic ``except
+    Exception`` from collapsing it into a 500. Both are needed; missing
+    either degrades the wire shape silently. The chain probe is
+    intentionally not entered for this case — the strict-consistency
+    "local namespace wins absolutely" rule applies even when the local
+    layer is hiding the repo.
+    """
+    return hf_repo_not_found(exc.repo_id, exc.repo_type)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -123,6 +169,11 @@ app.add_middleware(
         "X-Linked-Etag",
         "X-Linked-Size",
         "X-Xet-Hash",
+        # Chain trace (#78): the admin chain tester reads X-Chain-Trace
+        # from the response of a real request to render the per-hop
+        # timeline. The header carries no protocol semantics for
+        # huggingface_hub clients, which ignore unknown headers.
+        "X-Chain-Trace",
     ],
 )
 

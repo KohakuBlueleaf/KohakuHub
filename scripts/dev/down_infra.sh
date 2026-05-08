@@ -6,6 +6,7 @@ CONTAINERS=(
   "kohakuhub-dev-lakefs"
   "kohakuhub-dev-minio"
   "kohakuhub-dev-postgres"
+  "kohakuhub-dev-valkey"
 )
 
 container_exists() {

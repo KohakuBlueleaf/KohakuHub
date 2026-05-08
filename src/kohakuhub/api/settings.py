@@ -21,6 +21,7 @@ from kohakuhub.db_operations import (
 )
 from kohakuhub.logger import get_logger
 from kohakuhub.api.fallback import with_user_fallback
+from kohakuhub.api.fallback.cache import get_cache as get_fallback_cache
 from kohakuhub.api.quota.util import calculate_repository_storage, check_quota
 from kohakuhub.api.repo.utils.hf import hf_repo_not_found
 from kohakuhub.auth.dependencies import get_current_user
@@ -435,6 +436,18 @@ async def update_repo_settings(
     # Apply all updates if there are any
     if update_fields:
         update_repository(repo_row, **update_fields)
+
+    # Strict-freshness invalidation (#79): a visibility flip changes
+    # who can see the local repo, which in turn changes whether
+    # ``with_repo_fallback`` falls through to the chain for any given
+    # caller. Defensive eviction of every cached binding for this repo
+    # ensures no anonymous-bucket ghost binding (written while the
+    # repo was public) survives a public→private flip, and no
+    # private-era ghost survives a private→public flip. Other settings
+    # (LFS thresholds, suffix rules, etc.) do not affect binding so
+    # only fire the eviction when ``private`` was the changed field.
+    if "private" in update_fields:
+        get_fallback_cache().invalidate_repo(repo_type, namespace, name)
 
     # Note: gated functionality not yet implemented in database schema
     # Would require adding a 'gated' field to Repository model

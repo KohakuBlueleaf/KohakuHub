@@ -823,3 +823,252 @@ async def test_pattern_F_info_bare_401_raises_RepositoryNotFoundError(monkeypatc
 
     with pytest.raises(RepositoryNotFoundError):
         hf_raise_for_status(hx)
+
+
+# ---------------------------------------------------------------------------
+# Pattern G. Repo-grain BIND_AND_PROPAGATE (#75). The first source's
+# upstream response carries an X-Error-Code that says "the repo is
+# here, but the entry / revision / repo-state forbids serving the
+# request." The fallback must forward that response **verbatim** —
+# different status, different X-Error-Code than the all-sources-fail
+# aggregate would produce, because the rest of the chain is never
+# tried. These tests prove a real `huggingface_hub` client raises the
+# matching specific exception type.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pattern_G_first_source_entry_not_found_raises_EntryNotFoundError(monkeypatch):
+    """Source A: HEAD 404 + X-Error-Code: EntryNotFound. The repo is at
+    A, the file isn't. Source B must NEVER be contacted (a sibling's
+    same-named repo would be a different repo). The propagated 404
+    drives hf_hub to raise EntryNotFoundError specifically."""
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+    RepositoryNotFoundError = _hf_error("RepositoryNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": HF_ENDPOINT, "name": "HF", "source_type": "huggingface"},
+            # Trap source — any contact with it surfaces as a queue
+            # IndexError in FakeFallbackClient because nothing is
+            # queued for it.
+            {"url": "https://mirror.local", "name": "Mirror", "source_type": "huggingface"},
+        ],
+    )
+    path = f"{REPO_PREFIX}/missing.bin"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT,
+        "HEAD",
+        path,
+        _content_response(
+            404,
+            content=b"Entry not found",
+            headers={
+                "content-type": "text/plain; charset=utf-8",
+                "X-Error-Code": "EntryNotFound",
+                "X-Error-Message": "Entry not found",
+            },
+            url=f"{HF_ENDPOINT}{path}",
+        ),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "missing.bin", method="HEAD",
+    )
+    # No mirror.local contact:
+    assert all(c[0] != "https://mirror.local" for c in FakeFallbackClient.calls)
+
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{path}")
+    assert hx.status_code == 404
+    assert hx.headers.get("x-error-code") == "EntryNotFound"
+    # Source attribution survived — the user knows which mirror gave
+    # the answer.
+    assert hx.headers.get("x-source") == "HF"
+
+    with pytest.raises(EntryNotFoundError) as excinfo:
+        hf_raise_for_status(hx)
+    # NOT classified as the broader RepositoryNotFound. (hf_hub
+    # subclassing: EntryNotFoundError extends HfHubHTTPError but is
+    # *not* a subclass of RepositoryNotFoundError.)
+    assert not isinstance(excinfo.value, RepositoryNotFoundError)
+
+
+@pytest.mark.asyncio
+async def test_pattern_G_first_source_revision_not_found_raises_RevisionNotFoundError(monkeypatch):
+    """Same shape but X-Error-Code: RevisionNotFound. hf_hub raises the
+    specific `RevisionNotFoundError`, signaling the user typo'd the
+    branch / commit, not the repo name."""
+    RevisionNotFoundError = _hf_error("RevisionNotFoundError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": HF_ENDPOINT, "name": "HF", "source_type": "huggingface"},
+            {"url": "https://mirror.local", "name": "Mirror", "source_type": "huggingface"},
+        ],
+    )
+    path = "/models/owner/demo/resolve/refs/no-branch/config.json"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT,
+        "HEAD",
+        path,
+        _content_response(
+            404,
+            content=b"Invalid rev id: refs",
+            headers={
+                "X-Error-Code": "RevisionNotFound",
+                "X-Error-Message": "Invalid rev id: refs",
+            },
+            url=f"{HF_ENDPOINT}{path}",
+        ),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "refs/no-branch", "config.json", method="HEAD",
+    )
+    assert all(c[0] != "https://mirror.local" for c in FakeFallbackClient.calls)
+
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{path}")
+    assert hx.status_code == 404
+    assert hx.headers.get("x-error-code") == "RevisionNotFound"
+    with pytest.raises(RevisionNotFoundError):
+        hf_raise_for_status(hx)
+
+
+@pytest.mark.asyncio
+async def test_pattern_G_all_sources_disabled_aggregate_raises_DisabledRepoError(monkeypatch):
+    """X-Error-Message: 'Access to this resource is disabled.' is now
+    classified as TRY_NEXT_SOURCE (a moderation takedown on one
+    source doesn't bind the chain — sibling sources may still serve).
+    The aggregate layer preserves the marker so an *all-disabled*
+    chain re-emits the exact X-Error-Message and a hf_hub client
+    raises ``DisabledRepoError`` end-to-end."""
+    try:
+        DisabledRepoError = _hf_error("DisabledRepoError")
+    except AttributeError:
+        # hf_hub <= 0.20.x didn't expose DisabledRepoError; skip on
+        # those matrix cells. The classifier still routes correctly,
+        # just no specific exception class to assert on.
+        pytest.skip("DisabledRepoError not available in this hf_hub version")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": HF_ENDPOINT, "name": "HF", "source_type": "huggingface"},
+            {"url": "https://mirror.local", "name": "Mirror", "source_type": "huggingface"},
+        ],
+    )
+    path = f"{REPO_PREFIX}/config.json"
+    disabled_headers = {
+        "X-Error-Message": "Access to this resource is disabled.",
+    }
+    # BOTH sources disabled — neither binds, the aggregate has to
+    # carry the disabled marker.
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
+        _content_response(403, content=b"", headers=disabled_headers,
+                         url=f"{HF_ENDPOINT}{path}"),
+    )
+    FakeFallbackClient.queue(
+        "https://mirror.local", "HEAD", path,
+        _content_response(403, content=b"", headers=disabled_headers,
+                         url=f"https://mirror.local{path}"),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "config.json", method="HEAD",
+    )
+
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{path}")
+    assert hx.status_code == 403
+    assert hx.headers.get("x-error-message") == "Access to this resource is disabled."
+    with pytest.raises(DisabledRepoError):
+        hf_raise_for_status(hx)
+
+
+@pytest.mark.asyncio
+async def test_pattern_G_disabled_first_source_falls_through_to_serving_second(monkeypatch):
+    """Companion: source A disabled, source B serves. The chain must
+    *not* short-circuit on A's disabled marker — that would mean a
+    moderation takedown on one mirror prevents users from hitting
+    another mirror that still has the resource."""
+    monkeypatch.setattr(fallback_ops, "get_cache", DummyCache)
+    monkeypatch.setattr(
+        fallback_ops,
+        "get_enabled_sources",
+        lambda namespace, user_tokens=None: [
+            {"url": HF_ENDPOINT, "name": "HF", "source_type": "huggingface"},
+            {"url": "https://mirror.local", "name": "Mirror", "source_type": "huggingface"},
+        ],
+    )
+    path = f"{REPO_PREFIX}/config.json"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT, "HEAD", path,
+        _content_response(
+            403, content=b"",
+            headers={"X-Error-Message": "Access to this resource is disabled."},
+            url=f"{HF_ENDPOINT}{path}",
+        ),
+    )
+    FakeFallbackClient.queue(
+        "https://mirror.local", "HEAD", path,
+        _content_response(200, headers={"x-repo-commit": "abc"},
+                         url=f"https://mirror.local{path}"),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "config.json", method="HEAD",
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("x-source") == "Mirror"
+
+
+@pytest.mark.asyncio
+async def test_pattern_G_authed_403_GatedRepo_aggregates_to_GatedRepoError(monkeypatch):
+    """403 + X-Error-Code: GatedRepo at every source (the authed-but-
+    not-in-access-list shape — different status from the anon 401
+    case). The classifier routes both to TRY_NEXT_SOURCE; if every
+    source ends up gated, the aggregate carries
+    X-Error-Code: GatedRepo and hf_hub raises GatedRepoError."""
+    GatedRepoError = _hf_error("GatedRepoError")
+    from huggingface_hub.utils import hf_raise_for_status
+
+    _setup_resolve_cache_source(monkeypatch)
+    path = f"{REPO_PREFIX}/model.safetensors"
+    FakeFallbackClient.queue(
+        HF_ENDPOINT,
+        "HEAD",
+        path,
+        _content_response(
+            403,  # authed-but-no-access shape, NOT 401
+            content=(
+                b"Access to model owner/demo is restricted and you are "
+                b"not in the authorized list."
+            ),
+            headers={
+                "X-Error-Code": "GatedRepo",
+                "X-Error-Message": "Access to model owner/demo is restricted and you are not in the authorized list.",
+            },
+            url=f"{HF_ENDPOINT}{path}",
+        ),
+    )
+
+    resp = await fallback_ops.try_fallback_resolve(
+        "model", "owner", "demo", "main", "model.safetensors", method="HEAD",
+    )
+    hx = _to_hf_response(resp, request_url=f"{KHUB_BASE}{path}")
+    # Aggregate normalizes to 401 (HF's canonical GatedRepo status),
+    # but the X-Error-Code is what matters for hf_hub.
+    assert hx.headers.get("x-error-code") == "GatedRepo"
+    with pytest.raises(GatedRepoError):
+        hf_raise_for_status(hx)

@@ -33,25 +33,28 @@ src/
 ### Prerequisites
 
 - Node.js 18+
-- npm or yarn
+- pnpm 10+
 
 ### Installation
 
-1.  Navigate to this directory:
-    ```bash
-    cd src/kohaku-hub-ui
-    ```
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
+From the repository root:
+
+```bash
+pnpm install
+```
 
 ### Development
 
 To start the development server with hot-reloading:
 
 ```bash
-npm run dev
+pnpm run dev:ui
+```
+
+If you prefer to run it inside this directory directly:
+
+```bash
+pnpm dev
 ```
 
 The application will be available at `http://localhost:5173`. The Vite development server is configured to proxy API requests to the backend running on `http://localhost:48888`.
@@ -61,7 +64,7 @@ The application will be available at `http://localhost:5173`. The Vite developme
 To build the application for production:
 
 ```bash
-npm run build
+pnpm run build:ui
 ```
 
 The optimized static files will be generated in the `dist/` directory.

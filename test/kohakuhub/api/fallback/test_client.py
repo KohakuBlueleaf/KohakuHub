@@ -140,3 +140,82 @@ async def test_http_methods_forward_headers_timeouts_and_redirect_flags(monkeypa
     assert FakeAsyncClient.calls[2].kwargs["headers"] == {
         "Authorization": "Bearer user-token"
     }
+
+
+@pytest.mark.asyncio
+async def test_http_methods_treat_explicit_headers_none_as_empty(monkeypatch):
+    """Caller may pass ``headers=None`` to mean "no extra headers".
+
+    Regression: the GET path in ``_resolve_one_source`` collapses an
+    empty ``client_headers`` dict to ``None`` via ``client_headers or
+    None``. Combined with a token-bearing source (admin-configured HF
+    PAT, etc.), the previous ``headers = kwargs.pop("headers", {})``
+    returned ``None`` instead of ``{}`` (``dict.pop`` ignores the
+    default when the key is present), and the next line
+    ``headers["Authorization"] = ...`` raised ``TypeError: 'NoneType'
+    object does not support item assignment``. The exception was then
+    caught by the resolve loop's ``except Exception`` and surfaced to
+    the client as a misleading ``"category": "network"`` 502.
+
+    This test locks ``headers=None`` into a supported input across all
+    three verbs, with the Authorization header still added when the
+    source has a token.
+    """
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(fallback_client_module.cfg.fallback, "timeout_seconds", 12)
+    monkeypatch.setattr(fallback_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = fallback_client_module.FallbackClient(
+        "https://huggingface.co",
+        "huggingface",
+        token="user-token",
+    )
+
+    get_response = await client.get(
+        "/datasets/deepghs/zerochan_full/resolve/main/images/0000.json",
+        "dataset",
+        follow_redirects=False,
+        headers=None,
+    )
+    head_response = await client.head(
+        "/datasets/deepghs/zerochan_full/resolve/main/images/0000.json",
+        "dataset",
+        headers=None,
+    )
+    post_response = await client.post(
+        "/api/datasets/deepghs/zerochan_full/paths-info/main",
+        "dataset",
+        headers=None,
+        json={"paths": ["images/0000.json"]},
+    )
+
+    assert get_response.status_code == 200
+    assert head_response.status_code == 204
+    assert post_response.status_code == 201
+    for call in FakeAsyncClient.calls:
+        assert call.kwargs["headers"] == {"Authorization": "Bearer user-token"}
+
+
+@pytest.mark.asyncio
+async def test_http_methods_handle_explicit_headers_none_without_token(monkeypatch):
+    """``headers=None`` is also valid for token-less sources — no
+    Authorization is added and the request still goes out cleanly."""
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(fallback_client_module.cfg.fallback, "timeout_seconds", 12)
+    monkeypatch.setattr(fallback_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = fallback_client_module.FallbackClient(
+        "https://mirror.local",
+        "kohakuhub",
+        token=None,
+    )
+
+    response = await client.get(
+        "/models/owner/demo/resolve/main/config.json",
+        "model",
+        follow_redirects=False,
+        headers=None,
+    )
+
+    assert response.status_code == 200
+    assert FakeAsyncClient.calls[0].kwargs["headers"] == {}

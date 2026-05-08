@@ -113,7 +113,8 @@ Admin Secret: XyZ789...
 
 Next steps:
 1. Review the generated docker-compose.yml
-2. Build frontend: npm run build --prefix ./src/kohaku-hub-ui
+2. Install frontend deps: pnpm install
+3. Build frontend: pnpm run build
 3. Start services: docker-compose up -d
 
    Note: Databases will be created automatically on first startup:

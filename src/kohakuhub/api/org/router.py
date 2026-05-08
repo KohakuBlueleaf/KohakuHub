@@ -1,9 +1,10 @@
 """Organization related API endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from peewee import fn
 from pydantic import BaseModel
 
-from kohakuhub.db import User, UserOrganization, db
+from kohakuhub.db import Repository, User, UserOrganization, db
 from kohakuhub.constants import ERROR_USER_NOT_FOUND
 from kohakuhub.db_operations import (
     create_organization,
@@ -71,10 +72,39 @@ async def create_organization_endpoint(
     return {"success": True, "name": org.username}
 
 
+def _count_repos_by_type(namespace: str) -> dict[str, int]:
+    """Return repo counts in ``namespace`` grouped by type.
+
+    Single ``GROUP BY repo_type`` SQL — replaces the frontend pattern of
+    listing 1000 rows × 3 types per org card just to read ``.length``.
+    See issue #63.
+    """
+    counts: dict[str, int] = {"model": 0, "dataset": 0, "space": 0}
+    for row in (
+        Repository.select(
+            Repository.repo_type, fn.COUNT(Repository.id).alias("c")
+        )
+        .where(Repository.namespace == namespace)
+        .group_by(Repository.repo_type)
+        .dicts()
+    ):
+        counts[row["repo_type"]] = row["c"]
+    counts["total"] = counts["model"] + counts["dataset"] + counts["space"]
+    return counts
+
+
 @router.get("/{org_name}")
 @with_user_fallback("profile")
 async def get_organization_info(org_name: str, request: Request, fallback: bool = True):
     """Get organization details.
+
+    Includes a ``repo_count`` field grouped by repo type so the orgs grid
+    page can render the per-card "X repos" badge without fan-out listing
+    (see issue #63). The count covers all repos in the namespace
+    (public + private); the orgs grid card is only rendered for orgs the
+    viewer is a member of, so private repos counting is fine. Public-only
+    surfaces should derive their own count via the privacy-filtered list
+    endpoints.
 
     Query params:
         fallback: Set to "false" to disable fallback to external sources (default: true)
@@ -86,6 +116,7 @@ async def get_organization_info(org_name: str, request: Request, fallback: bool 
         "name": org.username,
         "description": org.description,
         "created_at": org.created_at,
+        "repo_count": _count_repos_by_type(org_name),
         "_source": "local",  # Tag local orgs
     }
 

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from peewee import JOIN, fn
 
 from kohakuhub.config import cfg
@@ -40,6 +40,93 @@ logger = get_logger("REPO")
 router = APIRouter()
 
 RepoType = Literal["model", "dataset", "space"]
+
+
+def _latest_main_commits(repo_ids: list[int]) -> dict[int, tuple[str, datetime]]:
+    """Resolve the latest main-branch commit for each repo via the local DB.
+
+    Returns ``{repo_id: (commit_id, created_at)}`` for repos that have at least
+    one ``branch == "main"`` row in the ``Commit`` table. Repos that don't
+    appear in the ``Commit`` table are simply absent from the result — list
+    callers fall back to LakeFS for those (e.g. freshly created repos with no
+    HF-API commits, repos populated only via ``git push`` or ``repo rename``,
+    which currently bypass ``create_commit``).
+
+    Replaces what used to be two LakeFS REST round-trips per row
+    (``get_branch`` + ``get_commit``) with a single SQL aggregate. See issue
+    #62 for the perf analysis.
+    """
+    if not repo_ids:
+        return {}
+
+    # Two-pass to stay portable across SQLite (test fixture) and PostgreSQL
+    # (prod): first compute MAX(created_at) per repo, then look up the matching
+    # row. PostgreSQL's DISTINCT ON would be tighter but isn't available on
+    # SQLite. The (repository, branch) composite index already exists; the
+    # MAX(created_at) sort is the part that benefits from the index proposed
+    # in issue #68 — measurable but not blocking.
+    latest_subq = (
+        Commit.select(
+            Commit.repository.alias("rid"),
+            fn.MAX(Commit.created_at).alias("max_at"),
+        )
+        .where((Commit.repository.in_(repo_ids)) & (Commit.branch == "main"))
+        .group_by(Commit.repository)
+        .alias("latest")
+    )
+
+    rows = (
+        Commit.select(Commit.repository, Commit.commit_id, Commit.created_at)
+        .join(
+            latest_subq,
+            on=(
+                (Commit.repository == latest_subq.c.rid)
+                & (Commit.created_at == latest_subq.c.max_at)
+            ),
+        )
+        .where(Commit.branch == "main")
+    )
+
+    out: dict[int, tuple[str, datetime]] = {}
+    for r in rows:
+        # ``created_at`` ties (sub-microsecond commits) collapse to the first
+        # row encountered — fine, they share a timestamp by definition.
+        out.setdefault(r.repository_id, (r.commit_id, r.created_at))
+    return out
+
+
+async def _resolve_main_head_via_lakefs(
+    client, lakefs_repo: str
+) -> tuple[str | None, str | None]:
+    """LakeFS-side fallback for repos missing from the DB ``Commit`` table.
+
+    Returns ``(sha, last_modified_iso)`` or ``(None, None)`` on any error.
+    Kept as a small helper so the list callsites can stay readable.
+    """
+    try:
+        branch = await client.get_branch(repository=lakefs_repo, branch="main")
+    except Exception as e:
+        logger.debug(f"get_branch fallback failed for {lakefs_repo}: {e}")
+        return None, None
+
+    sha = branch.get("commit_id")
+    if not sha:
+        return None, None
+
+    try:
+        commit_info = await client.get_commit(
+            repository=lakefs_repo, commit_id=sha
+        )
+    except Exception as e:
+        logger.debug(f"get_commit fallback failed for {lakefs_repo}: {e}")
+        return sha, None
+
+    last_modified: str | None = None
+    if commit_info and commit_info.get("creation_date"):
+        last_modified = datetime.fromtimestamp(
+            commit_info["creation_date"]
+        ).strftime(DATETIME_FORMAT_ISO)
+    return sha, last_modified
 
 
 def _apply_repo_sorting(q, repo_type: str, sort: str):
@@ -132,12 +219,10 @@ async def get_repo_info(
         return hf_repo_not_found(repo_id, repo_type)
 
     # Hugging Face Hub hides private repos from unauthorized users.
-    try:
-        check_repo_read_permission(repo_row, user)
-    except HTTPException as exc:
-        if repo_row.private and exc.status_code in {401, 403}:
-            return hf_repo_not_found(repo_id, repo_type)
-        raise
+    # ``check_repo_read_permission`` raises ``RepoReadDeniedError`` for
+    # both anonymous-on-private and authed-no-access; the global handler
+    # in ``main.py`` converts that to ``hf_repo_not_found(...)``.
+    check_repo_read_permission(repo_row, user)
 
     # Get LakeFS info for default branch
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
@@ -309,30 +394,22 @@ async def _list_repos_internal(
     else:
         rows = list(_apply_repo_sorting(q, rt, sort).limit(limit))
 
-    # Format response with lastModified from LakeFS
+    # Resolve sha + lastModified in one SQL aggregate. Falls back to LakeFS
+    # only for repos missing from the Commit table — see issue #62.
+    heads = _latest_main_commits([r.id for r in rows])
     client = get_lakefs_client()
     result = []
 
     for r in rows:
-        last_modified = None
-        sha = None
-
-        # Try to get lastModified from LakeFS main branch
-        try:
+        head = heads.get(r.id)
+        if head is not None:
+            sha, last_at = head
+            last_modified = safe_strftime(last_at, DATETIME_FORMAT_ISO)
+        else:
             lakefs_repo = lakefs_repo_name(rt, r.full_id)
-            branch = await client.get_branch(repository=lakefs_repo, branch="main")
-            sha = branch["commit_id"]
-
-            if sha:
-                commit_info = await client.get_commit(
-                    repository=lakefs_repo, commit_id=sha
-                )
-                if commit_info and commit_info.get("creation_date"):
-                    last_modified = datetime.fromtimestamp(
-                        commit_info["creation_date"]
-                    ).strftime(DATETIME_FORMAT_ISO)
-        except Exception as e:
-            logger.debug(f"Could not get lastModified for {r.full_id}: {str(e)}")
+            sha, last_modified = await _resolve_main_head_via_lakefs(
+                client, lakefs_repo
+            )
 
         result.append(
             {
@@ -480,29 +557,21 @@ async def list_user_repos(
         rows = list(q.limit(limit))
 
         key = repo_type + "s"
-        repos_list = []
+        # Same SQL-first / LakeFS-fallback shape as _list_repos_internal.
+        heads = _latest_main_commits([r.id for r in rows])
         client = get_lakefs_client()
+        repos_list = []
 
         for r in rows:
-            last_modified = None
-            sha = None
-
-            # Try to get lastModified from LakeFS
-            try:
+            head = heads.get(r.id)
+            if head is not None:
+                sha, last_at = head
+                last_modified = safe_strftime(last_at, DATETIME_FORMAT_ISO)
+            else:
                 lakefs_repo = lakefs_repo_name(repo_type, r.full_id)
-                branch = await client.get_branch(repository=lakefs_repo, branch="main")
-                sha = branch["commit_id"]
-
-                if sha:
-                    commit_info = await client.get_commit(
-                        repository=lakefs_repo, commit_id=sha
-                    )
-                    if commit_info and commit_info.get("creation_date"):
-                        last_modified = datetime.fromtimestamp(
-                            commit_info["creation_date"]
-                        ).strftime(DATETIME_FORMAT_ISO)
-            except Exception as e:
-                logger.debug(f"Could not get lastModified for {r.full_id}: {str(e)}")
+                sha, last_modified = await _resolve_main_head_via_lakefs(
+                    client, lakefs_repo
+                )
 
             repos_list.append(
                 {

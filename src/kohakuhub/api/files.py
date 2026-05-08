@@ -304,12 +304,12 @@ async def get_revision(
         return hf_repo_not_found(repo_id, repo_type.value)
 
     # Hugging Face Hub hides private repos from unauthorized users.
-    try:
-        check_repo_read_permission(repo_row, user)
-    except HTTPException as exc:
-        if repo_row.private and exc.status_code in {401, 403}:
-            return hf_repo_not_found(repo_id, repo_type.value)
-        raise
+    # ``check_repo_read_permission`` raises ``RepoReadDeniedError`` for
+    # both anonymous-on-private and authed-no-access; the global handler
+    # in ``main.py`` converts that to ``hf_repo_not_found(...)`` so we
+    # don't need an ad-hoc translation here. Preserving the original
+    # behaviour for missing repos (already handled at line ~304 above).
+    check_repo_read_permission(repo_row, user)
 
     lakefs_repo = lakefs_repo_name(repo_type.value, repo_id)
     client = get_lakefs_client()
@@ -398,19 +398,10 @@ async def _get_file_metadata(
             },
         )
 
-    try:
-        check_repo_read_permission(repo_row, user)
-    except HTTPException as exc:
-        if repo_row.private and exc.status_code in {401, 403}:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": f"Repository '{repo_id}' not found"},
-                headers={
-                    "X-Error-Code": HFErrorCode.REPO_NOT_FOUND,
-                    "X-Error-Message": f"Repository '{repo_id}' ({repo_type}) not found",
-                },
-            ) from exc
-        raise
+    # ``check_repo_read_permission`` raises ``RepoReadDeniedError`` for
+    # both anonymous-on-private and authed-no-access; the global handler
+    # in ``main.py`` converts that to ``hf_repo_not_found(...)``.
+    check_repo_read_permission(repo_row, user)
 
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
     client = get_lakefs_client()

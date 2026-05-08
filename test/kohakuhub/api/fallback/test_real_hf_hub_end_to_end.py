@@ -152,6 +152,83 @@ async def test_real_hf_hub_download_pattern_C_direct_200(
 
 
 @pytest.mark.asyncio
+async def test_real_hf_hub_download_entry_not_found_propagates_no_cross_source(
+    live_server_url, hf_api_token, backend_test_state, mock_hf_server_url, tmp_path,
+):
+    """End-to-end #75 BIND_AND_PROPAGATE: source A (mock HF) emits
+    404 + X-Error-Code: EntryNotFound; source B is a trap (URL that
+    drops every connection so any contact surfaces as a connection
+    error). The fallback must propagate A's EntryNotFound, NOT walk
+    over to B. A real `hf_hub_download` call therefore raises
+    `EntryNotFoundError` deterministically.
+
+    This is the regression-guard for the cross-source mixing bug:
+    before #75, the loop would have continued past A's 404 and
+    contacted B (or aggregated all-404 into RepoNotFound), masking the
+    fact that the repo really does live at A.
+    """
+    EntryNotFoundError = _hf_error("EntryNotFoundError")
+
+    cfg = backend_test_state.modules.config_module.cfg
+    old_sources = list(cfg.fallback.sources)
+    old_enabled = cfg.fallback.enabled
+    cfg.fallback.enabled = True
+    cfg.fallback.sources = [
+        # Order: working mock A first → it should bind on the
+        # EntryNotFound and propagate. Trap B should never be
+        # contacted.
+        {
+            "url": mock_hf_server_url,
+            "name": "MockHF",
+            "source_type": "huggingface",
+            "priority": 1,
+        },
+        {
+            # 198.51.100.0/24 is TEST-NET-2 (RFC 5737). Reserved for
+            # documentation. Any TCP connection here cannot complete,
+            # so if the chain falls through to this source the test
+            # will hang — surface it as a clear failure rather than a
+            # silent cross-source mix.
+            "url": "http://198.51.100.7:65535",
+            "name": "Trap",
+            "source_type": "huggingface",
+            "priority": 2,
+        },
+    ]
+    backend_test_state.modules.fallback_cache_module.get_cache().clear()
+    try:
+        def _run():
+            from huggingface_hub import hf_hub_download
+
+            return hf_hub_download(
+                repo_id="owner/fake-repo",
+                filename="pattern_missing.bin",
+                endpoint=live_server_url,
+                token=hf_api_token,
+                cache_dir=str(tmp_path),
+            )
+
+        with pytest.raises(EntryNotFoundError):
+            await asyncio.to_thread(_run)
+    finally:
+        cfg.fallback.sources = old_sources
+        cfg.fallback.enabled = old_enabled
+        backend_test_state.modules.fallback_cache_module.get_cache().clear()
+
+
+def _hf_error(name):
+    """Local lazy import — same shape as test_hf_hub_interop._hf_error.
+    Kept private to this module so a single rename here doesn't ripple."""
+    try:
+        mod = __import__("huggingface_hub.errors", fromlist=[name])
+        return getattr(mod, name)
+    except (ImportError, AttributeError):
+        pass
+    mod = __import__("huggingface_hub.utils", fromlist=[name])
+    return getattr(mod, name)
+
+
+@pytest.mark.asyncio
 async def test_real_hf_hub_download_warm_cache_does_not_refetch(
     live_server_url, hf_api_token, fallback_points_to_mock, tmp_path,
 ):

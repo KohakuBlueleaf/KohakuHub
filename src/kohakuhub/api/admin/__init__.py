@@ -9,14 +9,19 @@ Organized router structure:
 - commits: Commit history
 - invitations: Invitation management
 - search: Global search across entities
+- health: Live probes for backing services (Postgres, MinIO, LakeFS, SMTP)
+- cache: L2 cache (Valkey) hit/miss/error counters and memory state
 """
 
 from fastapi import APIRouter
 
 from kohakuhub.api.admin.routers import (
+    cache_router,
     commits_router,
+    credentials_router,
     database_router,
     fallback_router,
+    health_router,
     invitations_router,
     quota_router,
     repositories_router,
@@ -40,5 +45,8 @@ router.include_router(invitations_router, tags=["admin-invitations"])
 router.include_router(search_router, tags=["admin-search"])
 router.include_router(database_router, tags=["admin-database"])
 router.include_router(fallback_router, tags=["admin-fallback"])
+router.include_router(health_router, tags=["admin-health"])
+router.include_router(credentials_router, tags=["admin-credentials"])
+router.include_router(cache_router, tags=["admin-cache"])
 
 __all__ = ["router"]

@@ -66,8 +66,28 @@ def _restore_backend_state_per_test(request):
     request.getfixturevalue("prepared_backend_test_state")
     current_module = request.node.module.__name__
 
+    # Drop the LakeFSRestClient singleton's pooled httpx client between
+    # tests. ``httpx.AsyncClient`` binds its connection pool to the event
+    # loop it was constructed in. Two loops are in play:
+    #
+    #   * ``restore_active_state()`` uses ``asyncio.run(...)`` internally —
+    #     a short-lived loop for the clear+seed phase. FastAPI handlers
+    #     driven during the seed lazily build the pool *inside* that loop,
+    #     then the loop closes.
+    #   * pytest-asyncio gives each test its own fresh loop.
+    #
+    # We null the singleton both *before* the restore (so the seed phase
+    # doesn't inherit a pool tied to the previous test's closed loop) and
+    # again *after* (so the test body doesn't inherit the seed phase's
+    # pool tied to its now-closed asyncio.run loop). Without the second
+    # reset, handlers raise ``Event loop is closed`` on the first LakeFS
+    # call.
+    from kohakuhub import lakefs_rest_client as _lakefs_rest
+    _lakefs_rest._singleton_client = None
+
     if request.node.get_closest_marker("backend_per_test") is not None:
         backend_test_state.restore_active_state()
+        _lakefs_rest._singleton_client = None
         _LAST_BACKEND_MODULE = current_module
         return
 
@@ -76,6 +96,7 @@ def _restore_backend_state_per_test(request):
             _INITIAL_BASELINE_READY = False
         else:
             backend_test_state.restore_active_state()
+            _lakefs_rest._singleton_client = None
         _LAST_BACKEND_MODULE = current_module
 
 

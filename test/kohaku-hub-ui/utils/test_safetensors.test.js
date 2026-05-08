@@ -50,6 +50,101 @@ describe("safetensors utilities", () => {
     vi.restoreAllMocks();
   });
 
+  // Regression for the in-archive preview path: when a member is
+  // extracted from a tar via Range read we already have all the bytes
+  // in memory, so the URL-based parser cannot be reused — issuing a
+  // HEAD/Range against `blob:` URLs is unreliable across browsers and
+  // hyparquet's URL helper specifically issues a HEAD for the tail
+  // size lookup. The from-buffer path lets the modal hand the bytes
+  // straight in.
+  describe("parseSafetensorsMetadataFromBuffer", () => {
+    it("parses the same header from in-memory bytes without any fetch", async () => {
+      const { parseSafetensorsMetadataFromBuffer, summarizeSafetensors } =
+        await loadModule();
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const header = parseSafetensorsMetadataFromBuffer(FIXTURE_BYTES);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(Object.keys(header.tensors).sort()).toEqual([
+        "encoder.embed.weight",
+        "encoder.layer0.attn.q_proj.weight",
+        "encoder.layer0.ln.bias",
+      ]);
+      const summary = summarizeSafetensors(header);
+      expect(summary.total).toBe(528);
+    });
+
+    it("rejects a buffer that is too short for the 8-byte length prefix", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      expect(() =>
+        parseSafetensorsMetadataFromBuffer(new Uint8Array(4)),
+      ).toThrow(/header length prefix/);
+    });
+
+    it("rejects a header longer than SAFETENSORS_MAX_HEADER_LENGTH (100 MB)", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      // Synthesize a buffer whose 8-byte LE u64 prefix advertises a
+      // header length above the 100 MB safety cap. The same cap is
+      // enforced by the URL-based parser; this test pins the
+      // from-buffer path's parity. A real malformed safetensors file
+      // would surface the same error before the parser tries to
+      // allocate the bogus header.
+      const buf = new Uint8Array(32);
+      const view = new DataView(buf.buffer);
+      view.setBigUint64(0, BigInt(200 * 1024 * 1024), true);
+      expect(() => parseSafetensorsMetadataFromBuffer(buf)).toThrow(
+        /header too large/,
+      );
+    });
+
+    it("rejects a buffer that ends mid-header (declared length > buffer)", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      // 8-byte prefix says "header is 200 bytes" but only 100
+      // follow. The from-buffer parser must reject before sliding
+      // off the end of the array.
+      const buf = new Uint8Array(108); // 8 prefix + 100 body
+      new DataView(buf.buffer).setBigUint64(0, 200n, true);
+      expect(() => parseSafetensorsMetadataFromBuffer(buf)).toThrow(
+        /shorter than declared header/,
+      );
+    });
+
+    it("rejects a buffer whose header bytes are not valid UTF-8 JSON", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      const headerBody = new Uint8Array([0x7b, 0xff, 0xfe, 0x7d]); // {<bad>}
+      const buf = new Uint8Array(8 + headerBody.length);
+      new DataView(buf.buffer).setBigUint64(0, BigInt(headerBody.length), true);
+      buf.set(headerBody, 8);
+      expect(() => parseSafetensorsMetadataFromBuffer(buf)).toThrow(
+        /UTF-8 JSON/,
+      );
+    });
+
+    it("rejects a buffer whose header decodes to a JSON non-object", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      const headerBody = new TextEncoder().encode('"just a string"');
+      const buf = new Uint8Array(8 + headerBody.length);
+      new DataView(buf.buffer).setBigUint64(0, BigInt(headerBody.length), true);
+      buf.set(headerBody, 8);
+      expect(() => parseSafetensorsMetadataFromBuffer(buf)).toThrow(
+        /not an object/,
+      );
+    });
+
+    it("accepts an ArrayBuffer input (not just Uint8Array)", async () => {
+      const { parseSafetensorsMetadataFromBuffer } = await loadModule();
+      // The in-archive code path always hands a Uint8Array, but the
+      // public API also accepts a raw ArrayBuffer. The fixture
+      // contents are a Buffer (Uint8Array view); promote to the
+      // underlying ArrayBuffer for this test.
+      const ab = FIXTURE_BYTES.buffer.slice(
+        FIXTURE_BYTES.byteOffset,
+        FIXTURE_BYTES.byteOffset + FIXTURE_BYTES.byteLength,
+      );
+      const header = parseSafetensorsMetadataFromBuffer(ab);
+      expect(Object.keys(header.tensors).length).toBeGreaterThan(0);
+    });
+  });
+
   it("parses a real safetensors header via a single Range read", async () => {
     const { parseSafetensorsMetadata } = await loadModule();
     server.use(http.get(FIXTURE_URL, rangeResponder(FIXTURE_BYTES)));

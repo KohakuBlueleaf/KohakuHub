@@ -1,0 +1,18 @@
+{
+  "name": "kohakuhub-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.18.1",
+  "scripts": {
+    "dev:ui": "pnpm -F kohaku-hub-ui dev",
+    "dev:admin": "pnpm -F kohaku-hub-admin dev",
+    "build:ui": "pnpm -F kohaku-hub-ui build",
+    "build:admin": "pnpm -F kohaku-hub-admin build",
+    "build": "pnpm -r -F kohaku-hub-ui -F kohaku-hub-admin build",
+    "format:ui": "pnpm -F kohaku-hub-ui format",
+    "format:admin": "pnpm -F kohaku-hub-admin format",
+    "format": "pnpm -r -F kohaku-hub-ui -F kohaku-hub-admin format",
+    "test:ui": "pnpm -F kohaku-hub-ui test",
+    "test:admin": "pnpm -F kohaku-hub-admin test",
+    "test": "pnpm -r -F kohaku-hub-ui -F kohaku-hub-admin test"
+  }
+}

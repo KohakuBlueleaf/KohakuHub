@@ -1524,7 +1524,9 @@ def generate_and_write_files(config: dict):
     print()
 
     print("For Docker deployment:")
-    print(f"{step_num}. Build frontend: npm run build --prefix ./src/kohaku-hub-ui")
+    print(f"{step_num}. Install frontend deps: pnpm install")
+    step_num += 1
+    print(f"{step_num}. Build frontend: pnpm run build")
     step_num += 1
     print(f"{step_num}. Start services: docker-compose up -d")
     print()

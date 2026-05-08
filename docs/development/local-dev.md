@@ -35,8 +35,7 @@ pip install -e ".[dev]"
 ### 2. Frontend dependencies
 
 ```bash
-npm install --prefix src/kohaku-hub-ui
-npm install --prefix src/kohaku-hub-admin
+pnpm install
 ```
 
 ### 3. Create your local env file
@@ -145,7 +144,7 @@ This writes a local manifest to `hub-meta/dev/demo-seed-manifest.json`.
 Main UI:
 
 ```bash
-npm run dev --prefix src/kohaku-hub-ui
+pnpm run dev:ui
 ```
 
 Or:
@@ -157,7 +156,7 @@ make ui
 Admin UI:
 
 ```bash
-npm run dev --prefix src/kohaku-hub-admin
+pnpm run dev:admin
 ```
 
 Or:

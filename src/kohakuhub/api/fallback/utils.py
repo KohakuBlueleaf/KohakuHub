@@ -1,6 +1,8 @@
 """Utility functions for fallback system."""
 
+import enum
 from typing import Optional
+from urllib.parse import urljoin
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -10,11 +12,41 @@ from kohakuhub.logger import get_logger
 logger = get_logger("FALLBACK_UTILS")
 
 
+class FallbackDecision(enum.Enum):
+    """Per-source decision for one upstream response.
+
+    Drives the repo-grain binding rule (issue #75): once a source confirms
+    the repo exists at this layer (BIND_AND_*), the loop stops and serves
+    the upstream's answer instead of cycling through more sources for the
+    same ``repo_id``. Mixing reads of one repo across sources produces an
+    inconsistent view (info from A, tree from B, file from C all describe
+    a "bert-base-uncased" but they are three different repos).
+    """
+
+    BIND_AND_RESPOND = "bind_and_respond"
+    """Source has the repo and supplies the answer; return upstream's body."""
+
+    BIND_AND_PROPAGATE = "bind_and_propagate"
+    """Source has the repo, upstream's error is the right answer; do not try
+    further sources, forward upstream verbatim. Used for EntryNotFound /
+    RevisionNotFound / "Access to this resource is disabled." — these say
+    *the repo is here, the entry/revision is not* (or the repo is taken
+    down here), and a sibling source's same-named repo would be a
+    different repo."""
+
+    TRY_NEXT_SOURCE = "try_next_source"
+    """Source can't serve; advance the loop. Includes 401/403 (incl
+    GatedRepo — try a source where the user might have access; aggregate
+    layer preserves the GatedRepo signal if every source ends up gated),
+    404+RepoNotFound, bare 401/403/404, 5xx, timeout, network errors."""
+
+
 # Category labels attached to each fallback attempt, used for aggregation.
 # Kept intentionally coarse — finer upstream semantics (e.g. "repo gated"
 # vs "org access revoked") ride in the `message` field pulled from the
 # upstream body, because there is no portable way to distinguish them.
 CATEGORY_AUTH = "auth"  # HTTP 401 — authentication required
+CATEGORY_DISABLED = "disabled"  # X-Error-Message magic-string: HF moderation takedown
 CATEGORY_FORBIDDEN = "forbidden"  # HTTP 403 — explicit deny
 CATEGORY_NOT_FOUND = "not-found"  # HTTP 404 / 410
 CATEGORY_SERVER = "server"  # HTTP 5xx
@@ -124,6 +156,105 @@ def should_retry_source(response: httpx.Response) -> bool:
     return False
 
 
+# ``X-Error-Message`` value HF emits for repos disabled by moderation.
+# `huggingface_hub.utils._http.hf_raise_for_status` keys off this exact
+# string to raise ``DisabledRepoError`` (no ``X-Error-Code`` is set on
+# these responses), so we have to compare equality, not contains.
+_HF_DISABLED_MESSAGE = "Access to this resource is disabled."
+
+
+def classify_upstream(response_or_exc) -> FallbackDecision:
+    """Classify one upstream response (or transport exception) for the loop.
+
+    The matrix below mirrors the priority of
+    ``huggingface_hub.utils._http.hf_raise_for_status`` (X-Error-Code is
+    consulted before the numeric status code), so that a hf_hub client
+    talking *through* KohakuHub's fallback gets the same exception type
+    it would have gotten talking to the upstream directly.
+
+    Empirically anchored against ``https://huggingface.co`` responses
+    captured 2026-04-30 (see #75 for the full table). Two contract shifts
+    that are easy to miss:
+
+    - HF returns ``401`` (no ``X-Error-Code``, message
+      ``"Invalid username or password."``) to *anonymous* callers asking
+      about a non-existent repo (anti-enumeration). The same probe with
+      a valid token returns ``404 + X-Error-Code: RepoNotFound``. Both
+      classify as ``TRY_NEXT_SOURCE`` here.
+    - ``X-Error-Code: GatedRepo`` rides on **either** 401 (anon /
+      bad-token) or 403 (authed but not in the access list). hf_hub
+      checks the header, not the status, so we do too — and we send
+      *both* to ``TRY_NEXT_SOURCE`` because another source might serve
+      this repo without gating. The aggregate layer
+      (`build_aggregate_failure_response`) preserves the GatedRepo
+      category if every source ends up gated.
+
+    Args:
+        response_or_exc: Either an ``httpx.Response`` to classify, or an
+            exception raised while making the request (timeout, network).
+
+    Returns:
+        ``FallbackDecision`` member. Callers should ``match`` on the
+        result and act per the docstrings on each enum value.
+    """
+    if isinstance(response_or_exc, BaseException):
+        # Timeout / connection refused / DNS / etc. — we cannot tell
+        # whether the repo lives here. Move on.
+        return FallbackDecision.TRY_NEXT_SOURCE
+
+    response: httpx.Response = response_or_exc
+
+    # Header lookups are case-insensitive on httpx.Headers; ``.get``
+    # returns ``None`` if absent, which all branches below tolerate.
+    error_code = (
+        response.headers.get("x-error-code") if response.headers else None
+    )
+    error_message = (
+        response.headers.get("x-error-message") if response.headers else None
+    )
+
+    # 2xx (success) and 3xx (redirect — common for HF's canonical-name
+    # redirects and the resolve-cache redirect). Either way, the repo is
+    # at this source and we want to serve.
+    if 200 <= response.status_code < 400:
+        return FallbackDecision.BIND_AND_RESPOND
+
+    # X-Error-Code wins over status, mirroring hf_hub. EntryNotFound and
+    # RevisionNotFound are *positive* signals that the repo is at this
+    # source — only the entry/revision is missing — so we bind and
+    # forward the 404 verbatim. Continuing to the next source here is
+    # exactly the cross-source mixing bug #75 is fixing.
+    if error_code == "EntryNotFound":
+        return FallbackDecision.BIND_AND_PROPAGATE
+    if error_code == "RevisionNotFound":
+        return FallbackDecision.BIND_AND_PROPAGATE
+
+    # GatedRepo, RepoNotFound, and the "disabled" X-Error-Message
+    # marker are *negative* signals from THIS source's perspective —
+    # the source can't serve, but a different source's same-named repo
+    # might. Try the next one; the aggregate layer preserves the
+    # category, so an all-gated / all-disabled chain still surfaces
+    # the right ``X-Error-Code`` / ``X-Error-Message`` to the hf_hub
+    # client and raises ``GatedRepoError`` / ``DisabledRepoError``.
+    #
+    # Note ``disabled`` lives here, not under BIND_AND_PROPAGATE: a
+    # repo that HF disabled (moderation takedown) on one source might
+    # still be available on another KohakuHub mirror that wasn't
+    # asked to disable it. Same logic as gated.
+    if error_code == "GatedRepo":
+        return FallbackDecision.TRY_NEXT_SOURCE
+    if error_code == "RepoNotFound":
+        return FallbackDecision.TRY_NEXT_SOURCE
+    if error_message == _HF_DISABLED_MESSAGE:
+        return FallbackDecision.TRY_NEXT_SOURCE
+
+    # No actionable X-Error-Code: fall back to status semantics. Bare
+    # 401 (HF anti-enum or just broken token), bare 403 (no GatedRepo
+    # marker), bare 404, 5xx, 4xx (other) all mean "this source can't
+    # serve" — TRY_NEXT_SOURCE.
+    return FallbackDecision.TRY_NEXT_SOURCE
+
+
 def strip_xet_response_headers(headers: dict) -> None:
     """Remove Xet-protocol hints from a fallback response's headers in place.
 
@@ -191,11 +322,17 @@ def _categorize_status(
       "Invalid credentials in Authorization header" → genuine auth
       failure). Accepted today for API stability; unused for now.
     """
-    del error_message  # reserved for a later refinement; keep in the signature
     if error_code == "GatedRepo":
         return CATEGORY_AUTH
     if error_code in ("RepoNotFound", "EntryNotFound", "RevisionNotFound"):
         return CATEGORY_NOT_FOUND
+    # Disabled-repo marker (HF moderation takedown). Detected via the
+    # exact X-Error-Message string ``hf_raise_for_status`` keys off.
+    # Has its own category so the aggregate can preserve the marker
+    # all the way back to the hf_hub client (which raises
+    # ``DisabledRepoError``).
+    if error_message == _HF_DISABLED_MESSAGE:
+        return CATEGORY_DISABLED
     if status == 401:
         # No GatedRepo code → HF is telling us the repo doesn't exist
         # (or at best is indistinguishable from missing to an
@@ -324,6 +461,16 @@ def build_aggregate_failure_response(
             "repository. Attach an access token for that source in "
             "KohakuHub account settings."
         )
+    elif CATEGORY_DISABLED in categories:
+        # HF moderation marker — every probed source either disabled
+        # this resource or fell through with a category that ranks
+        # below disabled. Re-emit the exact ``X-Error-Message`` that
+        # ``hf_raise_for_status`` keys off so the hf_hub client raises
+        # ``DisabledRepoError`` exactly as it would talking to HF
+        # directly.
+        status_code = 403
+        error_code = None  # disabled is signaled via X-Error-Message
+        detail = _HF_DISABLED_MESSAGE
     elif CATEGORY_FORBIDDEN in categories:
         status_code = 403
         error_code = None  # HF has no specific code for plain 403.
@@ -388,3 +535,122 @@ def add_source_headers(
         "X-Source-URL": source_url,
         "X-Source-Status": str(response.status_code),
     }
+
+
+async def apply_resolve_head_postprocess(
+    response: httpx.Response,
+    source: dict,
+    *,
+    follow_timeout: float = 30.0,
+    follow_token: Optional[str] = None,
+) -> dict:
+    """Reproduce the production resolve-HEAD response-shaping in one place.
+
+    Two HF-specific quirks the production fallback layer fixes up
+    before forwarding HEAD-on-resolve to the client (originally in
+    ``operations._build_resolve_head_response``):
+
+    1. **Relative ``Location`` → absolute.** HF returns 3xx redirects
+       with paths like ``/api/resolve-cache/...`` that only resolve on
+       the HF origin. Rewriting against ``response.request.url`` keeps
+       clients following the redirect on the upstream rather than
+       bouncing it back to KohakuHub.
+    2. **Extra HEAD on non-LFS 3xx for Content-Length/ETag.** HF's 307
+       on a small file carries the redirect body's Content-Length
+       (~278 bytes), not the file's. Without ``X-Linked-Size`` the
+       hf_hub client trusts that bogus Content-Length and fails its
+       post-download consistency check (observed in
+       ``imgutils.get_wd14_tags`` on ``selected_tags.csv``). A second
+       HEAD against the rewritten Location picks up the real
+       ``content-length`` / ``etag`` / ``x-repo-commit``. LFS files
+       already carry ``X-Linked-Size``; hf_hub prefers it over
+       Content-Length so we skip the follow there.
+
+    Plus the universal post-processing every fallback HEAD response
+    gets: ``strip_xet_response_headers`` to keep hf_hub on the classic
+    LFS path, then ``add_source_headers`` for telemetry.
+
+    Returns a dict of headers caller can then attach to whatever
+    ``Response``-like object they want (production builds a Starlette
+    ``Response``; the chain-tester probe attaches them to a
+    ``ProbeAttempt`` for the timeline UI). Caller decides what to do
+    with the returned dict — this function deliberately stays
+    transport-agnostic so production + simulate can share the exact
+    same logic.
+
+    Args:
+        response: The upstream HEAD response we just received from the
+            fallback source.
+        source: The fallback-source dict (used for ``X-Source*`` headers).
+        follow_timeout: Timeout for the optional non-LFS follow-HEAD.
+            Defaults to 30s; production passes ``FallbackClient.timeout``.
+        follow_token: Bearer token to attach to the follow-HEAD if the
+            target requires auth. Production passes the source's token.
+
+    Returns:
+        New headers dict suitable for forwarding to the client.
+    """
+    resp_headers = dict(response.headers)
+    location = resp_headers.get("location") or resp_headers.get("Location")
+    if location:
+        upstream_url = str(response.request.url)
+        absolute_location = urljoin(upstream_url, location)
+        for k in list(resp_headers.keys()):
+            if k.lower() == "location":
+                resp_headers.pop(k, None)
+        resp_headers["location"] = absolute_location
+
+    if (
+        300 <= response.status_code < 400
+        and location
+        and not any(k.lower() == "x-linked-size" for k in resp_headers)
+    ):
+        try:
+            async with httpx.AsyncClient(timeout=follow_timeout) as hc:
+                # ``identity`` asks HF not to gzip the (empty) HEAD body;
+                # otherwise httpx's auto-decoding strips Content-Length
+                # from the response and we lose the value we came here
+                # to fetch.
+                extra_headers = {"Accept-Encoding": "identity"}
+                if follow_token:
+                    extra_headers["Authorization"] = f"Bearer {follow_token}"
+                follow_resp = await hc.head(
+                    resp_headers["location"],
+                    headers=extra_headers,
+                    follow_redirects=False,
+                )
+            # ``content-length`` and ``etag`` always come from the
+            # follow_resp — the 307 itself only carries the redirect
+            # body length, which is wrong for the file. ``x-repo-commit``
+            # is *additive*: HF's resolve-cache 307 already carries
+            # the right value (PR #21 design) and the resolve-cache
+            # CDN HEAD response often does not include it, so we
+            # only backfill from the follow when the original 307
+            # didn't carry it. This keeps the existing PR #21 path
+            # working unchanged while supporting non-HF mirrors that
+            # emit x-repo-commit-less 307s on resolve.
+            replace_keys = ("content-length", "etag")
+            for k in [
+                k for k in list(resp_headers) if k.lower() in replace_keys
+            ]:
+                resp_headers.pop(k)
+            for k, v in follow_resp.headers.items():
+                if k.lower() in replace_keys:
+                    resp_headers[k] = v
+            has_commit = any(
+                k.lower() == "x-repo-commit" for k in resp_headers
+            )
+            if not has_commit:
+                for k, v in follow_resp.headers.items():
+                    if k.lower() == "x-repo-commit":
+                        resp_headers[k] = v
+        except httpx.HTTPError:
+            # Extra HEAD failed — return what we have; no worse than
+            # the original PR #21 behavior.
+            pass
+
+    strip_xet_response_headers(resp_headers)
+    resp_headers.update(
+        add_source_headers(response, source["name"], source["url"])
+    )
+    return resp_headers

@@ -117,6 +117,24 @@ def build_mock_hf_app() -> FastAPI:
             content=PATTERN_B_BYTES, status_code=200, headers=headers,
         )
 
+    # --- Pattern Missing-Entry: 404 + X-Error-Code: EntryNotFound ---
+    # Used by #75's repo-grain BIND_AND_PROPAGATE end-to-end test: the
+    # repo lives at this source but the file does not, so the fallback
+    # chain must NOT walk past us to a sibling source's same-named repo.
+    @app.api_route(
+        "/{owner}/{name}/resolve/{rev}/pattern_missing.bin",
+        methods=["HEAD", "GET"],
+    )
+    async def pattern_missing(owner: str, name: str, rev: str, request: Request):
+        return Response(
+            status_code=404,
+            headers={
+                "x-error-code": "EntryNotFound",
+                "x-error-message": "Entry not found",
+                "content-type": "text/plain; charset=utf-8",
+            },
+        )
+
     # --- Pattern C: direct 200 ---
     @app.api_route(
         "/{owner}/{name}/resolve/{rev}/pattern_c.md",

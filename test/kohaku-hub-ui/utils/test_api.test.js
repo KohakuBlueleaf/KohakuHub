@@ -579,6 +579,146 @@ describe("frontend API client", () => {
     });
   });
 
+  it("listTreePage returns one page + parses cursor from Link rel=next", async () => {
+    // The repo file list switched to per-page fetches so a directory
+    // with thousands of entries no longer makes the SPA stall on a
+    // single Promise. listTreePage must NOT follow the Link chain —
+    // that's listTreeAll's job — and it must surface the next cursor
+    // so the UI's Next button can advance.
+    const { apiClient, repoAPI } = await loadModules();
+    const getSpy = vi.spyOn(apiClient, "get").mockResolvedValueOnce({
+      data: [{ path: "docs/a.md" }, { path: "docs/b.md" }],
+      headers: {
+        link: '<https://hub.local/api/models/alice/demo/tree/main/docs?recursive=false&limit=50&cursor=page-2>; rel="next"',
+      },
+    });
+
+    const page = await repoAPI.listTreePage(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      "/docs",
+      { recursive: false, limit: 50, cursor: "page-1" },
+    );
+
+    expect(page.entries).toEqual([
+      { path: "docs/a.md" },
+      { path: "docs/b.md" },
+    ]);
+    expect(page.nextCursor).toBe("page-2");
+    expect(page.hasMore).toBe(true);
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    expect(getSpy).toHaveBeenCalledWith(
+      "/api/models/alice/demo/tree/main/docs",
+      { params: { recursive: false, limit: 50, cursor: "page-1" } },
+    );
+  });
+
+  it("listTreePage omits the cursor query param on the first page", async () => {
+    const { apiClient, repoAPI } = await loadModules();
+    const getSpy = vi.spyOn(apiClient, "get").mockResolvedValueOnce({
+      data: [],
+      headers: {},
+    });
+
+    const page = await repoAPI.listTreePage(
+      "dataset",
+      "team",
+      "set",
+      "main",
+      "",
+      { limit: 100 },
+    );
+
+    expect(page.nextCursor).toBeNull();
+    expect(page.hasMore).toBe(false);
+    expect(getSpy).toHaveBeenCalledWith(
+      "/api/datasets/team/set/tree/main",
+      { params: { limit: 100 } },
+    );
+  });
+
+  it("listTreePage forwards the name_prefix filter to the backend", async () => {
+    // Issue #54 — same-level basename filter is pushed straight to the
+    // /tree endpoint as `name_prefix`. The frontend must hand the
+    // verbatim trimmed value through (case-sensitive prefix on the
+    // wire) so LakeFS-side prefix narrowing kicks in.
+    const { apiClient, repoAPI } = await loadModules();
+    const getSpy = vi.spyOn(apiClient, "get").mockResolvedValueOnce({
+      data: [{ path: "docs/config.json" }],
+      headers: {},
+    });
+
+    const page = await repoAPI.listTreePage(
+      "model",
+      "alice",
+      "demo",
+      "main",
+      "/docs",
+      { recursive: false, limit: 50, name_prefix: "conf" },
+    );
+
+    expect(page.entries).toEqual([{ path: "docs/config.json" }]);
+    expect(getSpy).toHaveBeenCalledWith(
+      "/api/models/alice/demo/tree/main/docs",
+      {
+        params: { recursive: false, limit: 50, name_prefix: "conf" },
+      },
+    );
+  });
+
+  it("fileExists resolves true on a 2xx HEAD and false on any non-2xx / error", async () => {
+    const { apiClient, repoAPI } = await loadModules();
+    const headSpy = vi
+      .spyOn(apiClient, "head")
+      .mockResolvedValueOnce({ status: 200 })
+      .mockResolvedValueOnce({ status: 404 })
+      .mockRejectedValueOnce(new Error("network down"));
+
+    const ok = await repoAPI.fileExists(
+      "dataset",
+      "team",
+      "private set",
+      "main",
+      "archives/raw bundle.json",
+    );
+    const missing = await repoAPI.fileExists(
+      "dataset",
+      "team",
+      "set",
+      "main",
+      "missing.json",
+    );
+    const errored = await repoAPI.fileExists(
+      "dataset",
+      "team",
+      "set",
+      "main",
+      "errored.json",
+    );
+
+    expect(ok).toBe(true);
+    expect(missing).toBe(false);
+    expect(errored).toBe(false);
+    expect(headSpy).toHaveBeenCalledTimes(3);
+    // Path segments must be percent-encoded individually so spaces
+    // and Unicode survive the wire — the resolve handler keys off the
+    // post-decoding path and would otherwise 404 on every space.
+    expect(headSpy.mock.calls[0][0]).toBe(
+      "/api/datasets/team/private set/resolve/main/archives/raw%20bundle.json",
+    );
+  });
+
+  it("fileExists short-circuits to false when called with an empty path", async () => {
+    const { apiClient, repoAPI } = await loadModules();
+    const headSpy = vi.spyOn(apiClient, "head");
+    expect(
+      await repoAPI.fileExists("dataset", "team", "set", "main", ""),
+    ).toBe(false);
+    expect(headSpy).not.toHaveBeenCalled();
+  });
+
   it("builds NDJSON commits for ignored, regular, LFS, and editor flows", async () => {
     const originalFileReader = globalThis.FileReader;
     globalThis.FileReader = class {

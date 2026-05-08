@@ -284,19 +284,29 @@ async def test_preupload_and_revision_cover_validation_quota_and_resolution_erro
 
     repo.private = True
 
-    def _raise_unauthorized(repo_row, user):
-        raise HTTPException(status_code=401, detail="auth required")
+    # Privacy translation now lives in the global handler in main.py
+    # (see #76). The unit's responsibility is to propagate
+    # ``RepoReadDeniedError`` unchanged; the handler converts it to
+    # ``404 + X-Error-Code: RepoNotFound`` at request time. Integration
+    # coverage for the on-the-wire shape lives in
+    # ``test_repo_read_denial_hf_alignment.py``.
+    from kohakuhub.auth.permissions import RepoReadDeniedError
 
-    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_unauthorized)
-    hidden_private_revision = await files_api.get_revision.__wrapped__(
-        files_api.RepoType.model,
-        "alice",
-        "demo",
-        "main",
-        request=None,
-        user=None,
-    )
-    assert hidden_private_revision.status_code == 404
+    def _raise_read_denied(repo_row, user):
+        raise RepoReadDeniedError(
+            SimpleNamespace(full_id="alice/demo", repo_type="model")
+        )
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_read_denied)
+    with pytest.raises(RepoReadDeniedError):
+        await files_api.get_revision.__wrapped__(
+            files_api.RepoType.model,
+            "alice",
+            "demo",
+            "main",
+            request=None,
+            user=None,
+        )
 
     def _raise_conflict(repo_row, user):
         raise HTTPException(status_code=409, detail="unexpected")
@@ -348,14 +358,20 @@ async def test_metadata_and_resolve_routes_cover_storage_backend_fallback_and_xe
     hidden_repo = SimpleNamespace(private=True)
     monkeypatch.setattr(files_api, "get_repository", lambda repo_type, namespace, name: hidden_repo)
 
-    def _raise_forbidden(repo_row, user):
-        raise HTTPException(status_code=403, detail="forbidden")
+    # Privacy translation lives in main.py's global handler post-#76;
+    # the unit just propagates ``RepoReadDeniedError`` from the helper.
+    # Integration coverage for the on-the-wire shape is in
+    # ``test_repo_read_denial_hf_alignment.py``.
+    from kohakuhub.auth.permissions import RepoReadDeniedError
 
-    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_forbidden)
-    with pytest.raises(HTTPException) as hidden_private_repo:
+    def _raise_read_denied(repo_row, user):
+        raise RepoReadDeniedError(
+            SimpleNamespace(full_id="alice/demo", repo_type="model")
+        )
+
+    monkeypatch.setattr(files_api, "check_repo_read_permission", _raise_read_denied)
+    with pytest.raises(RepoReadDeniedError):
         await files_api._get_file_metadata("model", "alice", "demo", "main", "file.txt", None)
-    assert hidden_private_repo.value.status_code == 404
-    assert hidden_private_repo.value.headers["X-Error-Code"] == files_api.HFErrorCode.REPO_NOT_FOUND
 
     def _raise_conflict(repo_row, user):
         raise HTTPException(status_code=409, detail="unexpected")

@@ -8,7 +8,7 @@ from kohakuhub.db import DailyRepoStats, Repository, User
 from kohakuhub.db_operations import get_repository
 from kohakuhub.logger import get_logger
 from kohakuhub.auth.dependencies import get_optional_user
-from kohakuhub.auth.permissions import check_repo_read_permission
+from kohakuhub.auth.permissions import RepoReadDeniedError, check_repo_read_permission
 from kohakuhub.api.utils.downloads import ensure_stats_up_to_date
 from kohakuhub.api.repo.utils.hf import hf_repo_not_found
 
@@ -173,10 +173,13 @@ async def get_trending_repositories(
         if not repo:
             continue
 
-        # Check read permission (skip private repos user can't access)
+        # Check read permission (skip private repos user can't access).
+        # Catch both shapes: ``RepoReadDeniedError`` (the new privacy-
+        # preserving raise from ``check_repo_read_permission`` post-#76)
+        # and ``HTTPException`` for any legacy paths still raising that.
         try:
             check_repo_read_permission(repo, user)
-        except HTTPException:
+        except (HTTPException, RepoReadDeniedError):
             continue
 
         trending.append(

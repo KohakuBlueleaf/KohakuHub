@@ -51,6 +51,9 @@ export default defineConfig({
       include: [
         "src/App.vue",
         "src/components/AdminLayout.vue",
+        "src/pages/credentials.vue",
+        "src/pages/fallback-sources.vue",
+        "src/pages/health.vue",
         "src/pages/login.vue",
         "src/stores/admin.js",
         "src/stores/theme.js",

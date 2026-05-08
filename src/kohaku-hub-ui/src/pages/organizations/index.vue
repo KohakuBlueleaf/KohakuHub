@@ -123,7 +123,7 @@
 <script setup>
 import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
-import { orgAPI, repoAPI, settingsAPI } from "@/utils/api";
+import { orgAPI, settingsAPI } from "@/utils/api";
 import { ElMessage } from "element-plus";
 
 const router = useRouter();
@@ -174,14 +174,17 @@ async function loadOrganizations() {
       const { data } = await settingsAPI.whoamiV2();
       const userOrgs = data.orgs || [];
 
-      // Fetch detailed info for each organization
+      // Fetch detailed info for each organization. The org info endpoint
+      // now returns `repo_count` directly (issue #63), so we no longer
+      // fan out to listRepos(limit=1000) × 3 types per card just to read
+      // `.length` — that pattern triggered hundreds of LakeFS round-trips
+      // per org card on the backend.
       const orgsWithDetails = await Promise.all(
         userOrgs.map(async (org) => {
           try {
-            const [orgInfo, members, repos] = await Promise.all([
+            const [orgInfo, members] = await Promise.all([
               orgAPI.get(org.name),
               orgAPI.listMembers(org.name),
-              fetchOrgRepoCount(org.name),
             ]);
 
             return {
@@ -189,7 +192,7 @@ async function loadOrganizations() {
               description: orgInfo.data.description,
               role: org.roleInOrg || org.role,
               memberCount: members.data.members?.length || 0,
-              repoCount: repos,
+              repoCount: orgInfo.data.repo_count?.total ?? 0,
               created_at: orgInfo.data.created_at,
             };
           } catch (err) {
@@ -216,23 +219,6 @@ async function loadOrganizations() {
     ElMessage.error("Failed to load organizations");
   } finally {
     loading.value = false;
-  }
-}
-
-async function fetchOrgRepoCount(orgName) {
-  try {
-    const [models, datasets, spaces] = await Promise.all([
-      repoAPI.listRepos("model", { author: orgName, limit: 1000 }),
-      repoAPI.listRepos("dataset", { author: orgName, limit: 1000 }),
-      repoAPI.listRepos("space", { author: orgName, limit: 1000 }),
-    ]);
-    return (
-      (models.data?.length || 0) +
-      (datasets.data?.length || 0) +
-      (spaces.data?.length || 0)
-    );
-  } catch (err) {
-    return 0;
   }
 }
 

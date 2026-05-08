@@ -90,6 +90,44 @@ class FileSeed:
 
 
 @dataclass(frozen=True)
+class DeletedFileSeed:
+    """Mark a path for deletion in a commit.
+
+    Emits a `deletedFile` NDJSON op against the commit endpoint. Used by
+    fixtures that want to exercise repos with churn (add/delete/restore
+    cycles) instead of monotonically-growing histories.
+    """
+
+    path: str
+
+
+@dataclass(frozen=True)
+class DeletedFolderSeed:
+    """Mark a folder (recursive) for deletion in a commit.
+
+    Emits a `deletedFolder` NDJSON op. Path is the folder prefix without
+    a trailing slash; the commit endpoint normalises it. Used to stress
+    repos with prefix-level changes that touch many descendants at once.
+    """
+
+    path: str
+
+
+@dataclass(frozen=True)
+class CopyFileSeed:
+    """Copy a file from one path to another within the repo.
+
+    Emits a `copyFile` NDJSON op with `srcPath` / `srcRevision`. The
+    source path must exist on `srcRevision` (defaulting to `main`) at
+    commit time, otherwise LakeFS rejects the link.
+    """
+
+    dest_path: str
+    src_path: str
+    src_revision: str = "main"
+
+
+@dataclass(frozen=True)
 class RepoSeed:
     actor: str
     repo_type: str
@@ -103,7 +141,9 @@ class RepoSeed:
     download_sessions: int = 0
 
 
-SeedFile = tuple[str, bytes] | FileSeed
+SeedFile = (
+    tuple[str, bytes] | FileSeed | DeletedFileSeed | DeletedFolderSeed | CopyFileSeed
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +152,37 @@ class RemoteAsset:
     url: str
     sha256: str
     source_url: str
+
+
+@dataclass(frozen=True)
+class SeedKeypair:
+    """A real ed25519 keypair shipped with the seed.
+
+    The private half is included so manual local testing (e.g. `git push`
+    over SSH) can sign with the matching key without having to generate
+    one. These are explicitly *not* production credentials — they only
+    ever live in the dev seed and the test baseline.
+    """
+
+    public_key: str
+    private_key: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class SeedSshKeyPlant:
+    user: str
+    title: str
+    keypair: SeedKeypair
+    last_used_days_ago: int | None  # None = never used
+
+
+@dataclass(frozen=True)
+class SeedTokenPlant:
+    user: str
+    name: str
+    plaintext: str
+    last_used_days_ago: int | None  # None = never used
 
 
 SEED_ASSET_CACHE_DIR = ROOT_DIR / "hub-meta" / "cache" / "seed-assets"
@@ -416,6 +487,90 @@ ORGANIZATIONS = ORGANIZATIONS + (
 )
 
 
+# PR #77 strict-consistency demo orgs. Each one's name is identical to a
+# real HuggingFace org/user, so any local repo created under it
+# collides on path with HF and exercises the namespace-priority +
+# X-Error-Code gating contracts. mai_lin owns each as super-admin to
+# keep the management surface simple — see ``build_pr77_demo_repo_seeds``
+# for the corresponding repos.
+PR77_DEMO_ORGS_MEMBERS: tuple[tuple[str, str], ...] = (
+    ("mai_lin", "super-admin"),
+)
+ORGANIZATIONS = ORGANIZATIONS + (
+    OrganizationSeed(
+        name="openai-community",
+        description=(
+            "PR #77 demo: locally collides with the real HuggingFace org of "
+            "the same name. Houses a structurally-different gpt2 repo to "
+            "exercise the namespace-priority + EntryNotFound short-circuit."
+        ),
+        bio=(
+            "Local-only demo org. Browse the gpt2 repo to see the README "
+            "explaining the strict-consistency contract this PR locks down."
+        ),
+        website="",
+        social_media={},
+        avatar_bg="#1f2937",
+        avatar_accent="#fbbf24",
+        members=PR77_DEMO_ORGS_MEMBERS,
+    ),
+    OrganizationSeed(
+        name="bigscience",
+        description=(
+            "PR #77 demo: locally collides with the HF bigscience org. "
+            "Houses a tiny bloom repo (sister case to openai-community/gpt2)."
+        ),
+        bio=(
+            "Local-only demo org for namespace-collision tests. The bloom "
+            "repo here is README + a small text note — enough to prove the "
+            "rule isn't tied to one specific repo path."
+        ),
+        website="",
+        social_media={},
+        avatar_bg="#7c2d12",
+        avatar_accent="#fed7aa",
+        members=PR77_DEMO_ORGS_MEMBERS,
+    ),
+    OrganizationSeed(
+        name="meta-llama",
+        description=(
+            "PR #77 demo: locally collides with the HF meta-llama org. "
+            "Llama-2-7b on HF is GATED; the local-namespace-ownership "
+            "contract holds even against gated upstreams."
+        ),
+        bio=(
+            "Local-only demo org. The Llama-2-7b repo here demonstrates "
+            "that strict consistency holds even when the same path on HF "
+            "is gated — the gated 401 never reaches the client when local "
+            "owns the namespace."
+        ),
+        website="",
+        social_media={},
+        avatar_bg="#312e81",
+        avatar_accent="#a5b4fc",
+        members=PR77_DEMO_ORGS_MEMBERS,
+    ),
+    OrganizationSeed(
+        name="narugo1992-pr77-demo",
+        description=(
+            "PR #77 demo: pure-fallback path. Repos referenced from the "
+            "`guide` README don't exist locally; this org just hosts the "
+            "guide itself."
+        ),
+        bio=(
+            "Pure-fallback walk-through: this README documents how the "
+            "fallback chain serves HF-only repos (success, 404, gated) "
+            "when local has no collision."
+        ),
+        website="",
+        social_media={},
+        avatar_bg="#0f766e",
+        avatar_accent="#ccfbf1",
+        members=PR77_DEMO_ORGS_MEMBERS,
+    ),
+)
+
+
 SAFEBOORU_IMAGE_ASSETS: tuple[RemoteAsset, ...] = (
     RemoteAsset(
         cache_name="safebooru-canal-reflections.png",
@@ -495,10 +650,163 @@ SAFEBOORU_IMAGE_ASSETS: tuple[RemoteAsset, ...] = (
     ),
 )
 
+# Real Danbooru fetches that back the indexed-tar showcase repo. Four
+# Arknights posts at each of the four Danbooru ratings (g/s/q/e per the
+# ratings wiki), plus eight mixed-IP posts spanning the same rating
+# spectrum so the gallery exercises rating diversity inside one tar.
+DANBOORU_INDEXED_TAR_ASSETS: tuple[RemoteAsset, ...] = (
+    RemoteAsset(
+        cache_name="danbooru-arknights-g-4670495.jpg",
+        url="https://cdn.donmai.us/original/ec/3c/ec3c916ed93030b519ddac467e9cf1ca.jpg",
+        sha256="b5af1d9cf48974acdee99340ad5ad60e428e4f27f6c5fb96eae8468a44af96b8",
+        source_url="https://danbooru.donmai.us/posts/4670495",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-g-5466880.jpg",
+        url="https://cdn.donmai.us/original/b3/a9/b3a9190677c39031048cd271795696de.jpg",
+        sha256="8c4d116cb1e0a19974c3fe3539b9e55c2ff2e7aca0c569a7845f522ac25b1d24",
+        source_url="https://danbooru.donmai.us/posts/5466880",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-g-9106605.jpg",
+        url="https://cdn.donmai.us/original/c1/bb/c1bb22e771347c4467f43725f2ae62c4.jpg",
+        sha256="4aa76923de04b8a976fe77e89e3880e0019571d5da16952b98765285cba773f1",
+        source_url="https://danbooru.donmai.us/posts/9106605",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-g-9457445.jpg",
+        url="https://cdn.donmai.us/original/cd/a4/cda466c2d71c3e252e34b73377ace0e1.jpg",
+        sha256="4b8dd816cbb6d611e696817b4a18025755f18d8abed83e2bfe697cf13280f138",
+        source_url="https://danbooru.donmai.us/posts/9457445",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-s-7576297.jpg",
+        url="https://cdn.donmai.us/original/87/b7/87b7ab2aa407403a86761bbcceab1a12.jpg",
+        sha256="91b636a5974629b889a007ad91f0413d3fa5b4873df9c26dce00a518edaeb918",
+        source_url="https://danbooru.donmai.us/posts/7576297",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-s-8318664.jpg",
+        url="https://cdn.donmai.us/original/06/ef/06ef3487c9cb6d3391eef61cdaf5c1f9.jpg",
+        sha256="cdf065647dac294d9981c9c99cec04d7761ea41fd7fceb41708c082855f8b6f1",
+        source_url="https://danbooru.donmai.us/posts/8318664",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-s-8422542.jpg",
+        url="https://cdn.donmai.us/original/71/3c/713cbd309fff56c0d1203ff92531dd70.jpg",
+        sha256="a41c4a62761aea3e73dd662afee302c13eff7b8c680c2a14e75107af6adc9811",
+        source_url="https://danbooru.donmai.us/posts/8422542",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-s-9280691.jpg",
+        url="https://cdn.donmai.us/original/b8/8a/b88a38f12180704ffcc97cddac338ae1.jpg",
+        sha256="b4da597358b5a9930d1b893e7388fc9366ba527bd681f58c51af0b231aecf023",
+        source_url="https://danbooru.donmai.us/posts/9280691",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-q-3850730.jpg",
+        url="https://cdn.donmai.us/original/3e/ce/3eced4d3bbfaa70b2fccfdc9d64e81ee.jpg",
+        sha256="c4f246b6916dfe2b9ed7fdce50523b4e5e4627144125e9da525a0f8f137c5694",
+        source_url="https://danbooru.donmai.us/posts/3850730",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-q-3898266.jpg",
+        url="https://cdn.donmai.us/original/c5/c0/c5c04d5831e27533569ddd0cb105a6dd.jpg",
+        sha256="8a1c89f96506c70ebc5f413c591724ce61651952c0c6409054d77facf60cb7da",
+        source_url="https://danbooru.donmai.us/posts/3898266",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-q-5296250.jpg",
+        url="https://cdn.donmai.us/original/dc/bf/dcbf73bca941b7f9e2ac88dbbb1f8897.jpg",
+        sha256="403615e52d908da36fc3e196e66112fca7abc9924d14d41d418729d15ae986b1",
+        source_url="https://danbooru.donmai.us/posts/5296250",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-q-6495120.jpg",
+        url="https://cdn.donmai.us/original/9b/b3/9bb33d31cc5cc744786aaa3892bc7da7.jpg",
+        sha256="caabedf2c2f6a2641285796f4e4012b0663e08ffccc8ee8d3236c34162dd882c",
+        source_url="https://danbooru.donmai.us/posts/6495120",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-e-3856111.jpg",
+        url="https://cdn.donmai.us/original/ec/5e/ec5e0c5a84f81309713290499d4a2965.jpg",
+        sha256="b7fb84d6629d1793ffa39da807e0b64ac1ad760ae21b5d31f70aae452d7c8538",
+        source_url="https://danbooru.donmai.us/posts/3856111",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-e-4151927.jpg",
+        url="https://cdn.donmai.us/original/d7/d3/d7d3f29d336015c910e856861d205bb3.jpg",
+        sha256="9cc422fcb224a682c9165204966a450b031e98b6df2e22459050eb39e8e6b760",
+        source_url="https://danbooru.donmai.us/posts/4151927",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-e-6143658.jpg",
+        url="https://cdn.donmai.us/original/2a/3c/2a3ca65af1528c38022e60f145354c4b.jpg",
+        sha256="ad1e41e90e2590002fbec384a2ae5327dd0a70b118bfefa3af3bee69acbf5fd7",
+        source_url="https://danbooru.donmai.us/posts/6143658",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-arknights-e-10784078.jpg",
+        url="https://cdn.donmai.us/original/3b/cb/3bcbce16bc507306821abbe85269127b.jpg",
+        sha256="9b720042fd63c1e5558c939f8eb065fe0ae6e1769d0f41c5af5427ff2fe95d64",
+        source_url="https://danbooru.donmai.us/posts/10784078",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-genshin-impact-g-7293585.png",
+        url="https://cdn.donmai.us/original/01/8f/018f785ee3789953094e0a4feb65ed27.png",
+        sha256="e499bb38d915394641452349ad310b70b2063fcdc03c9b783aa0b40ed8f3a9ce",
+        source_url="https://danbooru.donmai.us/posts/7293585",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-genshin-impact-g-8524789.jpg",
+        url="https://cdn.donmai.us/original/b8/92/b892a8b367606b16b57d6e3305208f14.jpg",
+        sha256="73af216e63dd8470edaf6e30b7a1a3f3b317fd4cd8509709204c916d1a02425e",
+        source_url="https://danbooru.donmai.us/posts/8524789",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-blue-archive-s-8990007.jpg",
+        url="https://cdn.donmai.us/original/7e/05/7e05e05f71749f9c5a8d775364fb0668.jpg",
+        sha256="0935cfdbd902142a8f97453ebf8b20cdee9a8426cfed324969461f7ce9e55325",
+        source_url="https://danbooru.donmai.us/posts/8990007",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-blue-archive-s-9286565.jpg",
+        url="https://cdn.donmai.us/original/13/f8/13f8f67b5c1a37ad50523b698f82c252.jpg",
+        sha256="57544143adee46fd0a5151225b7982267ccd4af21c73fa0a7ca55b77fb939af6",
+        source_url="https://danbooru.donmai.us/posts/9286565",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-hololive-q-3648775.png",
+        url="https://cdn.donmai.us/original/72/ea/72ea404ecf8aa2c0a8414d612e3e30f1.png",
+        sha256="251ddab56bbe3f05b7c794b84e16e59923a8a43a95efdeba436667794e61aa07",
+        source_url="https://danbooru.donmai.us/posts/3648775",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-hololive-q-6336205.jpg",
+        url="https://cdn.donmai.us/original/a0/c8/a0c844e0f8e49754cedd7affd8d0a6c2.jpg",
+        sha256="abcdb17e3f02908dc6bb593e138d45aca50870190742bb54fbd2e5e8a26d9071",
+        source_url="https://danbooru.donmai.us/posts/6336205",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-original-e-11239919.jpg",
+        url="https://cdn.donmai.us/original/db/75/db75c5b50d1a98a2d7a1505e0140fc14.jpg",
+        sha256="8b5d109e07a8fc722f0086c58382bd54cd3b3c864cea6d97abc8be4c6b193693",
+        source_url="https://danbooru.donmai.us/posts/11239919",
+    ),
+    RemoteAsset(
+        cache_name="danbooru-original-e-11240082.jpg",
+        url="https://cdn.donmai.us/original/0a/25/0a259c798419e77e7d7b06d641985f0c.jpg",
+        sha256="fd8b769867dcd4117cb6a8af392322ffd1d391380891ac9c98f0998c487b5b81",
+        source_url="https://danbooru.donmai.us/posts/11240082",
+    ),
+)
+
+
 REMOTE_MEDIA_ASSETS: dict[str, RemoteAsset] = {
     asset.cache_name: asset
     for asset in (
         *SAFEBOORU_IMAGE_ASSETS,
+        *DANBOORU_INDEXED_TAR_ASSETS,
         RemoteAsset(
             cache_name="voices-speech.wav",
             url=(
@@ -792,6 +1100,59 @@ def make_indexed_tar_bundle(
 
     index_bytes = json_bytes(index_info)
     return tar_bytes, index_bytes
+
+
+def make_sine_wav_bytes(
+    label: str,
+    *,
+    duration_seconds: float = 0.4,
+    sample_rate: int = 8000,
+) -> bytes:
+    """Tiny mono PCM WAV with a deterministic sine pitch derived from the
+    label. Avoids pulling in scipy/wave round-trips — the RIFF header is
+    written by hand."""
+    digest = hashlib.sha256(label.encode("utf-8")).digest()
+    base_freq = 220.0 + (digest[0] % 64) * 4
+    sample_count = int(duration_seconds * sample_rate)
+    t = np.arange(sample_count, dtype=np.float32) / sample_rate
+    samples = (np.sin(2 * np.pi * base_freq * t) * 0.4 * 32767).astype(np.int16)
+
+    pcm = samples.tobytes()
+    byte_rate = sample_rate * 2
+    block_align = 2
+    riff = b"RIFF"
+    chunk_size = 36 + len(pcm)
+    fmt_chunk = (
+        b"fmt \x10\x00\x00\x00"
+        + b"\x01\x00"  # PCM
+        + b"\x01\x00"  # mono
+        + sample_rate.to_bytes(4, "little")
+        + byte_rate.to_bytes(4, "little")
+        + block_align.to_bytes(2, "little")
+        + b"\x10\x00"  # 16-bit
+    )
+    data_chunk = b"data" + len(pcm).to_bytes(4, "little") + pcm
+    return riff + chunk_size.to_bytes(4, "little") + b"WAVE" + fmt_chunk + data_chunk
+
+
+def make_indexed_tar_with_overrides(
+    label: str,
+    files: tuple[tuple[str, bytes], ...],
+    *,
+    overrides: dict | None = None,
+) -> tuple[bytes, bytes]:
+    """Same as `make_indexed_tar_bundle`, but post-processes the index
+    JSON before serialization. Used to seed the "stale" (hash_lfs forced
+    to a wrong value) and "no-hash" (hash + hash_lfs stripped) showcase
+    cases without having to handcraft the JSON shape."""
+    tar_bytes, index_bytes = make_indexed_tar_bundle(label, files)
+    if overrides is None:
+        return tar_bytes, index_bytes
+
+    payload = json.loads(index_bytes.decode("utf-8"))
+    for key, value in overrides.items():
+        payload[key] = value
+    return tar_bytes, json_bytes(payload)
 
 
 def make_deep_tree_files(label: str) -> tuple[SeedFile, ...]:
@@ -2385,6 +2746,124 @@ def build_open_media_core_repo_seeds() -> tuple[RepoSeed, ...]:
             download_path="model-00001-of-00003.safetensors",
             download_sessions=4,
         ),
+        # Private mirror of the multimodal benchmark — exercises range-read
+        # previews (parquet + hfutils.index tar + safetensors) on a repo
+        # that only the logged-in owner can resolve. Regression coverage
+        # for the 404-on-missing-session bug seen on private datasets in
+        # production.
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="mai_lin",
+            name="private-range-preview-bench",
+            private=True,
+            commits=(
+                CommitSeed(
+                    summary="Seed private range-preview fixtures",
+                    description=(
+                        "One real parquet shard and one hfutils.index tar pair "
+                        "so the SPA's range-read preview paths can be exercised "
+                        "against a repo that requires the session cookie."
+                    ),
+                    files=(
+                        (
+                            "README.md",
+                            text_bytes(
+                                """
+                                ---
+                                license: cc-by-4.0
+                                pretty_name: Private Range-Preview Bench
+                                tags:
+                                  - parquet
+                                  - indexed-tar
+                                  - private
+                                ---
+
+                                # private-range-preview-bench
+
+                                Private dataset used to verify that the SPA's
+                                client-side parquet, indexed-tar, and tar-thumbnail
+                                preview paths still resolve when the only thing
+                                identifying the user is the same-origin session
+                                cookie. Owner-only by design.
+                                """
+                            ),
+                        ),
+                        seed_file(
+                            "parquet/sample-00000-of-00001.parquet",
+                            lambda: make_parquet_bytes(
+                                "private-range-preview", row_count=512, payload_size=512
+                            ),
+                        ),
+                        seed_file(
+                            "archives/raw-bundle-0000.tar",
+                            lambda: archive_bundle()[0],
+                        ),
+                        seed_file(
+                            "archives/raw-bundle-0000.json",
+                            lambda: archive_bundle()[1],
+                        ),
+                    ),
+                ),
+            ),
+            download_path="parquet/sample-00000-of-00001.parquet",
+            download_sessions=0,
+        ),
+        # Private safetensors checkpoint — same regression coverage but
+        # for the model side. One shard + index keeps the seed cheap;
+        # the standalone-blob safetensors preview still has a real header
+        # to parse over a Range read.
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="mai_lin",
+            name="private-vision-checkpoint",
+            private=True,
+            commits=(
+                CommitSeed(
+                    summary="Seed private safetensors shard",
+                    description=(
+                        "One sharded safetensors file plus its index manifest, "
+                        "private, so the safetensors header preview can be "
+                        "exercised against a session-gated /resolve/ path."
+                    ),
+                    files=(
+                        (
+                            "README.md",
+                            text_bytes(
+                                """
+                                ---
+                                license: apache-2.0
+                                library_name: transformers
+                                tags:
+                                  - private
+                                  - safetensors
+                                ---
+
+                                # private-vision-checkpoint
+
+                                Private mirror of one shard from the public
+                                vision-language-assistant-3b bundle. Exists so
+                                the SPA's safetensors header preview can be
+                                verified against a private repo where the only
+                                identity hint is the session cookie.
+                                """
+                            ),
+                        ),
+                        seed_file(
+                            "model.safetensors.index.json",
+                            lambda: model_bundle()["model.safetensors.index.json"],
+                        ),
+                        seed_file(
+                            "model-00001-of-00003.safetensors",
+                            lambda: model_bundle()["model-00001-of-00003.safetensors"],
+                        ),
+                    ),
+                ),
+            ),
+            download_path="model-00001-of-00003.safetensors",
+            download_sessions=0,
+        ),
         RepoSeed(
             actor="mai_lin",
             repo_type="dataset",
@@ -2425,6 +2904,449 @@ def build_open_media_core_repo_seeds() -> tuple[RepoSeed, ...]:
                 "entry-06-08-06.json"
             ),
             download_sessions=2,
+        ),
+    )
+
+
+def build_indexed_tar_showcase_repo_seeds() -> tuple[RepoSeed, ...]:
+    """Showcase repo for the read-only indexed-tar browser.
+
+    Each tar+sidecar pair lives in its own subfolder so the sibling
+    detection (file-preview.js → hasIndexSibling) lights the icon
+    only on the .tar in that folder. The five subfolders cover, in
+    order: rich nested navigation, pagination scale, hash-mismatch
+    warning, no-hash notice, and inner safetensors / parquet
+    metadata reuse from inside the archive.
+    """
+
+    # Per-rating Arknights buckets + mixed-IP supplement so the
+    # in-archive listing exercises each Danbooru rating (g/s/q/e) and
+    # the breadcrumb navigates a real-looking 24-image gallery.
+    arknights_by_rating = {
+        "g": (
+            "danbooru-arknights-g-4670495.jpg",
+            "danbooru-arknights-g-5466880.jpg",
+            "danbooru-arknights-g-9106605.jpg",
+            "danbooru-arknights-g-9457445.jpg",
+        ),
+        "s": (
+            "danbooru-arknights-s-7576297.jpg",
+            "danbooru-arknights-s-8318664.jpg",
+            "danbooru-arknights-s-8422542.jpg",
+            "danbooru-arknights-s-9280691.jpg",
+        ),
+        "q": (
+            "danbooru-arknights-q-3850730.jpg",
+            "danbooru-arknights-q-3898266.jpg",
+            "danbooru-arknights-q-5296250.jpg",
+            "danbooru-arknights-q-6495120.jpg",
+        ),
+        "e": (
+            "danbooru-arknights-e-3856111.jpg",
+            "danbooru-arknights-e-4151927.jpg",
+            "danbooru-arknights-e-6143658.jpg",
+            "danbooru-arknights-e-10784078.jpg",
+        ),
+    }
+    misc_ip_assets = (
+        ("genshin-impact", "g", "danbooru-genshin-impact-g-7293585.png"),
+        ("genshin-impact", "g", "danbooru-genshin-impact-g-8524789.jpg"),
+        ("blue-archive", "s", "danbooru-blue-archive-s-8990007.jpg"),
+        ("blue-archive", "s", "danbooru-blue-archive-s-9286565.jpg"),
+        ("hololive", "q", "danbooru-hololive-q-3648775.png"),
+        ("hololive", "q", "danbooru-hololive-q-6336205.jpg"),
+        ("original", "e", "danbooru-original-e-11239919.jpg"),
+        ("original", "e", "danbooru-original-e-11240082.jpg"),
+    )
+
+    gallery_members_list: list[SeedFile] = [
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Indexed tar gallery
+
+                Mixed-content archive used by the local dev browser to
+                exercise breadcrumb navigation and per-member preview
+                routing (image / audio / text / markdown). The image
+                tree mirrors Danbooru's four ratings (g/s/q/e per the
+                howto:rate wiki) for Arknights, plus a mixed-IP
+                supplement at the same rating spread.
+                """
+            ),
+        ),
+        ("text/notes.txt", text_bytes("alpha\nbeta\ngamma\n")),
+        (
+            "text/log.csv",
+            csv_bytes(
+                (
+                    ("timestamp", "level", "message"),
+                    ("2026-04-27T08:00:00Z", "INFO", "browser opened"),
+                    ("2026-04-27T08:00:01Z", "INFO", "ranged read 1"),
+                    ("2026-04-27T08:00:02Z", "INFO", "ranged read 2"),
+                )
+            ),
+        ),
+        (
+            "text/config.toml",
+            text_bytes(
+                """
+                [browser]
+                page_size = 100
+                view = "list"
+
+                [browser.icons]
+                tar = "carbon-archive"
+                """
+            ),
+        ),
+        (
+            "docs/guide.md",
+            text_bytes(
+                """
+                # Member preview guide
+
+                Click any leaf node in the listing to open a member.
+                Use the **Back** button to return to the listing
+                without losing your in-tar path stack.
+                """
+            ),
+        ),
+        (
+            "docs/examples/sample.json",
+            json_bytes(
+                {
+                    "id": "sample-001",
+                    "labels": ["alpha", "beta", "gamma"],
+                    "score": 0.42,
+                }
+            ),
+        ),
+        (
+            "docs/examples/schema.yaml",
+            text_bytes(
+                """
+                version: 1
+                fields:
+                  - name: id
+                    type: string
+                  - name: score
+                    type: float32
+                """
+            ),
+        ),
+        (
+            "audio/bell.wav",
+            make_sine_wav_bytes("indexed-tar-bell"),
+        ),
+        (
+            "audio/notes/intro.md",
+            text_bytes("# Audio bundle\n\nA short sine tone for preview testing.\n"),
+        ),
+    ]
+    for rating, asset_names in arknights_by_rating.items():
+        for asset_name in asset_names:
+            ext = asset_name.rsplit(".", 1)[1]
+            post_id = asset_name.rsplit("-", 1)[1].rsplit(".", 1)[0]
+            path = f"images/arknights/{rating}/{post_id}.{ext}"
+            gallery_members_list.append(
+                seed_file(path, lambda n=asset_name: remote_asset_bytes(n))
+            )
+    for ip_slug, rating, asset_name in misc_ip_assets:
+        ext = asset_name.rsplit(".", 1)[1]
+        post_id = asset_name.rsplit("-", 1)[1].rsplit(".", 1)[0]
+        path = f"images/misc/{ip_slug}/{rating}/{post_id}.{ext}"
+        gallery_members_list.append(
+            seed_file(path, lambda n=asset_name: remote_asset_bytes(n))
+        )
+    # Materialize once so the tar is built deterministically and the
+    # callable closures do not have to be re-invoked downstream.
+    gallery_members: tuple[tuple[str, bytes], ...] = tuple(
+        materialize_seed_file(entry) for entry in gallery_members_list
+    )
+
+    # Tar 1b — flat-images sibling. All 24 Danbooru images directly at
+    # the tar root (no subfolders). Lives alongside bundle.tar in
+    # archives/gallery/ so a single folder visit produces a long
+    # vertical list of thumbnails — the right shape for eyeballing
+    # the lazy-loading + concurrency-pool behaviour while scrolling.
+    flat_assets: list[str] = []
+    for asset_names in arknights_by_rating.values():
+        flat_assets.extend(asset_names)
+    flat_assets.extend(name for _, _, name in misc_ip_assets)
+    flat_members_list: list[SeedFile] = [
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Flat-image gallery
+
+                Sibling of `bundle.tar` in the same archives/gallery/
+                folder. Holds all 24 Danbooru showcase images at the
+                tar root with no subfolders, so the full set is
+                visible in a single scrollable listing — handy for
+                checking that the in-listing thumbnail lazy-load
+                only kicks in for rows currently on screen.
+                """
+            ),
+        ),
+    ]
+    for asset_name in flat_assets:
+        flat_members_list.append(
+            seed_file(asset_name, lambda n=asset_name: remote_asset_bytes(n))
+        )
+    flat_members: tuple[tuple[str, bytes], ...] = tuple(
+        materialize_seed_file(entry) for entry in flat_members_list
+    )
+
+    # Tar 2 — synthetic pagination corpus. ~600 tiny JSON files split
+    # across ten folders so the browser exercises both folder-level
+    # navigation and the page-size selector.
+    large_members_list: list[tuple[str, bytes]] = [
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Indexed tar large bundle
+
+                Synthetic 600-entry archive used to exercise the
+                pagination + search filter inside the indexed-tar
+                browser modal.
+                """
+            ),
+        ),
+    ]
+    for page in range(1, 11):
+        for item in range(1, 61):
+            path = f"catalog/page-{page:03d}/item-{item:04d}.json"
+            large_members_list.append(
+                (
+                    path,
+                    json_bytes(
+                        {
+                            "page": page,
+                            "item": item,
+                            "label": f"entry-{page:03d}-{item:04d}",
+                            "checksum": hashlib.sha256(path.encode("utf-8"))
+                            .hexdigest()[:16],
+                        }
+                    ),
+                )
+            )
+    large_members: tuple[tuple[str, bytes], ...] = tuple(large_members_list)
+
+    # Tar 3 — same shape as gallery but the index advertises a deliberately
+    # wrong sha256 so the modal banner exercises the "hash mismatch"
+    # warning path. The actual tar bytes here are still valid and
+    # browseable; only the hash recorded inside the JSON is poisoned.
+    stale_members: tuple[tuple[str, bytes], ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Indexed tar with stale sidecar hash
+
+                The .json sidecar in this folder advertises a sha256
+                that does not match the .tar bytes. Opening the
+                archive in the browser should surface a warning
+                banner before showing the listing.
+                """
+            ),
+        ),
+        ("text/note.txt", text_bytes("stale-hash demo entry\n")),
+        (
+            "images/sample.jpg",
+            remote_asset_bytes("danbooru-genshin-impact-g-8524789.jpg"),
+        ),
+    )
+
+    # Tar 4 — hash + hash_lfs stripped from the index so the modal
+    # exercises the "unknown hash" notice (info banner, not warning).
+    no_hash_members: tuple[tuple[str, bytes], ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Indexed tar without hash metadata
+
+                The sidecar for this archive has its `hash` and
+                `hash_lfs` fields cleared, so the browser cannot
+                verify consistency. Listings still work — only the
+                top banner is downgraded to a notice.
+                """
+            ),
+        ),
+        ("text/manifest.txt", text_bytes("entries:\n  - alpha\n  - beta\n")),
+        (
+            "audio/note.wav",
+            make_sine_wav_bytes("indexed-tar-no-hash"),
+        ),
+        (
+            "images/sample.jpg",
+            remote_asset_bytes("danbooru-blue-archive-s-8990007.jpg"),
+        ),
+    )
+
+    # Tar 5 — archive containing a real safetensors and a real parquet
+    # so the inner-preview reuses FilePreviewDialog directly on the
+    # extracted blob. Demonstrates that the safetensors / parquet
+    # metadata view works for in-archive members.
+    models_members: tuple[tuple[str, bytes], ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                # Indexed tar with model artifacts
+
+                Real safetensors + parquet members so the inner
+                metadata preview can be exercised end to end from
+                inside the archive.
+                """
+            ),
+        ),
+        (
+            "weights/router.safetensors",
+            make_single_checkpoint_bytes(
+                "indexed-tar-router",
+                (
+                    ("encoder.embed.weight", (256, 64)),
+                    ("encoder.layer0.attn.q_proj.weight", (64, 64)),
+                ),
+            ),
+        ),
+        (
+            "data/sample.parquet",
+            make_parquet_bytes(
+                "indexed-tar-models",
+                row_count=512,
+                payload_size=512,
+            ),
+        ),
+        (
+            "metadata/feature-card.json",
+            json_bytes(
+                {
+                    "shards": [
+                        "weights/router.safetensors",
+                        "data/sample.parquet",
+                    ],
+                    "purpose": "in-archive metadata preview demo",
+                }
+            ),
+        ),
+    )
+
+    gallery_tar, gallery_idx = make_indexed_tar_bundle(
+        "indexed-tar-gallery", gallery_members
+    )
+    flat_tar, flat_idx = make_indexed_tar_bundle(
+        "indexed-tar-flat-images", flat_members
+    )
+    large_tar, large_idx = make_indexed_tar_bundle(
+        "indexed-tar-large", large_members
+    )
+    fake_sha256 = "0" * 64
+    stale_tar, stale_idx = make_indexed_tar_with_overrides(
+        "indexed-tar-stale",
+        stale_members,
+        overrides={"hash_lfs": fake_sha256},
+    )
+    no_hash_tar, no_hash_idx = make_indexed_tar_with_overrides(
+        "indexed-tar-no-hash",
+        no_hash_members,
+        overrides={"hash": "", "hash_lfs": ""},
+    )
+    models_tar, models_idx = make_indexed_tar_bundle(
+        "indexed-tar-models", models_members
+    )
+
+    files: tuple[SeedFile, ...] = (
+        (
+            "README.md",
+            text_bytes(
+                """
+                ---
+                license: cc-by-4.0
+                pretty_name: Indexed Tar Showcase
+                tags:
+                  - indexed-tar
+                  - hfutils-index
+                  - local-dev-fixture
+                ---
+
+                # indexed-tar-showcase
+
+                Local-dev dataset for the read-only indexed-tar browser.
+                Each subfolder under `archives/` holds a .tar + .json
+                sidecar pair that surfaces a different facet of the
+                modal:
+
+                | Folder            | Demonstrates                                              |
+                |-------------------|-----------------------------------------------------------|
+                | archives/gallery  | Nested + flat tar pair: 24 real Danbooru fan-art (4 rates)|
+                | archives/large    | Pagination + search inside a single archive (~600 entries)|
+                | archives/stale    | Tar bytes diverging from sidecar hash → warning banner    |
+                | archives/no-hash  | Sidecar with stripped hashes → info notice banner         |
+                | archives/models   | Safetensors / parquet metadata preview from inside the tar|
+
+                The gallery archive has its image members organised by
+                Danbooru's four ratings (g/s/q/e per the howto:rate wiki):
+                sixteen Arknights posts (four per rating) plus an
+                eight-image mixed-IP supplement spanning the same
+                rating spread (Genshin Impact / Blue Archive / Hololive
+                / original).
+                """
+            ),
+        ),
+        (
+            "metadata/showcase.json",
+            json_bytes(
+                {
+                    "subfolders": [
+                        "archives/gallery",
+                        "archives/large",
+                        "archives/stale",
+                        "archives/no-hash",
+                        "archives/models",
+                    ],
+                    "format": "hfutils.index",
+                }
+            ),
+        ),
+        seed_file("archives/gallery/bundle.tar", lambda: gallery_tar),
+        seed_file("archives/gallery/bundle.json", lambda: gallery_idx),
+        seed_file("archives/gallery/flat-images.tar", lambda: flat_tar),
+        seed_file("archives/gallery/flat-images.json", lambda: flat_idx),
+        seed_file("archives/large/bundle.tar", lambda: large_tar),
+        seed_file("archives/large/bundle.json", lambda: large_idx),
+        seed_file("archives/stale/bundle.tar", lambda: stale_tar),
+        seed_file("archives/stale/bundle.json", lambda: stale_idx),
+        seed_file("archives/no-hash/bundle.tar", lambda: no_hash_tar),
+        seed_file("archives/no-hash/bundle.json", lambda: no_hash_idx),
+        seed_file("archives/models/bundle.tar", lambda: models_tar),
+        seed_file("archives/models/bundle.json", lambda: models_idx),
+    )
+
+    return (
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="open-media-lab",
+            name="indexed-tar-showcase",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="Seed indexed-tar showcase",
+                    description=(
+                        "Plant five tar+sidecar pairs that cover navigation, "
+                        "pagination, hash mismatch, missing-hash notice, and "
+                        "in-archive safetensors / parquet metadata preview."
+                    ),
+                    files=files,
+                ),
+            ),
+            download_path="archives/gallery/bundle.json",
+            download_sessions=3,
         ),
     )
 
@@ -2544,10 +3466,800 @@ def build_open_media_showcase_repo_seeds() -> tuple[RepoSeed, ...]:
     return tuple(repos)
 
 
+def build_big_indexed_tar_pagination_seeds() -> tuple[RepoSeed, ...]:
+    """Pagination UAT fixture.
+
+    A single dataset whose root carries 250 hfutils.index-compatible
+    tar/json pairs (so 500 entries plus a README) — enough for the
+    file-list pager to walk through 10 pages at the default 50/page,
+    and 3 pages at the 200/page setting, while keeping the initial
+    seed under a minute. Reusing one identical bundle across every
+    pair keeps the seed cheap (single tar+index materialization)
+    while still exercising the listing surface against real LakeFS
+    object counts: LakeFS dedupes by content hash, so the underlying
+    storage stays small even though the repo metadata grows. The two
+    halves of each pair are adjacent alphabetically, which is the
+    "loaded-listing fast path" the sidecar predicate prefers — the
+    HEAD-probe fallback is exercised separately by the unit tests.
+    """
+
+    bundle_count = 250
+
+    bundle_cache: dict[str, tuple[bytes, bytes]] = {}
+
+    def shared_bundle() -> tuple[bytes, bytes]:
+        cached = bundle_cache.get("bundle")
+        if cached is not None:
+            return cached
+        cached = make_indexed_tar_bundle(
+            "big-indexed-tar-pagination-shared",
+            (
+                ("member.json", json_bytes({"shard": "demo", "version": 1})),
+            ),
+        )
+        bundle_cache["bundle"] = cached
+        return cached
+
+    files: list[SeedFile] = [
+        (
+            "README.md",
+            text_bytes(
+                f"""
+                ---
+                license: cc-by-4.0
+                pretty_name: Indexed-Tar Pagination Bench
+                tags:
+                  - indexed-tar
+                  - pagination
+                  - dev-fixture
+                ---
+
+                # big-indexed-tar-bench
+
+                Pagination UAT fixture: {bundle_count} hfutils.index-compatible
+                tar/json pairs sit under `archives/` so the new file-list
+                pager can be exercised against a directory that genuinely
+                needs paging. Default 50 entries/page → 10 pages; 200/page
+                → 3. The two halves of each pair are alphabetically
+                adjacent so the indexed-tar icon lights up via the loaded
+                listing — the HEAD-probe fallback is covered by the unit
+                tests in `test_repo_viewer_paths.test.js`.
+
+                Every bundle is a clone of the same minimal tar (one
+                trivial JSON member). LakeFS dedupes by content hash so
+                the underlying object storage is one bundle, not 1000.
+                """
+            ),
+        ),
+    ]
+    for idx in range(bundle_count):
+        tag = f"{idx:04d}"
+        files.append(
+            seed_file(
+                f"archives/bundle-{tag}.tar",
+                lambda: shared_bundle()[0],
+            )
+        )
+        files.append(
+            seed_file(
+                f"archives/bundle-{tag}.json",
+                lambda: shared_bundle()[1],
+            )
+        )
+
+    return (
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="mai_lin",
+            name="big-indexed-tar-bench",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary=f"Seed {bundle_count} indexed-tar pairs for pagination UAT",
+                    description=(
+                        f"Plant {bundle_count} adjacent tar/json pairs so the "
+                        "repo file-list pager has a real-shape directory to "
+                        "navigate. All bundles share one underlying tar so "
+                        "the seed stays cheap on both upload and storage."
+                    ),
+                    files=tuple(files),
+                ),
+            ),
+            download_path="archives/bundle-0000.tar",
+            download_sessions=0,
+        ),
+    )
+
+
+def build_tree_expand_stress_seeds() -> tuple[RepoSeed, ...]:
+    """Synthetic repo with **highly chaotic** commit history for `/tree?expand=true`.
+
+    The mix is add / modify / delete / restore / folder-delete, deterministic from
+    a hash-based byte stream so the output is byte-identical across runs (no
+    `random` module — see AGENTS §2 "no random seed fixtures").
+
+    Note: `copyFile` is intentionally not exercised here. KohakuHub's current
+    `process_copy_file` re-links the source's internal LakeFS physical address,
+    which LakeFS 1.80 rejects with "address is not signed: link address invalid"
+    for non-LFS sources (verified live). That's a pre-existing backend limitation
+    orthogonal to this fixture's purpose; once the copy path is fixed, copy ops
+    can be added back to this churn loop.
+
+    Path-selection bias: the pool is split into a small "hot" tier (most ops
+    keep hammering the same handful of paths so they get modified, deleted,
+    restored, modified again, ...), a "warm" tier with regular activity, and
+    a "cold" tier of one-shot files. This produces individual paths with
+    ~30–50 lifecycle transitions each — exactly the pattern that the old
+    `resolve_last_commits_for_paths` walker has to chase commit-by-commit.
+
+    Acceptance target: ~40-80 surviving files at HEAD, 150-350 commits,
+    where every surviving path's last-touching commit sits at a different
+    depth and a meaningful subset has been deleted-and-restored multiple
+    times. This is the benchmark fixture for the `resolve_last_commits_for_paths`
+    rewrite (issue #59 Plan E).
+    """
+    pool_size = 80
+    num_commits = 280
+    paths = [f"shard/group_{i // 10:02d}/file_{i:03d}.json" for i in range(pool_size)]
+    folder_prefixes = sorted({p.rsplit("/", 1)[0] for p in paths})  # shard/group_NN
+
+    # Path-selection tiers — biased so a small hot set absorbs the bulk of
+    # the churn. Indices live inside the same single pool so all surviving
+    # files share the same path schema; only the per-tier weight differs.
+    hot_indices = list(range(0, 12))         # 12 paths take ~50% of ops
+    warm_indices = list(range(12, 40))       # 28 paths take ~35%
+    cold_indices = list(range(40, pool_size))  # 40 paths take ~15%
+
+    def churn_digest(scope: str, ordinal: int) -> bytes:
+        """Hash-based deterministic byte source. Slicing it gives op counts,
+        path indices, and op-kind rolls without invoking the `random` module.
+        """
+        return hashlib.sha256(f"{scope}:{ordinal}".encode("utf-8")).digest()
+
+    def pick_index(digest: bytes, byte_offset: int) -> int:
+        """Pick a path index biased toward the hot tier."""
+        tier_roll = digest[byte_offset] / 256.0
+        slot = int.from_bytes(digest[byte_offset + 1 : byte_offset + 5], "big")
+        if tier_roll < 0.50:
+            return hot_indices[slot % len(hot_indices)]
+        if tier_roll < 0.85:
+            return warm_indices[slot % len(warm_indices)]
+        return cold_indices[slot % len(cold_indices)]
+
+    def file_payload(path: str, version: int) -> bytes:
+        digest = hashlib.sha256(f"{path}:{version}".encode("utf-8")).digest()
+        body = {
+            "path": path,
+            "version": version,
+            "fingerprint": digest.hex()[:16],
+            "tags": ["tree-expand-stress", "dev-fixture"],
+        }
+        return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    # Per-path lifecycle state. `alive[path]` holds the current write counter
+    # so each modify gets a fresh sha256; once deleted the path moves to
+    # `deleted` (preserving the highest seen version so restores keep climbing).
+    alive: dict[str, int] = {}
+    deleted: dict[str, int] = {}
+    commits: list[CommitSeed] = []
+
+    # Initial commit: plant README + a starter slice spanning all three tiers,
+    # so the very first churn round has something to modify/delete/copy from.
+    initial_files: list[SeedFile] = [
+        FileSeed(
+            "README.md",
+            (
+                "# tree-expand stress fixture\n\n"
+                "Synthetic dataset planted by `seed_demo_data.py` to acceptance-test\n"
+                "`/tree?expand=true` performance under a chaotic commit history.\n"
+                "\n"
+                "Hot/warm/cold path tiers, biased churn (modify / delete / restore /\n"
+                "copy / folder-delete) — see `build_tree_expand_stress_seeds()`.\n"
+            ).encode("utf-8"),
+        ),
+    ]
+    starter_indices = list(hot_indices[:6]) + list(warm_indices[:6]) + list(cold_indices[:3])
+    for idx in starter_indices:
+        path = paths[idx]
+        initial_files.append(FileSeed(path, file_payload(path, 0)))
+        alive[path] = 0
+    commits.append(
+        CommitSeed(
+            summary="Initial import of tree-expand stress fixture",
+            description="Plant README and a tier-spanning starter slice before the churn loop.",
+            files=tuple(initial_files),
+        )
+    )
+
+    # Churn loop. Heavier per-commit op counts (1-7) drive harder per-path
+    # cycling.  Op-kind probabilities (when the path is alive):
+    #   modify: 0.55, delete: 0.30, folder-delete: 0.05 (rare, capped one
+    #   per commit), default modify: 0.10.
+    # When the picked path is currently deleted → restore-via-write (1.0).
+    # New paths get added when the tier roll picks an index that has never
+    # been touched yet.
+    for ordinal in range(1, num_commits):
+        head = churn_digest("ops", ordinal)
+        ops_count = (head[0] % 7) + 1  # 1..7 ops per commit
+        ops: list[SeedFile] = []
+        # Track which paths/folders we've already touched in this commit so
+        # one round doesn't both modify-and-delete the same file (LakeFS
+        # tolerates it but it muddies the lifecycle bookkeeping).
+        round_paths: set[str] = set()
+        round_folders: set[str] = set()
+        # Folder-delete is a heavy op; cap it to at most one per commit.
+        folder_delete_done = False
+        # Snapshot of `alive` at the start of this commit. Copy ops must use
+        # this set as the source, because srcRevision='main' resolves to the
+        # PRIOR commit — paths added by earlier ops in this same commit are
+        # not yet visible on main and would 404 on the LakeFS link step.
+        alive_at_commit_start = frozenset(alive)
+
+        for op_idx in range(ops_count):
+            picker = churn_digest(f"ops:{ordinal}:pick", op_idx)
+            idx = pick_index(picker, 0)
+            path = paths[idx]
+            if path in round_paths:
+                # Re-pick once with shifted bytes to avoid touching the same
+                # path twice in one commit; if still colliding, just skip.
+                idx = pick_index(picker, 16)
+                path = paths[idx]
+                if path in round_paths:
+                    continue
+            folder = path.rsplit("/", 1)[0]
+            if folder in round_folders:
+                continue
+
+            roll = picker[6] / 256.0
+            copy_roll = picker[7] / 256.0
+
+            if path not in alive and path not in deleted:
+                # Never seen → add.
+                ops.append(FileSeed(path, file_payload(path, 0)))
+                alive[path] = 0
+                round_paths.add(path)
+                continue
+
+            if path in alive:
+                if roll < 0.55:
+                    # Modify in place.
+                    alive[path] += 1
+                    ops.append(FileSeed(path, file_payload(path, alive[path])))
+                    round_paths.add(path)
+                elif roll < 0.85:
+                    # Delete (soft).
+                    deleted[path] = alive[path]
+                    del alive[path]
+                    ops.append(DeletedFileSeed(path))
+                    round_paths.add(path)
+                elif (
+                    roll < 0.90
+                    and not folder_delete_done
+                    and ordinal > 20  # let some history accrue first
+                ):
+                    # Folder-delete: drop one entire group_NN/. Pick the
+                    # folder deterministically from the digest. Only fires
+                    # when at least 3 alive paths live in that folder, so
+                    # the op actually erases something meaningful.
+                    folder_idx = picker[12] % len(folder_prefixes)
+                    folder = folder_prefixes[folder_idx]
+                    affected = [p for p in list(alive.keys()) if p.startswith(folder + "/")]
+                    if len(affected) >= 3:
+                        for p in affected:
+                            deleted[p] = alive[p]
+                            del alive[p]
+                            round_paths.add(p)
+                        round_folders.add(folder)
+                        ops.append(DeletedFolderSeed(folder))
+                        folder_delete_done = True
+                    else:
+                        # Fallback to plain modify if folder is too sparse.
+                        alive[path] += 1
+                        ops.append(FileSeed(path, file_payload(path, alive[path])))
+                        round_paths.add(path)
+                else:
+                    # Default: modify.
+                    alive[path] += 1
+                    ops.append(FileSeed(path, file_payload(path, alive[path])))
+                    round_paths.add(path)
+            else:
+                # Currently deleted → restore with a bumped version.
+                next_version = deleted[path] + 1
+                ops.append(FileSeed(path, file_payload(path, next_version)))
+                del deleted[path]
+                alive[path] = next_version
+                round_paths.add(path)
+
+        if not ops:
+            continue
+        commits.append(
+            CommitSeed(
+                summary=f"Churn round {ordinal:03d}",
+                description=(
+                    f"Deterministic add/modify/delete/restore/copy/folder-delete "
+                    f"round (ordinal={ordinal})."
+                ),
+                files=tuple(ops),
+            )
+        )
+
+    return (
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="dataset",
+            namespace="mai_lin",
+            name="tree-expand-stress-bench",
+            private=False,
+            commits=tuple(commits),
+            download_path="README.md",
+            download_sessions=0,
+        ),
+    )
+
+
+def build_pr77_demo_repo_seeds() -> tuple[RepoSeed, ...]:
+    """Four local-only repos whose ``(namespace, name)`` collides with
+    real HuggingFace repos but whose content is intentionally
+    structurally different. Each repo's ``README.md`` is the
+    verification guide for the contract that repo demonstrates;
+    visit them in the SPA at ``/{namespace}/{name}`` after seeding.
+    See PR #77 for the design rationale.
+    """
+    gpt2_readme = text_bytes(
+        """
+        # PR #77 demo: openai-community/gpt2 (LOCAL)
+
+        This is a **local-only** repository at `openai-community/gpt2`.
+        The same path on HuggingFace is the famous GPT-2 with weights,
+        config, tokenizer, etc. This local repo holds **only this README** —
+        no model weights, no `config.json`, no tokenizer.
+
+        ## What this demonstrates
+
+        The dev backend is configured with a single fallback source
+        pointing at `https://huggingface.co`. PR #77's strict-consistency
+        rule: **the local namespace owns its name**. Even when the
+        requested file exists on HF, a local repo at the same
+        `(namespace, name)` is the only place the response can come from.
+
+        ## One-shot verification command
+
+        Asserts every contract below in one go:
+
+        ```bash
+        PYTHONPATH=src python scripts/dev/seed_pr77_demo.py
+        ```
+
+        Output ends with `OK — every PR #77 demo contract holds end-to-end`
+        when the contracts are intact.
+
+        ## Wire-level checks (curl, copy-pasteable)
+
+        ### Missing-file short-circuit (the headline contract)
+
+        ```bash
+        curl -i http://127.0.0.1:48888/openai-community/gpt2/resolve/main/config.json
+        ```
+
+        Expected response:
+
+        ```
+        HTTP/1.1 404 Not Found
+        X-Error-Code: EntryNotFound
+        X-Error-Message: Entry 'config.json' not found in repository 'openai-community/gpt2' at revision 'main'
+        ```
+
+        Critical: **no** `X-Source` / `X-Source-Count` headers — the
+        fallback chain did not run. Compare with `?fallback=false`:
+
+        ```bash
+        curl -i 'http://127.0.0.1:48888/openai-community/gpt2/resolve/main/config.json?fallback=false'
+        ```
+
+        Headers should be byte-identical (modulo `Date` / `X-Request-Id`).
+
+        ### Missing-revision short-circuit
+
+        ```bash
+        curl -i http://127.0.0.1:48888/openai-community/gpt2/resolve/no-such-branch/README.md
+        ```
+
+        Expected: `404 + X-Error-Code: EntryNotFound` (or
+        `RevisionNotFound` depending on the local handler version),
+        no `X-Source-Count`.
+
+        ### Local-success wins on the README
+
+        ```bash
+        curl -sL http://127.0.0.1:48888/openai-community/gpt2/resolve/main/README.md | head -1
+        ```
+
+        Expected: `# PR #77 demo: openai-community/gpt2 (LOCAL)` —
+        NOT HuggingFace's GPT-2 README.
+
+        ## Python equivalents (huggingface_hub)
+
+        ```python
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.errors import (
+            EntryNotFoundError, RevisionNotFoundError,
+        )
+
+        api = HfApi(endpoint="http://127.0.0.1:48888", token="<your-khub-token>")
+
+        # (a) local data wins
+        assert api.list_repo_files("openai-community/gpt2") == ["README.md"]
+
+        # (b) missing file -> EntryNotFoundError (NOT silent HF download)
+        try:
+            hf_hub_download(
+                "openai-community/gpt2", "config.json",
+                endpoint="http://127.0.0.1:48888",
+                token="<your-khub-token>",
+            )
+            raise AssertionError("FAIL: cross-source mixing")
+        except EntryNotFoundError:
+            pass
+
+        # (c) missing revision -> RevisionNotFoundError, no fallback
+        try:
+            hf_hub_download(
+                "openai-community/gpt2", "README.md",
+                revision="bogus-branch",
+                endpoint="http://127.0.0.1:48888",
+                token="<your-khub-token>",
+            )
+        except (RevisionNotFoundError, EntryNotFoundError):
+            pass
+        ```
+
+        ## Pre-fix counterfactual
+
+        Pre-#77 the chain would have walked to HF, served HF's GPT-2
+        config.json bytes for what the client thinks is *this* local
+        repo — two distinct repos collapsed into one `repo_id`. The
+        contracts above are the wire-level discriminator between the
+        fixed and the buggy behavior.
+        """
+    )
+
+    bloom_readme = text_bytes(
+        """
+        # PR #77 demo: bigscience/bloom (LOCAL)
+
+        Local-only repo at `bigscience/bloom`. HF has the real BLOOM 176B
+        at the same path. Sister case to `openai-community/gpt2` — same
+        contract, different namespace, proves the rule isn't tied to one
+        repo path.
+
+        ## One-shot verification
+
+        ```bash
+        PYTHONPATH=src python scripts/dev/seed_pr77_demo.py
+        ```
+
+        Output includes `bigscience/bloom — sister case, different namespace`
+        with two ✓ lines.
+
+        ## Wire-level (curl)
+
+        ```bash
+        curl -i http://127.0.0.1:48888/bigscience/bloom/resolve/main/config.json
+        ```
+
+        Expected:
+
+        ```
+        HTTP/1.1 404 Not Found
+        X-Error-Code: EntryNotFound
+        X-Error-Message: Entry 'config.json' not found in repository 'bigscience/bloom' at revision 'main'
+        ```
+
+        No `X-Source-Count` — local short-circuit, HF's BLOOM never asked.
+
+        ## Python equivalent
+
+        ```python
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError
+
+        api = HfApi(endpoint="http://127.0.0.1:48888", token="<your-khub-token>")
+        assert sorted(api.list_repo_files("bigscience/bloom")) == ["README.md", "demo-note.txt"]
+
+        try:
+            hf_hub_download(
+                "bigscience/bloom", "config.json",
+                endpoint="http://127.0.0.1:48888",
+                token="<your-khub-token>",
+            )
+            raise AssertionError("FAIL: cross-source mixing")
+        except EntryNotFoundError:
+            pass
+        ```
+        """
+    )
+
+    bloom_demo_note = text_bytes(
+        """
+        This file proves the local repo has non-trivial content.
+
+        The PR #77 contract: a request for any of the *real* HF BLOOM
+        files (config.json, tokenizer.json, model shards, etc.) against
+        this khub MUST raise EntryNotFoundError, NOT silently download
+        HF's bytes.
+        """
+    )
+
+    llama_readme = text_bytes(
+        """
+        # PR #77 demo: meta-llama/Llama-2-7b (LOCAL, with gated HF sibling)
+
+        Local-only repo at `meta-llama/Llama-2-7b`. The same path on HF
+        is **gated** — anonymous callers get `401 + X-Error-Code: GatedRepo`.
+        This local repo holds only this README.
+
+        ## What this demonstrates
+
+        The strict-consistency contract holds against a *gated* upstream:
+        local namespace ownership is absolute. The gated HF response
+        never reaches the client - not as content, not as a misleading
+        `GatedRepoError`, not as anything.
+
+        ## One-shot verification
+
+        ```bash
+        PYTHONPATH=src python scripts/dev/seed_pr77_demo.py
+        ```
+
+        Output includes a `meta-llama/Llama-2-7b — gated upstream` block
+        with two ✓ lines (the EntryNotFound assertion + a wire-level
+        header check).
+
+        ## Wire-level (curl) — the headline contract
+
+        Local has the namespace, HF gates the same path. Strict
+        consistency requires `EntryNotFound`, not `GatedRepo`.
+
+        ```bash
+        curl -i http://127.0.0.1:48888/meta-llama/Llama-2-7b/resolve/main/config.json
+        ```
+
+        Expected:
+
+        ```
+        HTTP/1.1 404 Not Found
+        X-Error-Code: EntryNotFound
+        X-Error-Message: Entry 'config.json' not found in repository 'meta-llama/Llama-2-7b' at revision 'main'
+        ```
+
+        Critical: **no** `X-Source-Count`, **no** `GatedRepo` header.
+        HF's gated 401 was never seen.
+
+        ### Counter-example — gated HF repo without local collision
+
+        ```bash
+        curl -i http://127.0.0.1:48888/meta-llama/Llama-2-70b/resolve/main/config.json
+        ```
+
+        Expected (note the SAME backend, only difference is whether
+        local owns the namespace):
+
+        ```
+        HTTP/1.1 401 Unauthorized
+        X-Error-Code: GatedRepo
+        X-Source-Count: 1
+        X-Error-Message: Upstream source requires authentication ...
+        ```
+
+        Same upstream gating, opposite outcomes — decided entirely by
+        whether the local namespace owns the path.
+
+        ## Python equivalent
+
+        ```python
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError, GatedRepoError
+
+        api = HfApi(endpoint="http://127.0.0.1:48888", token="<your-khub-token>")
+        assert api.list_repo_files("meta-llama/Llama-2-7b") == ["README.md"]
+
+        try:
+            hf_hub_download(
+                "meta-llama/Llama-2-7b", "config.json",
+                endpoint="http://127.0.0.1:48888",
+                token="<your-khub-token>",
+            )
+            raise AssertionError("FAIL: chain ran past local")
+        except EntryNotFoundError:
+            pass  # local short-circuit
+        except GatedRepoError:
+            raise AssertionError("FAIL: HF's gated 401 reached the client")
+        ```
+        """
+    )
+
+    guide_readme = text_bytes(
+        """
+        # PR #77 demo: pure fallback (no local collision)
+
+        Guide repo — no namespace collision with HF. Exists locally only
+        to host these instructions. The interesting cases below are
+        repos that this khub does NOT have locally; the goal is to show
+        what `huggingface_hub` calls produce when the chain has to do
+        the work.
+
+        ## One-shot verification
+
+        ```bash
+        PYTHONPATH=src python scripts/dev/seed_pr77_demo.py
+        ```
+
+        Output includes a `narugo1992-pr77-demo — pure fallback` block
+        with three ✓ lines (success / RepoNotFound / GatedRepo).
+
+        ## Wire-level (curl)
+
+        ### HF-only success: chain serves via HuggingFace
+
+        ```bash
+        curl -i http://127.0.0.1:48888/google-bert/bert-base-uncased/resolve/main/config.json
+        ```
+
+        Expected (note the `X-Source*` headers — the chain DID run):
+
+        ```
+        HTTP/1.1 307 Temporary Redirect
+        Location: https://huggingface.co/...
+        X-Source: HuggingFace
+        X-Source-URL: https://huggingface.co
+        X-Source-Status: 307
+        ```
+
+        ### Genuinely missing path: aggregate
+
+        ```bash
+        curl -i http://127.0.0.1:48888/narugo1992-pr77-demo/this-doesnt-exist-anywhere/resolve/main/x
+        ```
+
+        Expected:
+
+        ```
+        HTTP/1.1 404 Not Found
+        X-Error-Code: RepoNotFound
+        X-Source-Count: 1
+        ```
+
+        ### Gated upstream without local collision
+
+        ```bash
+        curl -i http://127.0.0.1:48888/meta-llama/Llama-2-70b/resolve/main/config.json
+        ```
+
+        Expected:
+
+        ```
+        HTTP/1.1 401 Unauthorized
+        X-Error-Code: GatedRepo
+        X-Source-Count: 1
+        ```
+
+        For the *contrasting* case (local collision + HF gated, where
+        the gated signal is suppressed in favor of local
+        EntryNotFound), see `meta-llama/Llama-2-7b` on this same khub.
+
+        ## Python equivalents
+
+        ```python
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.errors import (
+            RepositoryNotFoundError, GatedRepoError,
+        )
+
+        api = HfApi(endpoint="http://127.0.0.1:48888", token="<your-khub-token>")
+
+        # HF-only success
+        info = api.model_info("google-bert/bert-base-uncased")
+        assert info.id == "google-bert/bert-base-uncased"
+
+        # Genuinely missing
+        try:
+            api.model_info("narugo1992-pr77-demo/this-doesnt-exist-anywhere-77777")
+            raise AssertionError("FAIL: succeeded")
+        except RepositoryNotFoundError:
+            pass
+
+        # Gated, no local collision
+        try:
+            hf_hub_download(
+                "meta-llama/Llama-2-70b", "config.json",
+                endpoint="http://127.0.0.1:48888",
+                token="<your-khub-token>",
+            )
+        except GatedRepoError:
+            pass  # or LocalEntryNotFoundError on hf_hub_download wrapper
+        ```
+
+        ## Cross-reference
+
+        - Local-namespace-priority + EntryNotFound/RevisionNotFound short-circuit:
+          `openai-community/gpt2`, `bigscience/bloom`, `meta-llama/Llama-2-7b`.
+        - All chain-level decisions are exhaustively unit-tested in
+          `test/kohakuhub/api/fallback/test_chain_enumeration.py` (4368 cases).
+        """
+    )
+
+    return (
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="openai-community",
+            name="gpt2",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="PR #77 demo: namespace-priority + EntryNotFound short-circuit",
+                    description="Local-only repo to prove the local namespace owns the name.",
+                    files=(("README.md", gpt2_readme),),
+                ),
+            ),
+        ),
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="bigscience",
+            name="bloom",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="PR #77 demo: chain short-circuit on EntryNotFound (different namespace)",
+                    description="Sister of openai-community/gpt2 — proves the rule isn't path-tied.",
+                    files=(
+                        ("README.md", bloom_readme),
+                        ("demo-note.txt", bloom_demo_note),
+                    ),
+                ),
+            ),
+        ),
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="meta-llama",
+            name="Llama-2-7b",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="PR #77 demo: strict consistency vs. gated upstream",
+                    description="HF's same-path repo is gated; local namespace ownership still wins.",
+                    files=(("README.md", llama_readme),),
+                ),
+            ),
+        ),
+        RepoSeed(
+            actor="mai_lin",
+            repo_type="model",
+            namespace="narugo1992-pr77-demo",
+            name="guide",
+            private=False,
+            commits=(
+                CommitSeed(
+                    summary="PR #77 demo: pure-fallback path walk-through",
+                    description="No namespace collision; documents how HF-only repos work via fallback.",
+                    files=(("README.md", guide_readme),),
+                ),
+            ),
+        ),
+    )
+
+
 REPO_SEEDS = (
     build_repo_seeds()
     + build_open_media_core_repo_seeds()
+    + build_indexed_tar_showcase_repo_seeds()
     + build_open_media_showcase_repo_seeds()
+    + build_big_indexed_tar_pagination_seeds()
+    + build_tree_expand_stress_seeds()
+    + build_pr77_demo_repo_seeds()
 )
 
 LIKES: tuple[tuple[str, str, str, str], ...] = (
@@ -2580,6 +4292,132 @@ FALLBACK_SOURCE_SEEDS: tuple[dict, ...] = (
         "source_type": "huggingface",
         "enabled": True,
     },
+)
+
+
+# ---------------------------------------------------------------------------
+# Credential plants (API tokens + SSH keys)
+# ---------------------------------------------------------------------------
+#
+# Three real ed25519 keypairs share by both the dev seed and the test
+# baseline. Hardcoding them here means every fresh `make reset-and-seed`
+# run produces the same fingerprints, so local SSH-based smoke testing
+# can rely on a known good private half.
+
+SEED_KEYPAIR_PRIMARY = SeedKeypair(
+    public_key=(
+        "ssh-ed25519 "
+        "AAAAC3NzaC1lZDI1NTE5AAAAICkTsun+Px+5LKYR5hM1PFHI07H0mEdBCkjnieQBa8La "
+        "seed-primary"
+    ),
+    private_key=(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
+        "OQAAACApE7Lp/j8fuSymEeYTNTxRyNOx9JhHQQpI54nkAWvC2gAAAIgSvm6wEr5usAAAAAtzc2gt\n"
+        "ZWQyNTUxOQAAACApE7Lp/j8fuSymEeYTNTxRyNOx9JhHQQpI54nkAWvC2gAAAEAR+JseVIp318U4\n"
+        "qACfo8LGhfSE0tgeEyg4ieaaxYZMdCkTsun+Px+5LKYR5hM1PFHI07H0mEdBCkjnieQBa8LaAAAA\n"
+        "AAECAwQF\n"
+        "-----END OPENSSH PRIVATE KEY-----\n"
+    ),
+    fingerprint="SHA256:iK3NzYswWRZyxvuXMcA5x7DscKDXBqdcJDHcnsAmSl0",
+)
+
+SEED_KEYPAIR_SECONDARY = SeedKeypair(
+    public_key=(
+        "ssh-ed25519 "
+        "AAAAC3NzaC1lZDI1NTE5AAAAIM9LPgCG2V6b6eusP4Ds32HSeT9XI5kEh8znwZJL8Kon "
+        "seed-secondary"
+    ),
+    private_key=(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
+        "OQAAACDPSz4Ahtlem+nrrD+A7N9h0nk/VyOZBIfM58GSS/CqJwAAAIgdEjqnHRI6pwAAAAtzc2gt\n"
+        "ZWQyNTUxOQAAACDPSz4Ahtlem+nrrD+A7N9h0nk/VyOZBIfM58GSS/CqJwAAAEARKCxI67mFiA8F\n"
+        "KohS5CM4TZ3Yr1XmegpG6k39BVGyz89LPgCG2V6b6eusP4Ds32HSeT9XI5kEh8znwZJL8KonAAAA\n"
+        "AAECAwQF\n"
+        "-----END OPENSSH PRIVATE KEY-----\n"
+    ),
+    fingerprint="SHA256:V64HYiVM8qORIqyxawv2j9z+f001Zlb2Gfe6es+1yME",
+)
+
+SEED_KEYPAIR_TERTIARY = SeedKeypair(
+    public_key=(
+        "ssh-ed25519 "
+        "AAAAC3NzaC1lZDI1NTE5AAAAIEE6+Zx4EGmF78hvFxw7V99nO+2AMlMq4P3HwC2J1JLl "
+        "seed-tertiary"
+    ),
+    private_key=(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
+        "OQAAACBBOvmceBBphe/IbxccO1ffZzvtgDJTKuD9x8AtidSS5QAAAIjPifOsz4nzrAAAAAtzc2gt\n"
+        "ZWQyNTUxOQAAACBBOvmceBBphe/IbxccO1ffZzvtgDJTKuD9x8AtidSS5QAAAEABkNyXrWp46jN2\n"
+        "rlPPMjrdliTdytyHw4SrwcmwUFFwzkE6+Zx4EGmF78hvFxw7V99nO+2AMlMq4P3HwC2J1JLlAAAA\n"
+        "AAECAwQF\n"
+        "-----END OPENSSH PRIVATE KEY-----\n"
+    ),
+    fingerprint="SHA256:UHiMFHDl1bHuDziVnLOYlAHSDQlah+DAk6yVUe10ZWI",
+)
+
+# Demo accounts get a mix of recent / stale / never-used credentials so the
+# admin Credentials page exercises every filter against real seeded rows.
+SEED_SSH_KEY_PLANTS: tuple[SeedSshKeyPlant, ...] = (
+    SeedSshKeyPlant(
+        user="mai_lin",
+        title="Workstation",
+        keypair=SEED_KEYPAIR_PRIMARY,
+        last_used_days_ago=1,
+    ),
+    SeedSshKeyPlant(
+        user="mai_lin",
+        title="Archived MBP",
+        keypair=SEED_KEYPAIR_TERTIARY,
+        last_used_days_ago=210,
+    ),
+    SeedSshKeyPlant(
+        user="leo_park",
+        title="Leo's Frontend Box",
+        keypair=SEED_KEYPAIR_SECONDARY,
+        last_used_days_ago=None,
+    ),
+)
+
+SEED_TOKEN_PLANTS: tuple[SeedTokenPlant, ...] = (
+    SeedTokenPlant(
+        user="mai_lin",
+        name="ci-token",
+        plaintext="khub_dev_mai_lin_ci_token_d8f1a2",
+        last_used_days_ago=1,
+    ),
+    SeedTokenPlant(
+        user="mai_lin",
+        name="archived-cron",
+        plaintext="khub_dev_mai_lin_archived_cron_3b91c4",
+        last_used_days_ago=180,
+    ),
+    SeedTokenPlant(
+        user="mai_lin",
+        name="never-used",
+        plaintext="khub_dev_mai_lin_never_used_91dd2e",
+        last_used_days_ago=None,
+    ),
+    SeedTokenPlant(
+        user="leo_park",
+        name="frontend-deploy",
+        plaintext="khub_dev_leo_park_frontend_deploy_4f2c0a",
+        last_used_days_ago=7,
+    ),
+    SeedTokenPlant(
+        user="sara_chen",
+        name="annotation-import",
+        plaintext="khub_dev_sara_chen_annotation_import_77ab09",
+        last_used_days_ago=30,
+    ),
+    SeedTokenPlant(
+        user="ivy_ops",
+        name="release-bot",
+        plaintext="khub_dev_ivy_ops_release_bot_a17e93",
+        last_used_days_ago=None,
+    ),
 )
 
 
@@ -2729,6 +4567,100 @@ async def login_account(client: httpx.AsyncClient, account: AccountSeed) -> None
 
     if "session_id" not in client.cookies:
         raise SeedError(f"login {account.username} did not set a session cookie")
+
+
+def plant_seed_tokens() -> None:
+    """Insert deterministic API tokens directly into the database.
+
+    Going through ``POST /api/auth/tokens/create`` would generate random
+    plaintexts, which means the seed manifest could not name the canonical
+    Bearer values. We bypass the API and write rows directly so the
+    plaintexts in ``SEED_TOKEN_PLANTS`` are the authoritative answer to
+    "which tokens does the dev seed leave behind".
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from kohakuhub.auth.utils import hash_token
+    from kohakuhub.db import Token, User
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for spec in SEED_TOKEN_PLANTS:
+        user = User.get_or_none(User.username == spec.user)
+        if user is None:
+            raise SeedError(
+                f"plant token for unknown user '{spec.user}'"
+            )
+
+        token_hash = hash_token(spec.plaintext)
+        if Token.select().where(Token.token_hash == token_hash).exists():
+            # Idempotent: re-running the seed without a full reset is a
+            # no-op for already-planted tokens.
+            continue
+
+        last_used = (
+            None
+            if spec.last_used_days_ago is None
+            else now - timedelta(days=spec.last_used_days_ago)
+        )
+        Token.create(
+            user=user,
+            token_hash=token_hash,
+            name=spec.name,
+            last_used=last_used,
+        )
+
+
+async def plant_seed_ssh_keys(
+    authed_clients: dict[str, httpx.AsyncClient],
+) -> None:
+    """Plant SSH keys via the public API so fingerprints are computed.
+
+    Using the same endpoint a real user would hit means the planted
+    fingerprints are the canonical ones — admin tooling and future
+    Git-over-SSH smokes can assert against the values in
+    ``SEED_SSH_KEY_PLANTS`` without having to recompute them.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from kohakuhub.db import SSHKey, User
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for spec in SEED_SSH_KEY_PLANTS:
+        client = authed_clients.get(spec.user)
+        if client is None:
+            raise SeedError(
+                f"plant ssh key for non-authed user '{spec.user}'"
+            )
+
+        user = User.get_or_none(User.username == spec.user)
+        if user is None:
+            raise SeedError(
+                f"plant ssh key for unknown user '{spec.user}'"
+            )
+
+        already = (
+            SSHKey.select()
+            .where(
+                (SSHKey.user == user)
+                & (SSHKey.fingerprint == spec.keypair.fingerprint)
+            )
+            .exists()
+        )
+        if not already:
+            response = await client.post(
+                "/api/user/keys",
+                json={"title": spec.title, "key": spec.keypair.public_key},
+            )
+            await ensure_response(
+                response, f"plant ssh key '{spec.title}' for {spec.user}"
+            )
+
+        if spec.last_used_days_ago is not None:
+            cutoff = now - timedelta(days=spec.last_used_days_ago)
+            SSHKey.update(last_used=cutoff).where(
+                (SSHKey.user == user)
+                & (SSHKey.fingerprint == spec.keypair.fingerprint)
+            ).execute()
 
 
 async def upload_avatar(
@@ -2952,30 +4884,46 @@ async def commit_files(
     repo: RepoSeed,
     commit: CommitSeed,
 ) -> None:
-    materialized_files = [materialize_seed_file(file_entry) for file_entry in commit.files]
-    metadata = []
+    # Split the commit's entries by op kind. Only content-bearing entries
+    # (FileSeed / tuple) need preupload; delete / folder-delete / copy ops
+    # carry no payload.
+    delete_paths: list[str] = []
+    delete_folder_paths: list[str] = []
+    copy_ops: list[CopyFileSeed] = []
+    file_entries: list[FileSeed | tuple[str, bytes]] = []
+    for entry in commit.files:
+        if isinstance(entry, DeletedFileSeed):
+            delete_paths.append(entry.path)
+        elif isinstance(entry, DeletedFolderSeed):
+            delete_folder_paths.append(entry.path)
+        elif isinstance(entry, CopyFileSeed):
+            copy_ops.append(entry)
+        else:
+            file_entries.append(entry)
 
-    for path, content in materialized_files:
-        sha256 = hashlib.sha256(content).hexdigest()
-        metadata.append(
-            {
-                "path": path,
-                "size": len(content),
-                "sha256": sha256,
-            }
+    materialized_files = [materialize_seed_file(entry) for entry in file_entries]
+    metadata = [
+        {
+            "path": path,
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        for path, content in materialized_files
+    ]
+
+    preupload_results: dict[str, dict] = {}
+    if metadata:
+        preupload_response = await client.post(
+            f"/api/{repo.repo_type}s/{repo.namespace}/{repo.name}/preupload/main",
+            json={"files": metadata},
         )
-
-    preupload_response = await client.post(
-        f"/api/{repo.repo_type}s/{repo.namespace}/{repo.name}/preupload/main",
-        json={"files": metadata},
-    )
-    await ensure_response(
-        preupload_response,
-        f"preupload {repo.namespace}/{repo.name}",
-    )
-    preupload_results = {
-        item["path"]: item for item in preupload_response.json().get("files", [])
-    }
+        await ensure_response(
+            preupload_response,
+            f"preupload {repo.namespace}/{repo.name}",
+        )
+        preupload_results = {
+            item["path"]: item for item in preupload_response.json().get("files", [])
+        }
 
     ndjson_lines = [
         {
@@ -3015,6 +4963,34 @@ async def commit_files(
                     "path": path,
                     "content": base64.b64encode(content).decode("ascii"),
                     "encoding": "base64",
+                },
+            }
+        )
+
+    for path in delete_paths:
+        ndjson_lines.append(
+            {
+                "key": "deletedFile",
+                "value": {"path": path},
+            }
+        )
+
+    for path in delete_folder_paths:
+        ndjson_lines.append(
+            {
+                "key": "deletedFolder",
+                "value": {"path": path},
+            }
+        )
+
+    for op in copy_ops:
+        ndjson_lines.append(
+            {
+                "key": "copyFile",
+                "value": {
+                    "path": op.dest_path,
+                    "srcPath": op.src_path,
+                    "srcRevision": op.src_revision,
                 },
             }
         )
@@ -3156,6 +5132,26 @@ def build_manifest() -> dict:
             }
             for source in FALLBACK_SOURCE_SEEDS
         ],
+        "api_tokens": [
+            {
+                "user": spec.user,
+                "name": spec.name,
+                "plaintext": spec.plaintext,
+                "last_used_days_ago": spec.last_used_days_ago,
+            }
+            for spec in SEED_TOKEN_PLANTS
+        ],
+        "ssh_keys": [
+            {
+                "user": spec.user,
+                "title": spec.title,
+                "fingerprint": spec.keypair.fingerprint,
+                "public_key": spec.keypair.public_key,
+                "private_key": spec.keypair.private_key,
+                "last_used_days_ago": spec.last_used_days_ago,
+            }
+            for spec in SEED_SSH_KEY_PLANTS
+        ],
     }
 
 
@@ -3240,6 +5236,9 @@ async def seed_demo_data() -> None:
 
         for liker, repo_type, namespace, name in LIKES:
             await like_repo(authed_clients[liker], repo_type, namespace, name)
+
+        plant_seed_tokens()
+        await plant_seed_ssh_keys(authed_clients)
 
         anon_client = await stack.enter_async_context(
             httpx.AsyncClient(

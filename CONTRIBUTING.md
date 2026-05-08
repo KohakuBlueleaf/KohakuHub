@@ -397,8 +397,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 # Frontend
-npm install --prefix ./src/kohaku-hub-ui
-npm install --prefix ./src/kohaku-hub-admin
+pnpm install
 
 # Start with Docker
 cp docker-compose.example.yml docker-compose.yml
@@ -434,7 +433,7 @@ uvicorn kohakuhub.main:app --host 0.0.0.0 --port 48888 --workers 4
 
 ```bash
 # Run frontend dev server (proxies API to localhost:48888)
-npm run dev --prefix ./src/kohaku-hub-ui
+pnpm run dev:ui
 
 # Access at http://localhost:5173
 ```
@@ -443,8 +442,7 @@ npm run dev --prefix ./src/kohaku-hub-ui
 
 ```bash
 # Build frontend and start all services
-npm run build --prefix ./src/kohaku-hub-ui
-npm run build --prefix ./src/kohaku-hub-admin
+pnpm run build
 docker-compose up -d --build
 
 # View logs

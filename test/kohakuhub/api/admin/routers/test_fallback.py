@@ -39,7 +39,7 @@ async def test_admin_can_create_list_get_update_and_delete_fallback_sources(
     assert get_response.json()["name"] == "Mirror"
 
     cache = backend_test_state.modules.fallback_cache_module.get_cache()
-    cache.set("model", "owner", "demo", "https://mirror.local", "Mirror", "huggingface", exists=True)
+    cache.set(None, "", "model", "owner", "demo", "https://mirror.local", "Mirror", "huggingface", exists=True)
 
     update_response = await admin_client.put(
         f"/admin/api/fallback-sources/{created['id']}",
@@ -96,7 +96,7 @@ async def test_admin_fallback_routes_validate_errors_and_expose_cache_controls(
     assert missing_delete.status_code == 404
 
     cache = backend_test_state.modules.fallback_cache_module.get_cache()
-    cache.set("model", "owner", "demo", "https://cache.local", "Cache", "huggingface", exists=True)
+    cache.set(None, "", "model", "owner", "demo", "https://cache.local", "Cache", "huggingface", exists=True)
 
     stats_response = await admin_client.get("/admin/api/fallback-sources/cache/stats")
     assert stats_response.status_code == 200

@@ -25,6 +25,7 @@ services:
       - postgres
       - lakefs
       - minio
+      - valkey
     environment:
       ## ===== CRITICAL: Endpoint Configuration (MUST CHANGE) =====
       ## These determine how users access your KohakuHub instance
@@ -90,6 +91,13 @@ services:
       # - KOHAKU_HUB_FALLBACK_ENABLED=true
       # - KOHAKU_HUB_FALLBACK_REQUIRE_AUTH=false # Set true to require authentication for fallback access
       # - KOHAKU_HUB_FALLBACK_SOURCES=[{"url":"https://huggingface.co","name":"HuggingFace","source_type":"huggingface","priority":1}]
+
+      ## ===== L2 Cache (Valkey) =====
+      # See docs/development/cache.md for the design (multi-tier, write-through
+      # invalidation, boot-time flush of mutable namespaces).
+      - KOHAKU_HUB_CACHE_ENABLED=true
+      - KOHAKU_HUB_CACHE_URL=redis://valkey:6379/0
+      # - KOHAKU_HUB_CACHE_NAMESPACE=kh # Override if multiple deployments share Valkey
     volumes:
       - ./hub-meta/hub-api:/hub-api-creds
 
@@ -149,6 +157,38 @@ services:
       - "25432:5432" # Optional: for external access
     volumes:
       - ./hub-meta/postgres-data:/var/lib/postgresql/data
+
+  # L2 cache. Pure cache: losing it never compromises correctness. The
+  # volume + RDB persistence is intentional — it preserves the warm Mode-A
+  # working set (LakeFS commit_id-keyed entries) across restarts so that
+  # Valkey upgrades / patches don't generate a synchronized LakeFS REST
+  # spike. Mode-B (mutable) namespaces are flushed on every Valkey restart
+  # by the API's bootstrap coordinator, regardless of RDB contents — see
+  # MODE_B_PREFIXES in src/kohakuhub/cache.py.
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: valkey
+    restart: always
+    # Internal-only by default. Add a `ports:` entry only if you need
+    # to attach valkey-cli from the host for debugging.
+    command: >-
+      valkey-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lfu
+      --save 300 100
+      --appendonly no
+    user: "${UID}:${GID}"
+    volumes:
+      # Same hub-meta convention as the other stateful services so all
+      # local persistence is rooted under one tree. Cache contents are
+      # recoverable from L3 — the directory is here for warm-restart
+      # benefits, not for backup.
+      - ./hub-meta/valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
 networks:
   default:

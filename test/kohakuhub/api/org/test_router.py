@@ -1,10 +1,24 @@
 """API tests for organization routes."""
 
+import asyncio
+
 
 async def test_get_organization_and_members(owner_client):
     org_response = await owner_client.get("/org/acme-labs")
     assert org_response.status_code == 200
-    assert org_response.json()["name"] == "acme-labs"
+    payload = org_response.json()
+    assert payload["name"] == "acme-labs"
+
+    # ``repo_count`` is included in the org info payload (issue #63) so the
+    # orgs grid card can render the per-card "X repos" badge without
+    # listing 1000 rows × 3 types per card. Seed plants exactly one
+    # dataset under acme-labs (``private-dataset``); no models / spaces.
+    assert "repo_count" in payload
+    counts = payload["repo_count"]
+    assert counts["model"] == 0
+    assert counts["dataset"] == 1
+    assert counts["space"] == 0
+    assert counts["total"] == 1
 
     members_response = await owner_client.get("/org/acme-labs/members")
     assert members_response.status_code == 200

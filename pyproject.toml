@@ -36,6 +36,7 @@ dependencies = [
     "pytz",
     "pyyaml",
     "questionary",
+    "redis[hiredis]>=5.0",
     "requests",
     "rich",
     "toml",

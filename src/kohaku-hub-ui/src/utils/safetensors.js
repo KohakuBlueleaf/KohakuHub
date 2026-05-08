@@ -17,11 +17,18 @@
 //             `parameters` is derived client-side as product(shape) so the
 //             UI can bucket by dtype and sum totals without a second pass.
 //
-// `fetch()` is used directly (not the axios `api` helper) because:
-//   - axios interceptors re-attach auth cookies that would defeat the CORS
-//     `*` preflight on presigned S3/MinIO URLs
-//   - the browser follows the backend 302 to the presigned URL
-//     transparently, preserving the Range request header per RFC 7231 §6.4.3
+// `fetch()` is used directly (not the axios `api` helper) because the
+// browser follows the backend 302 to the presigned URL transparently,
+// preserving the Range request header per RFC 7231 §6.4.3.
+//
+// `credentials: "same-origin"` is required for private repos: the first
+// hop is `/resolve/...` on the SPA's own origin, where the session cookie
+// is the only thing identifying the user — without it the backend's
+// HF-compat anti-enumeration path returns 404 even though the user is
+// logged in. The browser drops cookies on the cross-origin redirect to
+// S3/MinIO, so the presigned URL still works against an
+// `Access-Control-Allow-Origin: *` response without violating the
+// credentialed-CORS rule.
 
 const SAFETENSORS_FIRST_READ_BYTES = 100000; // HF constant
 const SAFETENSORS_MAX_HEADER_LENGTH = 100 * 1024 * 1024; // HF constant
@@ -68,11 +75,12 @@ export async function parseSafetensorsMetadata(url, options = {}) {
   const firstResp = await fetch(url, {
     headers: { Range: `bytes=0-${SAFETENSORS_FIRST_READ_BYTES}` },
     signal,
-    // `cors` is the default; explicit for clarity. Presigned URLs do not
-    // need cookies and sending them would break the Allow-Credentials
-    // contract downstream.
+    // `mode: "cors"` is the default; explicit for clarity. `same-origin`
+    // forwards the SPA session cookie on the same-origin /resolve/ hop
+    // (private repos return 404 without it) and is dropped on the
+    // cross-origin redirect to the presigned object URL.
     mode: "cors",
-    credentials: "omit",
+    credentials: "same-origin",
   });
   if (firstResp.status !== 200 && firstResp.status !== 206) {
     throw await SafetensorsFetchError.fromResponse(firstResp);
@@ -107,7 +115,7 @@ export async function parseSafetensorsMetadata(url, options = {}) {
       headers: { Range: `bytes=8-${headerLen + 7}` },
       signal,
       mode: "cors",
-      credentials: "omit",
+      credentials: "same-origin",
     });
     if (secondResp.status !== 200 && secondResp.status !== 206) {
       throw await SafetensorsFetchError.fromResponse(secondResp);
@@ -122,6 +130,53 @@ export async function parseSafetensorsMetadata(url, options = {}) {
   }
 
   onProgress("parsing");
+  const result = decodeSafetensorsHeader(headerBytes);
+  onProgress("done");
+  return result;
+}
+
+/**
+ * Parse a safetensors header from a fully in-memory file buffer.
+ *
+ * Used for the in-archive preview path inside TarBrowserDialog: a
+ * member is extracted via a single tar Range read into a Uint8Array,
+ * and the resulting bytes are handed straight to this function. The
+ * URL-based parser is not reusable there because hyparquet's helper
+ * (and our own Range-second-read fallback) issue HEAD or Range
+ * requests against the source URL, and `blob:` URLs do not honour
+ * those reliably across browsers — the failure surfaces as a
+ * "Browser blocked the request" CORS-shaped error.
+ *
+ * @param {Uint8Array|ArrayBuffer} buffer
+ * @returns {{metadata: object|null, tensors: object}}
+ */
+export function parseSafetensorsMetadataFromBuffer(buffer) {
+  const bytes =
+    buffer instanceof Uint8Array
+      ? buffer
+      : new Uint8Array(buffer);
+  if (bytes.byteLength < 8) {
+    throw new SafetensorsFormatError(
+      `Truncated buffer (${bytes.byteLength} bytes), expected at least 8 for header length prefix`,
+    );
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const headerLen = Number(view.getBigUint64(0, /* littleEndian */ true));
+  if (headerLen > SAFETENSORS_MAX_HEADER_LENGTH) {
+    throw new SafetensorsFormatError(
+      `Safetensors header too large: ${headerLen} > ${SAFETENSORS_MAX_HEADER_LENGTH}`,
+    );
+  }
+  if (8 + headerLen > bytes.byteLength) {
+    throw new SafetensorsFormatError(
+      `Buffer is shorter than declared header (need ${8 + headerLen} bytes, have ${bytes.byteLength})`,
+    );
+  }
+  const headerBytes = bytes.subarray(8, 8 + headerLen);
+  return decodeSafetensorsHeader(headerBytes);
+}
+
+function decodeSafetensorsHeader(headerBytes) {
   let raw;
   try {
     raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(headerBytes));
@@ -150,8 +205,6 @@ export async function parseSafetensorsMetadata(url, options = {}) {
       parameters,
     };
   }
-
-  onProgress("done");
   return { metadata, tensors };
 }
 

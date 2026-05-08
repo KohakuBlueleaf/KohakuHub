@@ -39,15 +39,34 @@ RepoType = Literal["model", "dataset", "space"]
 
 TREE_PAGE_SIZE = 1000
 TREE_EXPAND_PAGE_SIZE = 50
-TREE_DIFF_PAGE_SIZE = 1000
-TREE_COMMIT_SCAN_PAGE_SIZE = 100
 PATHS_INFO_MAX_PATHS = 1000
 PATHS_INFO_CONCURRENCY = 16
+# Concurrency cap for the per-target ``logCommits`` calls in
+# ``resolve_last_commits_for_paths``. Each call is independent so we can
+# fan them out under a shared async client; 16 mirrors the existing
+# PATHS_INFO_CONCURRENCY budget and stays well under common LakeFS
+# connection-pool limits.
+LAST_COMMIT_LOOKUP_CONCURRENCY = 16
+NAME_PREFIX_MAX_LENGTH = 256
 
 
 def _normalize_repo_path(path: str) -> str:
     """Normalize a repository-relative path."""
     return path.lstrip("/").rstrip("/")
+
+
+def _normalize_name_prefix(value: str | None) -> str | None:
+    """Normalize the optional same-level name-prefix filter.
+
+    Returns the trimmed prefix, or ``None`` when the caller did not
+    supply one. Empty strings (or whitespace-only) are treated as
+    omitted so the response stays byte-identical to the unfiltered
+    listing — that matters for the HF-compat invariant in §5.1.
+    """
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
 
 
 def _format_last_modified(mtime: float | int | None) -> str | None:
@@ -253,122 +272,78 @@ def _make_tree_item(
     return dir_obj
 
 
-def _apply_changed_path(
-    changed_path: str,
-    unresolved_files: set[str],
-    unresolved_directories: set[str],
-    resolved: dict[str, dict | None],
-    commit_info: dict,
-) -> None:
-    """Resolve file and ancestor directory targets touched by a diff path."""
-    normalized_path = _normalize_repo_path(changed_path)
-    if not normalized_path:
-        return
-
-    if normalized_path in unresolved_files:
-        unresolved_files.remove(normalized_path)
-        resolved[normalized_path] = commit_info
-
-    if normalized_path in unresolved_directories:
-        unresolved_directories.remove(normalized_path)
-        resolved[normalized_path] = commit_info
-
-    ancestor = normalized_path
-    while "/" in ancestor and unresolved_directories:
-        ancestor = ancestor.rsplit("/", 1)[0]
-        if ancestor in unresolved_directories:
-            unresolved_directories.remove(ancestor)
-            resolved[ancestor] = commit_info
-
-
 async def resolve_last_commits_for_paths(
     lakefs_repo: str,
     revision: str,
     targets: list[dict[str, str]],
 ) -> dict[str, dict | None]:
-    """Resolve the latest commit touching each target path."""
-    unresolved_files = {
-        target["path"] for target in targets if target["type"] == "file" and target["path"]
-    }
-    unresolved_directories = {
-        target["path"]
-        for target in targets
-        if target["type"] == "directory" and target["path"]
-    }
-    if not unresolved_files and not unresolved_directories:
+    """Resolve the latest commit touching each target path.
+
+    For every entry in ``targets`` (each ``{path: ..., type: 'file'|'directory'}``)
+    issue a ``logCommits`` call with the matching ``objects=[path]`` (file) or
+    ``prefixes=[path/]`` (directory) filter and ``amount=1, limit=true`` so
+    LakeFS returns at most the most recent qualifying commit.
+
+    Why this is fast: LakeFS implements path-filtered log via its
+    content-addressed metarange tree (``checkPathListInCommit`` in
+    ``pkg/catalog/catalog.go``) — when a path's containing range hash matches
+    between two commits, LakeFS short-circuits without fetching diff bodies.
+    Each call is single-digit milliseconds regardless of how deep the path
+    sits in the commit log. Earlier revisions of this function reproduced the
+    walk client-side via per-commit ``diff_refs`` calls; that pattern was
+    O(commits-walked) and dominated ``/tree?expand=true`` latency on
+    WAN-deployed instances. See issue #59 for the measured ~60× speedup and
+    the LakeFS-source pointer.
+
+    Note: ``logCommits`` skips merge commits by default, matching what the
+    previous diff-walk produced (it inspected only single-parent diffs as
+    well). If a future caller needs first-parent merge traversal they can
+    invoke ``log_commits(..., first_parent=True)`` directly.
+
+    LakeFS version requirement: the ``objects=`` / ``prefixes=`` / ``limit=``
+    parameters used here were introduced in LakeFS v0.54.0 (released
+    2021-11-08). KohakuHub's docker bundle pins ``treeverse/lakefs:latest``
+    so default deployments are always compatible; operators self-deploying
+    against older LakeFS servers must upgrade to v0.54.0 or newer.
+    """
+    if not targets:
         return {}
 
     client = get_lakefs_rest_client()
-    resolved: dict[str, dict | None] = {}
-    commit_cursor: str | None = None
+    sem = asyncio.Semaphore(LAST_COMMIT_LOOKUP_CONCURRENCY)
 
-    while unresolved_files or unresolved_directories:
-        log_result = await client.log_commits(
-            repository=lakefs_repo,
-            ref=revision,
-            after=commit_cursor,
-            amount=TREE_COMMIT_SCAN_PAGE_SIZE,
-        )
-        commits = log_result.get("results", [])
-        if not commits:
-            break
-
-        for commit in commits:
-            commit_info = _serialize_last_commit(commit)
-            parent_ids = commit.get("parents") or []
-            parent_id = parent_ids[0] if parent_ids else None
-
-            if not parent_id:
-                for path in unresolved_files:
-                    resolved[path] = commit_info
-                for path in unresolved_directories:
-                    resolved[path] = commit_info
-                unresolved_files.clear()
-                unresolved_directories.clear()
-                break
-
-            diff_cursor: str | None = None
-            while unresolved_files or unresolved_directories:
-                diff_result = await client.diff_refs(
+    async def fetch_one(target: dict[str, str]) -> tuple[str, dict | None]:
+        path = target.get("path")
+        if not path:
+            return "", None
+        kind = target.get("type")
+        # ``objects`` for files, ``prefixes`` for directories. The directory
+        # filter must end with ``/`` so LakeFS treats it as a strict prefix,
+        # otherwise paths sharing a basename leading edge would qualify.
+        if kind == "directory":
+            kwargs = {"prefixes": [f"{path}/"]}
+        else:
+            kwargs = {"objects": [path]}
+        async with sem:
+            try:
+                page = await client.log_commits(
                     repository=lakefs_repo,
-                    left_ref=parent_id,
-                    right_ref=commit["id"],
-                    after=diff_cursor,
-                    amount=TREE_DIFF_PAGE_SIZE,
+                    ref=revision,
+                    amount=1,
+                    limit=True,
+                    **kwargs,
                 )
+            except Exception as error:
+                logger.debug(
+                    f"log_commits for {kind or 'file'}={path!r} on {lakefs_repo}@{revision}: {error}"
+                )
+                return path, None
 
-                for entry in diff_result.get("results", []):
-                    diff_path = entry.get("path")
-                    if diff_path:
-                        _apply_changed_path(
-                            diff_path,
-                            unresolved_files,
-                            unresolved_directories,
-                            resolved,
-                            commit_info,
-                        )
-                    if not unresolved_files and not unresolved_directories:
-                        break
+        results = page.get("results") or []
+        return path, _serialize_last_commit(results[0]) if results else None
 
-                pagination = diff_result.get("pagination") or {}
-                if (
-                    not pagination.get("has_more")
-                    or (not unresolved_files and not unresolved_directories)
-                ):
-                    break
-                diff_cursor = pagination.get("next_offset")
-
-            if not unresolved_files and not unresolved_directories:
-                break
-
-        pagination = log_result.get("pagination") or {}
-        if not pagination.get("has_more") or (
-            not unresolved_files and not unresolved_directories
-        ):
-            break
-        commit_cursor = pagination.get("next_offset")
-
-    return resolved
+    pairs = await asyncio.gather(*(fetch_one(target) for target in targets))
+    return {path: commit for path, commit in pairs if path}
 
 
 async def _process_single_path(
@@ -484,6 +459,7 @@ async def list_repo_tree(
     expand: bool = False,
     limit: int | None = Query(default=None, ge=1),
     cursor: str | None = None,
+    name_prefix: str | None = None,
     fallback: bool = True,
     user: User | None = Depends(get_optional_user),
 ):
@@ -498,7 +474,23 @@ async def list_repo_tree(
 
     lakefs_repo = lakefs_repo_name(repo_type, repo_id)
     clean_path = _normalize_repo_path(path)
-    prefix = f"{clean_path}/" if clean_path else ""
+    base_prefix = f"{clean_path}/" if clean_path else ""
+
+    # Same-level basename-prefix filter pushed straight to LakeFS via its
+    # `prefix` arg; `delimiter='/'` is preserved when not recursive so
+    # directory rows still surface as `common_prefix` entries (see #54).
+    normalized_prefix = _normalize_name_prefix(name_prefix)
+    if normalized_prefix is not None:
+        if "/" in normalized_prefix:
+            return hf_bad_request("name_prefix must not contain '/'")
+        if len(normalized_prefix) > NAME_PREFIX_MAX_LENGTH:
+            return hf_bad_request(
+                f"name_prefix is too long (max {NAME_PREFIX_MAX_LENGTH} chars)"
+            )
+        lakefs_prefix = f"{base_prefix}{normalized_prefix}"
+    else:
+        lakefs_prefix = base_prefix
+
     default_limit = TREE_EXPAND_PAGE_SIZE if expand else TREE_PAGE_SIZE
     page_size = min(limit or default_limit, default_limit)
 
@@ -513,7 +505,7 @@ async def list_repo_tree(
         page = await fetch_lakefs_objects_page(
             lakefs_repo=lakefs_repo,
             revision=resolved_revision,
-            prefix=prefix,
+            prefix=lakefs_prefix,
             recursive=recursive,
             amount=page_size,
             after=cursor,
@@ -528,7 +520,15 @@ async def list_repo_tree(
         return hf_server_error(f"Failed to list objects: {str(error)}")
 
     page_results = page.get("results", [])
-    if clean_path and not page_results:
+    # "Directory exists but the prefix matched nothing" must stay 200 +
+    # empty list — only treat empty results as 404 when the caller did
+    # not narrow with name_prefix and is not paging into a known dir.
+    if (
+        clean_path
+        and not page_results
+        and normalized_prefix is None
+        and not cursor
+    ):
         return hf_entry_not_found(repo_id, clean_path, revision)
 
     file_paths = [

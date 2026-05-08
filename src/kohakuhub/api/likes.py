@@ -14,7 +14,7 @@ from kohakuhub.db_operations import (
 )
 from kohakuhub.logger import get_logger
 from kohakuhub.auth.dependencies import get_current_user, get_optional_user
-from kohakuhub.auth.permissions import check_repo_read_permission
+from kohakuhub.auth.permissions import RepoReadDeniedError, check_repo_read_permission
 from kohakuhub.api.repo.utils.hf import hf_repo_not_found
 
 logger = get_logger("LIKES")
@@ -245,8 +245,13 @@ async def list_user_likes(
                     },
                 }
             )
-        except HTTPException:
-            # Skip private repos user can't access
+        except (HTTPException, RepoReadDeniedError):
+            # Skip private repos user can't access. Catch both shapes:
+            # ``RepoReadDeniedError`` (the new privacy-preserving raise from
+            # ``check_repo_read_permission`` post-#76) and ``HTTPException``
+            # (any other read-side denial that still raises through that
+            # legacy shape — e.g., the user-not-found 404 from sibling
+            # checks).
             continue
 
     return repos

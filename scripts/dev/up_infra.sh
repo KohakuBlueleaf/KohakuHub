@@ -8,12 +8,14 @@ NETWORK_NAME="kohakuhub-dev"
 POSTGRES_CONTAINER="kohakuhub-dev-postgres"
 MINIO_CONTAINER="kohakuhub-dev-minio"
 LAKEFS_CONTAINER="kohakuhub-dev-lakefs"
+VALKEY_CONTAINER="kohakuhub-dev-valkey"
 
 POSTGRES_DATA_DIR="${ROOT_DIR}/hub-meta/dev/postgres-data"
 MINIO_DATA_DIR="${ROOT_DIR}/hub-meta/dev/minio-data"
 MINIO_CONFIG_DIR="${ROOT_DIR}/hub-meta/dev/minio-config"
 LAKEFS_DATA_DIR="${ROOT_DIR}/hub-meta/dev/lakefs-data"
 LAKEFS_CACHE_DIR="${ROOT_DIR}/hub-meta/dev/lakefs-cache"
+VALKEY_DATA_DIR="${ROOT_DIR}/hub-meta/dev/valkey-data"
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -58,7 +60,8 @@ ensure_directories() {
     "${MINIO_DATA_DIR}" \
     "${MINIO_CONFIG_DIR}" \
     "${LAKEFS_DATA_DIR}" \
-    "${LAKEFS_CACHE_DIR}"
+    "${LAKEFS_CACHE_DIR}" \
+    "${VALKEY_DATA_DIR}"
 }
 
 ensure_postgres() {
@@ -151,8 +154,45 @@ ensure_lakefs() {
   echo "Created ${LAKEFS_CONTAINER}"
 }
 
+ensure_valkey() {
+  if container_running "${VALKEY_CONTAINER}"; then
+    echo "Valkey already running"
+    return
+  fi
+
+  if container_exists "${VALKEY_CONTAINER}"; then
+    docker start "${VALKEY_CONTAINER}" >/dev/null
+    echo "Started existing ${VALKEY_CONTAINER}"
+    return
+  fi
+
+  # Mirror production deploy: RDB persistence + LFU eviction + 256MB cap
+  # (smaller than prod's 512MB; dev workload is one user). Bind-mounting
+  # to the host means a docker rm + ensure_valkey cycle keeps the warm
+  # working set, which speeds up local iteration considerably.
+  docker run -d \
+    --name "${VALKEY_CONTAINER}" \
+    --network "${NETWORK_NAME}" \
+    -p 26379:6379 \
+    -v "${VALKEY_DATA_DIR}:/data" \
+    valkey/valkey:8-alpine \
+    valkey-server \
+    --maxmemory 256mb \
+    --maxmemory-policy allkeys-lfu \
+    --save 300 100 \
+    --appendonly no >/dev/null
+
+  echo "Created ${VALKEY_CONTAINER}"
+}
+
 wait_for_postgres() {
   until docker exec "${POSTGRES_CONTAINER}" pg_isready -U "${DEV_POSTGRES_USER}" -d "${DEV_POSTGRES_DB}" >/dev/null 2>&1; do
+    sleep 1
+  done
+}
+
+wait_for_valkey() {
+  until docker exec "${VALKEY_CONTAINER}" valkey-cli ping >/dev/null 2>&1; do
     sleep 1
   done
 }
@@ -169,10 +209,12 @@ ensure_directories
 ensure_postgres
 ensure_minio
 ensure_lakefs
+ensure_valkey
 
 wait_for_postgres
 wait_for_http "http://127.0.0.1:29001/minio/health/live"
 wait_for_http "http://127.0.0.1:28000/_health"
+wait_for_valkey
 
 cat <<EOF
 Infra is ready.
@@ -181,6 +223,7 @@ Postgres: postgresql://${DEV_POSTGRES_USER}:${DEV_POSTGRES_PASSWORD}@127.0.0.1:2
 MinIO API: http://127.0.0.1:29001
 MinIO Console: http://127.0.0.1:29000
 LakeFS: http://127.0.0.1:28000
+Valkey: redis://127.0.0.1:26379/0
 
 Next:
   1. cp .env.dev.example .env.dev

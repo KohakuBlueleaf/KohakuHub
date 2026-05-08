@@ -14,7 +14,7 @@ UI_ADMIN_DIR ?= src/kohaku-hub-admin
 UI_ADMIN_TEST_ROOT ?= test/kohaku-hub-admin
 
 .PHONY: help init-env install-backend install-frontend install infra-up infra-down \
-	backend seed-demo reset-local-data reset-and-seed ui admin status \
+	backend seed-demo reset-local-data reset-and-seed ui ui-only admin status \
 	logs-postgres logs-minio logs-lakefs test test-backend test-ui test-ui-admin \
 	verify-seed-demo
 
@@ -31,8 +31,9 @@ help:
 	@echo "  make reset-local-data Dangerously clear local KohakuHub dev data through the local reset helper"
 	@echo "  make reset-and-seed   Reset persisted local data, then bootstrap fresh demo data"
 	@echo "  make backend          Run FastAPI backend in reload mode"
-	@echo "  make ui               Run the main Vite frontend on :5173"
-	@echo "  make admin            Run the admin Vite frontend on :5174"
+	@echo "  make ui               Run main UI on :5173 with admin mounted at /admin (admin Vite on :5174)"
+	@echo "  make ui-only          Run only the main Vite frontend on :5173 (no admin)"
+	@echo "  make admin            Run only the admin Vite frontend on :5174"
 	@echo "  make test-backend     Run the backend pytest suite against the real test services with coverage"
 	@echo "                        Example: make test-backend RANGE_DIR=api"
 	@echo "                        Example: make test-backend RANGE_DIR=api/repo/routers"
@@ -62,8 +63,7 @@ install-backend:
 	fi
 
 install-frontend:
-	npm install --prefix src/kohaku-hub-ui
-	npm install --prefix src/kohaku-hub-admin
+	pnpm install
 
 install: install-backend install-frontend
 
@@ -97,10 +97,22 @@ reset-and-seed: reset-local-data
 	$(MAKE) seed-demo
 
 ui:
-	npm run dev --prefix src/kohaku-hub-ui
+	@# Run admin and main UI together. They share this recipe shell's process
+	@# group (no `set -m`), so SIGINT from the terminal — and the explicit
+	@# `kill 0` on exit — propagate to both vite servers cleanly.
+	@# Use `exec ./node_modules/.bin/vite` instead of `pnpm dev` because
+	@# the package manager process does not reliably forward SIGINT/SIGTERM
+	@# to its child process in every shell environment.
+	@trap 'kill 0 2>/dev/null' EXIT INT TERM; \
+	( cd src/kohaku-hub-admin && exec ./node_modules/.bin/vite ) & \
+	( cd src/kohaku-hub-ui    && exec ./node_modules/.bin/vite ) & \
+	wait
+
+ui-only:
+	pnpm run dev:ui
 
 admin:
-	npm run dev --prefix src/kohaku-hub-admin
+	pnpm run dev:admin
 
 test-backend:
 	@if [[ ! -e "$(TEST_RANGE)" ]]; then \
@@ -122,7 +134,7 @@ test-ui:
 		echo "Missing UI test directory: $(UI_TEST_ROOT)" >&2; \
 		exit 1; \
 	fi
-	npm run test --prefix $(UI_DIR)
+	pnpm run test:ui
 
 test-ui-admin:
 	@if [[ ! -d "$(UI_ADMIN_DIR)" ]]; then \
@@ -133,7 +145,7 @@ test-ui-admin:
 		echo "Missing admin UI test directory: $(UI_ADMIN_TEST_ROOT)" >&2; \
 		exit 1; \
 	fi
-	npm run test --prefix $(UI_ADMIN_DIR)
+	pnpm run test:admin
 
 test: test-backend test-ui test-ui-admin
 

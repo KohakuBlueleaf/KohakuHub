@@ -1,5 +1,5 @@
 // src/kohaku-hub-ui/src/stores/theme.js
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 
 export const useThemeStore = defineStore("theme", {
   state: () => ({
@@ -47,3 +47,8 @@ export const useThemeStore = defineStore("theme", {
     },
   },
 });
+
+// Hot-replace this store on edit instead of full-reloading the page.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useThemeStore, import.meta.hot));
+}

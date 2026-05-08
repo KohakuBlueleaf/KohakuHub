@@ -1,5 +1,17 @@
 # KohakuHub Deployment Architecture
 
+## Component Version Requirements
+
+- **LakeFS ≥ v0.54.0** (released 2021-11-08). The file-list `expand=true`
+  endpoint uses path-filtered `logCommits` queries (`objects=` / `prefixes=`
+  / `limit=` parameters) introduced in that release; pre-v0.54 servers
+  silently ignore those parameters and would return incorrect `lastCommit`
+  metadata. The shipped docker bundle pins `treeverse/lakefs:latest` so the
+  default deployment is always compatible — only manual self-deployments
+  that pin an older LakeFS image need to upgrade.
+- PostgreSQL ≥ 13 or SQLite (latest).
+- MinIO (latest) or any S3-compatible blob store.
+
 ## Setup Instructions
 
 ### First Time Setup
@@ -41,10 +53,8 @@ See [scripts/README.md](../scripts/README.md#docker-compose-generator) for detai
 After configuration (either option):
 
 ```bash
-npm install --prefix ./src/kohaku-hub-ui
-npm install --prefix ./src/kohaku-hub-admin
-npm run build --prefix ./src/kohaku-hub-ui
-npm run build --prefix ./src/kohaku-hub-admin
+pnpm install
+pnpm run build
 docker-compose up -d --build
 ```
 
@@ -149,7 +159,7 @@ os.environ["HF_ENDPOINT"] = "http://localhost:48888"  # Don't use backend port d
 
 **Frontend Dev Server** (port 5173):
 ```bash
-npm run dev --prefix ./src/kohaku-hub-ui
+pnpm run dev:ui
 # Proxies /api → http://localhost:48888
 ```
 

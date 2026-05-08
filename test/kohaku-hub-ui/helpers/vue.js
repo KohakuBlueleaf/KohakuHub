@@ -138,6 +138,113 @@ export const ElementPlusStubs = {
       return () => h("option", { value: props.value }, props.label);
     },
   }),
+  ElPagination: defineComponent({
+    name: "ElPagination",
+    props: {
+      currentPage: { type: Number, default: 1 },
+      pageCount: { type: Number, default: 1 },
+      pageSize: { type: Number, default: 10 },
+      total: { type: Number, default: 0 },
+      pagerCount: { type: Number, default: 7 },
+      disabled: { type: Boolean, default: false },
+      hideOnSinglePage: { type: Boolean, default: false },
+      background: { type: Boolean, default: false },
+      layout: { type: String, default: "prev, pager, next" },
+    },
+    emits: ["update:currentPage", "current-change"],
+    setup(props, { emit }) {
+      // The real ElPagination renders a smart pager (head + middle +
+      // tail with ellipsis). The stub renders every page number as a
+      // button so a test can drive direct page-N navigation, plus a
+      // jumper input when the layout asks for it. That mirrors what
+      // the real component reaches in user input — `current-change`
+      // fires with the new page number on either path.
+      return () => {
+        const total = Math.max(1, props.pageCount);
+        const goto = (n) => {
+          if (props.disabled) return;
+          if (n < 1 || n > total) return;
+          if (n === props.currentPage) return;
+          emit("update:currentPage", n);
+          emit("current-change", n);
+        };
+        if (props.hideOnSinglePage && total <= 1) {
+          return h("div", { "data-el-pagination": "empty" });
+        }
+        const layout = String(props.layout || "");
+        const children = [];
+        if (layout.includes("prev")) {
+          children.push(
+            h(
+              "button",
+              {
+                type: "button",
+                "data-el-pagination-prev": "true",
+                disabled: props.disabled || props.currentPage <= 1,
+                onClick: () => goto(props.currentPage - 1),
+              },
+              "Prev",
+            ),
+          );
+        }
+        if (layout.includes("pager")) {
+          for (let i = 1; i <= total; i += 1) {
+            children.push(
+              h(
+                "button",
+                {
+                  type: "button",
+                  "data-el-pagination-page": String(i),
+                  "data-active": String(i === props.currentPage),
+                  disabled: props.disabled,
+                  onClick: () => goto(i),
+                },
+                String(i),
+              ),
+            );
+          }
+        }
+        if (layout.includes("next")) {
+          children.push(
+            h(
+              "button",
+              {
+                type: "button",
+                "data-el-pagination-next": "true",
+                disabled: props.disabled || props.currentPage >= total,
+                onClick: () => goto(props.currentPage + 1),
+              },
+              "Next",
+            ),
+          );
+        }
+        if (layout.includes("jumper")) {
+          children.push(
+            h("input", {
+              type: "number",
+              min: 1,
+              max: total,
+              "data-el-pagination-jumper": "true",
+              disabled: props.disabled,
+              onChange: (event) => {
+                const v = Number(event.target.value);
+                if (Number.isFinite(v)) goto(v);
+              },
+            }),
+          );
+        }
+        return h(
+          "div",
+          {
+            "data-el-pagination": "true",
+            "data-current": String(props.currentPage),
+            "data-page-count": String(total),
+          },
+          children,
+        );
+      };
+    },
+  }),
   ElCheckbox: defineComponent({
     name: "ElCheckbox",
     props: {

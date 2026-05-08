@@ -10,11 +10,16 @@ TEST_PUBLIC_KEY = (
 async def test_ssh_key_crud_duplicate_and_ownership(owner_client, outsider_client):
     list_response = await owner_client.get("/api/user/keys")
     assert list_response.status_code == 200
-    assert list_response.json() == []
+    initial_keys = list_response.json()
+    initial_count = len(initial_keys)
+    # The fixture under test must not collide with anything the seed planted.
+    assert all(
+        not k["title"].startswith("Workstation Test") for k in initial_keys
+    )
 
     create_response = await owner_client.post(
         "/api/user/keys",
-        json={"title": "Workstation", "key": TEST_PUBLIC_KEY},
+        json={"title": "Workstation Test", "key": TEST_PUBLIC_KEY},
     )
     assert create_response.status_code == 200
     payload = create_response.json()
@@ -24,7 +29,7 @@ async def test_ssh_key_crud_duplicate_and_ownership(owner_client, outsider_clien
 
     get_response = await owner_client.get(f"/api/user/keys/{key_id}")
     assert get_response.status_code == 200
-    assert get_response.json()["title"] == "Workstation"
+    assert get_response.json()["title"] == "Workstation Test"
 
     duplicate_response = await owner_client.post(
         "/api/user/keys",
@@ -40,4 +45,6 @@ async def test_ssh_key_crud_duplicate_and_ownership(owner_client, outsider_clien
 
     final_response = await owner_client.get("/api/user/keys")
     assert final_response.status_code == 200
-    assert final_response.json() == []
+    final_keys = final_response.json()
+    assert len(final_keys) == initial_count
+    assert all(k["id"] != key_id for k in final_keys)

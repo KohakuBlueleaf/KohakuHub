@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from kohakuhub.auth.permissions import (
+    RepoReadDeniedError,
     check_namespace_permission,
     check_repo_delete_permission,
     check_repo_read_permission,
@@ -48,5 +49,11 @@ def test_repo_read_write_and_delete_permissions_cover_private_org_repo():
     with pytest.raises(HTTPException):
         check_repo_delete_permission(private_repo, visitor)
 
-    with pytest.raises(HTTPException):
+    # Read-denial cases (anonymous-on-private and authed-no-access) now
+    # raise ``RepoReadDeniedError`` rather than ``HTTPException``; the
+    # global handler in ``main.py`` translates that into HF's
+    # ``404 + X-Error-Code: RepoNotFound`` wire shape.
+    with pytest.raises(RepoReadDeniedError):
         check_repo_read_permission(private_repo, outsider)
+    with pytest.raises(RepoReadDeniedError):
+        check_repo_read_permission(private_repo, None)

@@ -16,6 +16,7 @@ from kohakuhub.db_operations import (
 from kohakuhub.logger import get_logger
 from kohakuhub.utils.datetime_utils import safe_isoformat
 from kohakuhub.auth.dependencies import get_current_user
+from kohakuhub.api.fallback.cache import get_cache
 
 router = APIRouter()
 logger = get_logger("AUTH_EXT_TOKENS")
@@ -147,7 +148,16 @@ async def add_external_token(
     # Add/update token
     set_user_external_token(user, data.url, data.token)
 
-    logger.info(f"User {username} set external token for {data.url}")
+    # Strict-freshness invalidation (#79): a per-user token mutation
+    # changes the user's effective fallback chain auth. Drop every
+    # cached binding for this user (across all repos) and bump the
+    # user's generation so any in-flight probe's safe_set is rejected.
+    evicted = get_cache().clear_user(user.id)
+
+    logger.info(
+        f"User {username} set external token for {data.url} "
+        f"(cache evicted {evicted} entries)"
+    )
 
     return {"success": True, "message": "External token saved"}
 
@@ -167,7 +177,13 @@ async def delete_external_token(
     if not deleted:
         raise HTTPException(404, detail="Token not found for this URL")
 
-    logger.info(f"User {username} deleted external token for {url}")
+    # Strict-freshness invalidation (#79): see add_external_token comment.
+    evicted = get_cache().clear_user(user.id)
+
+    logger.info(
+        f"User {username} deleted external token for {url} "
+        f"(cache evicted {evicted} entries)"
+    )
 
     return {"success": True, "message": "External token deleted"}
 
@@ -204,7 +220,15 @@ async def bulk_update_external_tokens(
 
         set_user_external_token(user, token_data.url, token_data.token)
 
-    logger.info(f"User {username} bulk updated {len(data.tokens)} external tokens")
+    # Strict-freshness invalidation (#79): bulk replace is the
+    # "every per-source token may have changed" event; drop every
+    # cached binding for this user and bump the user generation.
+    evicted = get_cache().clear_user(user.id)
+
+    logger.info(
+        f"User {username} bulk updated {len(data.tokens)} external tokens "
+        f"(cache evicted {evicted} entries)"
+    )
 
     return {
         "success": True,

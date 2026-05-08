@@ -22,11 +22,13 @@ import {
   buildTensorTree,
   formatHumanReadable,
   parseSafetensorsMetadata,
+  parseSafetensorsMetadataFromBuffer,
   summarizeSafetensors,
   SafetensorsFetchError,
 } from "@/utils/safetensors";
 import {
   parseParquetMetadata,
+  parseParquetMetadataFromBuffer,
   summarizeParquetSchema,
 } from "@/utils/parquet";
 import { classifyError, ERROR_KIND } from "@/utils/http-errors";
@@ -35,7 +37,16 @@ import ErrorState from "@/components/common/ErrorState.vue";
 const props = defineProps({
   visible: { type: Boolean, required: true },
   kind: { type: String, required: true }, // "safetensors" | "parquet"
-  resolveUrl: { type: String, required: true },
+  // One of resolveUrl OR bytes is required:
+  //   - resolveUrl: standard /resolve/ URL — Range-read against
+  //     S3/MinIO. The default code path used by RepoViewer.
+  //   - bytes: a Uint8Array already in memory. Used by
+  //     TarBrowserDialog when the member has been extracted from a
+  //     tar via Range read; routing through a `blob:` URL would not
+  //     work because hyparquet's URL helper issues HEAD + Range
+  //     against the source URL, which `blob:` URLs do not honour.
+  resolveUrl: { type: String, default: "" },
+  bytes: { type: Object, default: null },
   filename: { type: String, required: true },
 });
 const emit = defineEmits(["update:visible"]);
@@ -67,7 +78,7 @@ const title = computed(() => {
 });
 
 watch(
-  () => [props.visible, props.resolveUrl, props.kind],
+  () => [props.visible, props.resolveUrl, props.bytes, props.kind],
   ([visible]) => {
     if (visible) {
       startLoad();
@@ -103,20 +114,24 @@ async function startLoad() {
     };
     let result;
     if (props.kind === "safetensors") {
-      const header = await parseSafetensorsMetadata(props.resolveUrl, {
-        signal: controller.signal,
-        onProgress,
-      });
+      const header = props.bytes
+        ? parseSafetensorsMetadataFromBuffer(props.bytes)
+        : await parseSafetensorsMetadata(props.resolveUrl, {
+            signal: controller.signal,
+            onProgress,
+          });
       result = {
         kind: "safetensors",
         header,
         summary: summarizeSafetensors(header),
       };
     } else if (props.kind === "parquet") {
-      const metadata = await parseParquetMetadata(props.resolveUrl, {
-        signal: controller.signal,
-        onProgress,
-      });
+      const metadata = props.bytes
+        ? await parseParquetMetadataFromBuffer(props.bytes)
+        : await parseParquetMetadata(props.resolveUrl, {
+            signal: controller.signal,
+            onProgress,
+          });
       result = {
         kind: "parquet",
         metadata,

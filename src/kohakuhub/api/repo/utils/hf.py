@@ -15,24 +15,37 @@ class HFErrorCode:
     These error codes are read by huggingface_hub client's hf_raise_for_status()
     function to provide specific error types.
 
-    HuggingFace Hub officially supports:
-    - RepoNotFound
-    - RevisionNotFound
-    - EntryNotFound
-    - GatedRepo
+    HuggingFace Hub officially supports the four codes below — these are
+    the ones that ``hf_raise_for_status`` dispatches into named exception
+    classes (``RepositoryNotFoundError``, ``RevisionNotFoundError``,
+    ``EntryNotFoundError``, ``GatedRepoError``). **Do not rename them.**
 
-    We add additional codes for KohakuHub-specific errors that don't map to HF codes.
+    Note on the ``DisabledRepo`` case: HF signals it via the
+    ``X-Error-Message`` string ``"Access to this resource is disabled."``
+    rather than an ``X-Error-Code``; the helper for that lives in
+    ``hf_disabled_repo`` below and does not appear in this enum.
+
+    The remaining codes below are **KohakuHub-only extensions**.
+    ``hf_raise_for_status`` does not special-case them; downstream
+    ``huggingface_hub`` clients surface them as generic
+    ``HfHubHTTPError``. They exist so KohakuHub's own UI / SPA / admin
+    tooling can branch on a stable code rather than parsing free-text
+    messages. They are emitted on the wire — clients that don't expect
+    them simply ignore the header.
 
     Reference: huggingface_hub/utils/_http.py
     """
 
-    # HuggingFace official error codes (DO NOT CHANGE)
+    # HuggingFace official error codes (DO NOT CHANGE — these drive
+    # named-exception dispatch in ``hf_raise_for_status``).
     REPO_NOT_FOUND = "RepoNotFound"
     REVISION_NOT_FOUND = "RevisionNotFound"
     ENTRY_NOT_FOUND = "EntryNotFound"
     GATED_REPO = "GatedRepo"
 
-    # KohakuHub custom error codes (not in official HF Hub)
+    # KohakuHub-only extensions (not recognized by hf_raise_for_status —
+    # downstream HF clients see these as generic HfHubHTTPError; our SPA
+    # and admin tooling key off them for branching).
     REPO_EXISTS = "RepoExists"
     BAD_REQUEST = "BadRequest"
     INVALID_REPO_TYPE = "InvalidRepoType"
@@ -133,6 +146,46 @@ def hf_repo_not_found(repo_id: str, repo_type: Optional[str] = None) -> Response
         HFErrorCode.REPO_NOT_FOUND,
         f"Repository '{repo_id}'{type_str} not found",
     )
+
+
+def hf_disabled_repo(repo_id: Optional[str] = None) -> Response:
+    """Shortcut for "this repository is disabled" error (403).
+
+    HuggingFace flags moderation-disabled repositories with an exact
+    ``X-Error-Message`` string — ``"Access to this resource is disabled."``
+    — and **no** ``X-Error-Code`` header. ``huggingface_hub.utils
+    ._http.hf_raise_for_status`` dispatches ``DisabledRepoError`` by
+    matching that exact message string (verified live against
+    ``huggingface_hub`` 1.11.0); changing the casing or punctuation
+    breaks the dispatch.
+
+    No call site wires this helper today — ``DisabledRepoError`` is
+    reserved for a future moderation feature ("admin disables a repo")
+    and the helper is added here so the wire shape is centralized when
+    that feature lands. Keep the message string verbatim.
+
+    Args:
+        repo_id: Optional repository id, included in our
+            ``X-Khub-Repo`` header (debug aid for operators); the
+            HF-canonical message stays exact.
+
+    Returns:
+        403 response with HF's exact ``X-Error-Message``, no
+        ``X-Error-Code``, empty body.
+    """
+    extra: dict[str, str] = {}
+    if repo_id:
+        extra["X-Khub-Repo"] = repo_id
+    response = Response(
+        status_code=403,
+        headers={
+            # HF's exact wire string — DisabledRepoError's dispatch is a
+            # whole-string match, so this must not be paraphrased.
+            "X-Error-Message": "Access to this resource is disabled.",
+            **extra,
+        },
+    )
+    return response
 
 
 def hf_gated_repo(repo_id: str, message: Optional[str] = None) -> Response:

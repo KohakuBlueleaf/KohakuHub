@@ -49,7 +49,7 @@ default_org_public_quota_bytes = 100_000_000_000    # 100GB for public repos
 
 [fallback]
 enabled = true
-cache_ttl_seconds = 300  # 5 minutes cache for repo→source mappings
+cache_ttl_seconds = 30  # bind-cache window. Lower = faster self-heal on transient upstream failures, higher = better hit rate. Default keeps the strict-consistency guarantee within a single hf_hub session while letting outages self-heal in ~30s.
 timeout_seconds = 10
 max_concurrent_requests = 5
 # sources = []  # JSON list of fallback sources (optional)

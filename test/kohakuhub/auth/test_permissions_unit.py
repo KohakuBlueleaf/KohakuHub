@@ -33,17 +33,26 @@ def test_namespace_permission_covers_admin_bypass_and_common_failures(monkeypatc
 
 
 def test_repo_read_permission_covers_admin_public_owner_and_unauthenticated_paths(monkeypatch):
-    public_repo = SimpleNamespace(namespace="owner", full_id="owner/public", private=False)
-    private_repo = SimpleNamespace(namespace="owner", full_id="owner/private", private=True)
+    public_repo = SimpleNamespace(
+        namespace="owner", full_id="owner/public", repo_type="model", private=False
+    )
+    private_repo = SimpleNamespace(
+        namespace="owner", full_id="owner/private", repo_type="model", private=True
+    )
     owner = SimpleNamespace(username="owner")
 
     assert permissions.check_repo_read_permission(private_repo, None, is_admin=True) is True
     assert permissions.check_repo_read_permission(public_repo, None) is True
     assert permissions.check_repo_read_permission(private_repo, owner) is True
 
-    with pytest.raises(HTTPException) as unauth_exc:
+    # Anonymous-on-private now collapses to RepoReadDeniedError (privacy-
+    # preserving Option A from #76 — same wire shape as authed-no-access,
+    # both translate to ``404 + X-Error-Code: RepoNotFound`` in main.py's
+    # global handler).
+    with pytest.raises(permissions.RepoReadDeniedError) as unauth_exc:
         permissions.check_repo_read_permission(private_repo, None)
-    assert unauth_exc.value.status_code == 401
+    assert unauth_exc.value.repo_id == "owner/private"
+    assert unauth_exc.value.repo_type == "model"
 
 
 def test_repo_write_and_delete_permission_cover_admin_owner_and_org_admin(monkeypatch):

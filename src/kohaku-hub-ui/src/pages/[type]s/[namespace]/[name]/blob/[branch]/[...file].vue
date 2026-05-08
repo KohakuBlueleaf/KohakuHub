@@ -167,8 +167,22 @@
 
       <!-- File Content -->
       <div class="card">
+        <!-- Indexed-tar inline browser. Shown when the file is a
+             `.tar` whose parent folder also carries a sibling
+             `<basename>.json` (the hfutils.index sidecar). The
+             panel renders the same listing UX, hash banner, and
+             member preview surface as the file-list icon shortcut
+             — only difference is it lives in the page body
+             instead of a modal. -->
+        <TarBrowserPanel
+          v-if="isIndexedTar"
+          :tar-url="fileUrl"
+          :index-url="indexedTarSidecarUrl"
+          :filename="fileName"
+          :tar-tree-entry="indexedTarTreeEntry"
+        />
         <!-- Image Preview -->
-        <div v-if="isImage" class="text-center">
+        <div v-else-if="isImage" class="text-center">
           <img
             :src="fileUrl"
             :alt="fileName"
@@ -290,6 +304,8 @@
 import MarkdownViewer from "@/components/common/MarkdownViewer.vue";
 import CodeViewer from "@/components/common/CodeViewer.vue";
 import ErrorState from "@/components/common/ErrorState.vue";
+import TarBrowserPanel from "@/components/repo/preview/TarBrowserPanel.vue";
+import { hasIndexSibling, tarSidecarPath } from "@/utils/indexed-tar";
 import { copyToClipboard } from "@/utils/clipboard";
 import { normalizeCatchAllParam } from "@/utils/repo-paths";
 import {
@@ -308,10 +324,15 @@ const authStore = useAuthStore();
 
 // Route params
 const repoType = computed(() => {
-  const path = route.path;
-  if (path.includes("/models/")) return "model";
-  if (path.includes("/datasets/")) return "dataset";
-  if (path.includes("/spaces/")) return "space";
+  // Check the first path segment only — `path.includes("/models/")`
+  // used to also match against in-repo paths like
+  // `archives/models/bundle.tar`, which made a dataset .tar render
+  // under `/api/models/...` and 404-out (the indexed-tar inline
+  // panel got stuck on the binary fallback as a result).
+  const seg = (route.path || "").split("/")[1];
+  if (seg === "models") return "model";
+  if (seg === "datasets") return "dataset";
+  if (seg === "spaces") return "space";
   return "model";
 });
 const namespace = computed(() => route.params.namespace);
@@ -333,6 +354,15 @@ const fileSize = ref(0);
 const fileHeaders = ref({});
 const markdownView = ref("preview");
 const deleting = ref(false);
+// Indexed-tar inline view: when the current file is a `.tar` whose
+// parent folder also contains a sibling `<basename>.json` (the
+// hfutils.index sidecar), the page renders <TarBrowserPanel>
+// directly in the body — same listing UX as the file-list icon
+// shortcut. The metadata for the tar entry itself is kept around
+// so the panel's hash banner can compare its sha256 against the
+// sidecar.
+const indexedTarTreeEntry = ref(null);
+const isIndexedTar = ref(false);
 
 // Computed
 const repoTypeLabel = computed(() => {
@@ -356,6 +386,14 @@ const pathSegments = computed(() => {
 
 const fileUrl = computed(() => {
   return `/${repoType.value}s/${namespace.value}/${name.value}/resolve/${branch.value}/${filePath.value}`;
+});
+
+const indexedTarSidecarUrl = computed(() => {
+  if (!isIndexedTar.value) return "";
+  const dot = filePath.value.lastIndexOf(".");
+  if (dot < 0) return "";
+  const base = filePath.value.slice(0, dot);
+  return `/${repoType.value}s/${namespace.value}/${name.value}/resolve/${branch.value}/${base}.json`;
 });
 
 const languageLabel = computed(() => {
@@ -529,7 +567,11 @@ function getFileIcon(filename) {
   if (isVideo.value) return "i-carbon-video text-red-500";
   if (isAudio.value) return "i-carbon-music text-green-500";
   if (isPDF.value) return "i-carbon-document-pdf text-red-600";
-  if (isMarkdown.value) return "i-carbon-logo-markdown text-blue-500";
+  // Markdown shares the generic document fallback — no dedicated
+  // icon. The earlier name did not ship in Carbon (UnoCSS skipped
+  // it silently), and the user asked for visual parity with plain
+  // text files inside the tar listing, so we keep it uniform here
+  // too.
   if (["js", "ts", "jsx", "tsx"].includes(ext))
     return "i-carbon-code text-yellow-500";
   if (["py"].includes(ext)) return "i-carbon-code text-blue-600";
@@ -560,6 +602,20 @@ async function loadFile() {
 async function loadFileInfo() {
   loading.value = true;
   errorClassification.value = null;
+  isIndexedTar.value = false;
+  indexedTarTreeEntry.value = null;
+
+  // Indexed-tar detection runs in parallel with the file body load —
+  // if the current file is a `.tar` and the parent folder also
+  // contains a `<basename>.json` sibling, we render the inline tar
+  // browser instead of the binary fallback. The detection is best
+  // effort: a failure here should not break the standard preview
+  // path, so all errors are swallowed silently.
+  if (fileName.value.toLowerCase().endsWith(".tar")) {
+    detectIndexedTar().catch((err) => {
+      console.warn("indexed-tar sibling detection failed", err);
+    });
+  }
 
   try {
     // Note: Presigned URLs are signed for GET method only
@@ -634,6 +690,51 @@ async function loadFileInfo() {
   } finally {
     loading.value = false;
   }
+}
+
+async function detectIndexedTar() {
+  // Fetch the parent folder listing to look for a sibling .json with
+  // the same basename. The tree API already returns the full file
+  // record (oid + size + lfs) so we keep the entry around to feed
+  // the panel's hash banner — same data source as RepoViewer.
+  const parts = filePath.value.split("/").filter(Boolean);
+  const parentPath = parts.length > 1 ? "/" + parts.slice(0, -1).join("/") : "";
+  const response = await repoAPI.listTree(
+    repoType.value,
+    namespace.value,
+    name.value,
+    branch.value,
+    parentPath,
+    {},
+  );
+  const entries = response.data || [];
+  // Loaded-listing fast path mirrors the RepoViewer behaviour. The
+  // listing returns up to TREE_PAGE_SIZE (1000) entries — enough to
+  // cover most directories — but a single folder can hold more than
+  // that, in which case the sidecar might sit on a later page.
+  if (hasIndexSibling(filePath.value, entries)) {
+    const tarEntry = entries.find((e) => e.path === filePath.value);
+    if (tarEntry) indexedTarTreeEntry.value = tarEntry;
+    isIndexedTar.value = true;
+    return;
+  }
+  // Fallback: probe the sidecar directly via HEAD /resolve/. Cheap
+  // enough that running it on every blob page open is fine, and
+  // unblocks indexed-tar UX once the parent folder grows past the
+  // single tree-page cap.
+  const sidecar = tarSidecarPath(filePath.value);
+  if (!sidecar) return;
+  const exists = await repoAPI.fileExists(
+    repoType.value,
+    namespace.value,
+    name.value,
+    branch.value,
+    sidecar,
+  );
+  if (!exists) return;
+  const tarEntry = entries.find((e) => e.path === filePath.value);
+  if (tarEntry) indexedTarTreeEntry.value = tarEntry;
+  isIndexedTar.value = true;
 }
 
 async function downloadFile() {

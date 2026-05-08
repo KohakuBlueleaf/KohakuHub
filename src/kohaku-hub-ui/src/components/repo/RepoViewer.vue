@@ -378,9 +378,14 @@
               </el-select>
               <span
                 class="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap"
+                data-testid="file-list-count"
               >
                 {{ fileTree.length }}
-                {{ fileTree.length === 1 ? "file" : "files" }}
+                {{ fileTree.length === 1 ? "file" : "files" }}<template
+                  v-if="fileListHasMore"
+                >
+                  loaded
+                </template>
               </span>
             </div>
 
@@ -399,10 +404,11 @@
               </el-button>
               <el-input
                 v-model="fileSearchQuery"
-                placeholder="Search files..."
+                placeholder="Filter by name prefix..."
                 size="small"
                 class="w-full sm:w-50"
                 clearable
+                data-testid="file-list-name-prefix"
               >
                 <template #prefix>
                   <div class="i-carbon-search" />
@@ -499,7 +505,7 @@
                 they don't trigger the row navigation.
               -->
               <div
-                v-for="file in filteredFiles"
+                v-for="file in fileTree"
                 :key="file.path"
                 class="relative py-3 grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1.4fr)_minmax(0,2fr)_120px_110px] gap-3 items-center hover:bg-gray-50 dark:hover:bg-gray-700 px-2 cursor-pointer transition-colors"
               >
@@ -521,14 +527,14 @@
                   <div class="font-medium truncate flex items-center gap-2">
                     <span class="truncate">{{ getFileName(file.path) }}</span>
                     <button
-                      v-if="canPreviewFile(file)"
+                      v-if="canPreviewFileRow(file)"
                       type="button"
                       class="relative z-20 flex-shrink-0 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
-                      :title="`Preview ${getPreviewKind(file.path)} metadata (Range-read, no download)`"
+                      :title="previewIconTitle(file)"
                       :aria-label="`Preview metadata for ${getFileName(file.path)}`"
                       @click.stop="openFilePreview(file)"
                     >
-                      <div class="i-carbon-chart-line-data text-base" />
+                      <div :class="previewIconClass(file)" class="text-base" />
                     </button>
                   </div>
                   <div
@@ -581,15 +587,47 @@
               </div>
 
               <div
-                v-if="filteredFiles.length === 0"
+                v-if="fileTree.length === 0"
                 class="py-12 text-center text-gray-500 dark:text-gray-400"
               >
                 <div
                   class="i-carbon-document-blank text-6xl mb-4 inline-block"
                 />
-                <p>No files found</p>
+                <p v-if="fileSearchQuery">
+                  No files in this directory start with
+                  "{{ fileSearchQuery }}" (case-sensitive prefix)
+                </p>
+                <p v-else>No files found</p>
               </div>
             </template>
+          </div>
+
+          <!--
+            "Load more" button — centered, plain, mirroring the
+            commit-history "Load More Commits" affordance below. We
+            switched away from a numbered pager because the cursor-
+            only LakeFS list API gives no total page count and the
+            old pager had to walk every page forward just to render
+            its buttons (issue #56). The per-batch selector that
+            controls the next click's `limit` lives up in the header
+            next to the count, not here.
+
+            Hidden when the listing is exhausted — at that point
+            there is nothing to load.
+          -->
+          <div
+            v-if="!filesLoading && fileListHasMore"
+            class="text-center pt-4"
+          >
+            <el-button
+              :loading="fileListLoadingMore"
+              :disabled="fileListLoadingMore"
+              plain
+              data-testid="file-list-load-more"
+              @click="loadMoreFileTree"
+            >
+              Load More Files
+            </el-button>
           </div>
         </div>
 
@@ -898,6 +936,15 @@ huggingface-cli download {{ repoInfo?.id }}</pre
       :resolve-url="previewTarget.resolveUrl"
       :filename="previewTarget.filename"
     />
+
+    <TarBrowserDialog
+      v-if="tarBrowserTarget"
+      v-model:visible="tarBrowserDialogVisible"
+      :tar-url="tarBrowserTarget.tarUrl"
+      :index-url="tarBrowserTarget.indexUrl"
+      :filename="tarBrowserTarget.filename"
+      :tar-tree-entry="tarBrowserTarget.tarTreeEntry"
+    />
   </div>
 </template>
 
@@ -924,11 +971,20 @@ import SidebarRelationshipsCard from "@/components/repo/metadata/SidebarRelation
 import DatasetViewerTab from "@/components/repo/DatasetViewerTab.vue";
 import ErrorState from "@/components/common/ErrorState.vue";
 import FilePreviewDialog from "@/components/repo/preview/FilePreviewDialog.vue";
+import TarBrowserDialog from "@/components/repo/preview/TarBrowserDialog.vue";
 import {
   buildResolveUrl,
   canPreviewFile,
   getPreviewKind,
 } from "@/utils/file-preview";
+import { tarSidecarPath } from "@/utils/indexed-tar";
+
+// Fixed batch size for the file-list Load More button. The earlier
+// numbered-pager UI had a 50/100/200 selector, but with Load More the
+// affordance "click to extend" is the entire knob — a per-batch
+// dropdown collided with the surrounding header chrome and earned
+// nothing in return, so it was removed (issue #56 follow-up).
+const FILE_LIST_BATCH_SIZE = 50;
 
 /**
  * @typedef {Object} Props
@@ -978,27 +1034,108 @@ const likingInProgress = ref(false);
 const deletingFolder = ref(false);
 const fileTreeRequestId = ref(0);
 
+// Cursor-based "Load more" listing (issue #56). LakeFS exposes only
+// an opaque `next_offset` per response, so we cannot pre-compute a
+// total page count or randomly jump. The SPA holds:
+//   * the latest `nextCursor` returned by the backend; null/empty
+//     means "no more — listing is exhausted".
+//   * a separate `loadingMore` flag for the append path so the user
+//     sees the Load More button enter a loading state without
+//     blanking out the already-rendered listing.
+const fileListNextCursor = ref(null);
+const fileListLoadingMore = ref(false);
+const fileListHasMore = computed(() => fileListNextCursor.value !== null);
+
+// Indexed-tar sibling-icon probe state. The sync `hasIndexSibling`
+// lookup runs against the loaded page first (cheap); when a `.tar`
+// row's `.json` sibling is not in the page, we issue a HEAD against
+// /resolve/<sibling.json> so the icon can still light up. Two reactive
+// sets memoize the answer per (currentBranch, currentPath, page) so
+// flipping back-and-forth never reissues the probe:
+//   * `confirmedIndexedTars`  — sidecar exists  → icon lights up
+//   * `rejectedIndexedTars`   — sidecar missing → row stays bare
+const confirmedIndexedTars = ref(new Set());
+const rejectedIndexedTars = ref(new Set());
+let pendingIndexedTarProbeId = 0;
+
 // Client-side metadata preview (issue #27 v4): a small icon appears next
 // to .safetensors / .parquet rows; clicking opens a modal that reads the
 // file header via HTTP Range against /resolve/ (no backend parsing).
 // Predicate + URL builder live in @/utils/file-preview so they stay
 // directly unit-testable; everything here is Vue glue.
+//
+// Indexed-tar (.tar + sibling .json) reuses the same icon-on-row idiom
+// but routes to TarBrowserDialog — the icon only lights up when the
+// sibling .json sits in the same fileTree listing.
 const previewDialogVisible = ref(false);
 const previewTarget = ref(null); // { kind, resolveUrl, filename }
+const tarBrowserDialogVisible = ref(false);
+const tarBrowserTarget = ref(null); // { tarUrl, indexUrl, filename, tarTreeEntry }
+
+const PREVIEW_ICON_BY_KIND = {
+  safetensors: "i-carbon-chart-line-data",
+  parquet: "i-carbon-chart-line-data",
+  "indexed-tar": "i-carbon-archive",
+};
+
+function previewIconClass(file) {
+  const kind = getPreviewKind(
+    file.path,
+    fileTree.value,
+    confirmedIndexedTars.value,
+  );
+  return PREVIEW_ICON_BY_KIND[kind] || "i-carbon-chart-line-data";
+}
+
+function previewIconTitle(file) {
+  const kind = getPreviewKind(
+    file.path,
+    fileTree.value,
+    confirmedIndexedTars.value,
+  );
+  if (kind === "indexed-tar") {
+    return "Browse indexed tar contents (Range-read, no full download)";
+  }
+  return `Preview ${kind} metadata (Range-read, no download)`;
+}
+
+function canPreviewFileRow(file) {
+  return canPreviewFile(file, fileTree.value, confirmedIndexedTars.value);
+}
+
+function buildResolveForPath(path) {
+  return buildResolveUrl({
+    baseUrl,
+    repoType: props.repoType,
+    namespace: props.namespace,
+    name: props.name,
+    branch: currentBranch.value,
+    path,
+  });
+}
 
 function openFilePreview(file) {
-  const kind = getPreviewKind(file.path);
+  const kind = getPreviewKind(
+    file.path,
+    fileTree.value,
+    confirmedIndexedTars.value,
+  );
   if (!kind) return;
+  if (kind === "indexed-tar") {
+    const dot = file.path.lastIndexOf(".");
+    const indexPath = `${file.path.slice(0, dot)}.json`;
+    tarBrowserTarget.value = {
+      tarUrl: buildResolveForPath(file.path),
+      indexUrl: buildResolveForPath(indexPath),
+      filename: getFileName(file.path),
+      tarTreeEntry: file,
+    };
+    tarBrowserDialogVisible.value = true;
+    return;
+  }
   previewTarget.value = {
     kind,
-    resolveUrl: buildResolveUrl({
-      baseUrl,
-      repoType: props.repoType,
-      namespace: props.namespace,
-      name: props.name,
-      branch: currentBranch.value,
-      path: file.path,
-    }),
+    resolveUrl: buildResolveForPath(file.path),
     filename: getFileName(file.path),
   };
   previewDialogVisible.value = true;
@@ -1040,14 +1177,10 @@ const pathSegments = computed(() => {
   return props.currentPath ? props.currentPath.split("/").filter(Boolean) : [];
 });
 
-const filteredFiles = computed(() => {
-  if (!fileSearchQuery.value) return fileTree.value;
-
-  const query = fileSearchQuery.value.toLowerCase();
-  return fileTree.value.filter((file) =>
-    getFileName(file.path).toLowerCase().includes(query),
-  );
-});
+// `fileSearchQuery` is wired to the backend's same-level
+// `name_prefix` filter (issue #54). Filtering happens server-side
+// against LakeFS' native `prefix`, so the listing rendered by the
+// table is exactly `fileTree` — no client-side post-filter pass.
 
 // Parse tags from repo info
 const parsedTags = computed(() => {
@@ -1323,57 +1456,28 @@ async function toggleLike() {
   }
 }
 
-async function loadFileTree() {
-  filesLoading.value = true;
-  treeErrorClassification.value = null;
-  const requestId = fileTreeRequestId.value + 1;
-  fileTreeRequestId.value = requestId;
+function activeNamePrefix() {
+  // Trim like the backend's `_normalize_name_prefix` so a whitespace-
+  // only entry never reaches the wire (response would be byte-
+  // identical to the unfiltered listing, but it would muddle the
+  // cursor-stack-reset watcher below).
+  const value = fileSearchQuery.value;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
 
-  let sortedEntries = [];
-
-  try {
-    const data = await repoAPI.listTreeAll(
-      props.repoType,
-      props.namespace,
-      props.name,
-      currentBranch.value,
-      props.currentPath ? `/${props.currentPath}` : "",
-      { recursive: false },
-    );
-
-    if (requestId !== fileTreeRequestId.value) return;
-
-    sortedEntries = sortFileEntries(data || []);
-    fileTree.value = sortedEntries;
-
-    if (sortedEntries.length === 0) {
-      return;
-    }
-
-  } catch (err) {
-    console.error("Failed to load file tree:", err);
-    if (requestId === fileTreeRequestId.value) {
-      fileTree.value = [];
-      // Axios interceptor in utils/api.js attaches `.classification`.
-      // Prefer it; fall back to classifying the bare error ourselves
-      // if a future refactor changes the interceptor.
-      treeErrorClassification.value =
-        err?.classification || classifyError(err);
-    }
-  } finally {
-    if (requestId === fileTreeRequestId.value) {
-      filesLoading.value = false;
-    }
-  }
-
-  if (sortedEntries.length === 0 || requestId !== fileTreeRequestId.value) {
-    return;
-  }
+async function expandPathsInfoAndMerge(newEntries, requestId) {
+  // paths-info expansion runs only over the just-loaded slice — the
+  // already-merged entries kept their lastCommit / lfs metadata when
+  // they were first appended, so re-expanding everything every time
+  // would waste round trips on a Load More flow.
+  if (!newEntries.length) return;
 
   try {
     const pathInfoByPath = new Map();
     const pathBatches = chunkPaths(
-      sortedEntries.map((file) => file.path),
+      newEntries.map((file) => file.path),
       PATHS_INFO_BATCH_SIZE,
     );
 
@@ -1394,22 +1498,228 @@ async function loadFileTree() {
       }
     }
 
-    fileTree.value = sortedEntries.map((file) => ({
-      ...file,
-      ...(pathInfoByPath.get(file.path) || {}),
-    }));
+    if (requestId !== fileTreeRequestId.value) return;
+
+    // Merge expanded metadata onto already-rendered entries in place
+    // so previously-loaded rows keep theirs and only the new rows
+    // pick up the freshly-resolved data.
+    const newPaths = new Set(newEntries.map((file) => file.path));
+    fileTree.value = fileTree.value.map((file) => {
+      if (!newPaths.has(file.path)) return file;
+      const expanded = pathInfoByPath.get(file.path);
+      return expanded ? { ...file, ...expanded } : file;
+    });
   } catch (err) {
     console.error("Failed to load expanded path info:", err);
   }
+}
+
+async function loadFileTree({ resetPagination = true } = {}) {
+  if (resetPagination) {
+    fileListNextCursor.value = null;
+  }
+  filesLoading.value = true;
+  treeErrorClassification.value = null;
+  const requestId = fileTreeRequestId.value + 1;
+  fileTreeRequestId.value = requestId;
+
+  let sortedEntries = [];
+  const namePrefix = activeNamePrefix();
+
+  try {
+    const page = await repoAPI.listTreePage(
+      props.repoType,
+      props.namespace,
+      props.name,
+      currentBranch.value,
+      props.currentPath ? `/${props.currentPath}` : "",
+      {
+        recursive: false,
+        limit: FILE_LIST_BATCH_SIZE,
+        // Initial load always starts from cursor-less; Load More uses
+        // a dedicated function that does not go through here.
+        name_prefix: namePrefix || undefined,
+      },
+    );
+
+    if (requestId !== fileTreeRequestId.value) return;
+
+    sortedEntries = sortFileEntries(page.entries || []);
+    fileTree.value = sortedEntries;
+    fileListNextCursor.value = page.nextCursor || null;
+
+    if (sortedEntries.length === 0) {
+      return;
+    }
+  } catch (err) {
+    console.error("Failed to load file tree:", err);
+    if (requestId === fileTreeRequestId.value) {
+      fileTree.value = [];
+      fileListNextCursor.value = null;
+      // Axios interceptor in utils/api.js attaches `.classification`.
+      // Prefer it; fall back to classifying the bare error ourselves
+      // if a future refactor changes the interceptor.
+      treeErrorClassification.value =
+        err?.classification || classifyError(err);
+    }
+  } finally {
+    if (requestId === fileTreeRequestId.value) {
+      filesLoading.value = false;
+    }
+  }
+
+  if (sortedEntries.length === 0 || requestId !== fileTreeRequestId.value) {
+    return;
+  }
+
+  // Sibling-icon probe and paths-info expansion both operate on the
+  // just-loaded slice. The probe is fire-and-forget; paths-info
+  // awaits so the merged metadata replaces the bare rows in one
+  // reactive update.
+  resetIndexedTarProbeMemo();
+  void probeMissingIndexedTarSiblings(sortedEntries, requestId);
+  await expandPathsInfoAndMerge(sortedEntries, requestId);
+}
+
+async function loadMoreFileTree() {
+  // Fetches the next batch using the latest `nextCursor` and appends
+  // it to the existing fileTree. Disabled while in flight so a double
+  // click cannot double-append.
+  if (fileListLoadingMore.value || filesLoading.value) return;
+  if (!fileListNextCursor.value) return;
+
+  fileListLoadingMore.value = true;
+  const requestId = fileTreeRequestId.value + 1;
+  fileTreeRequestId.value = requestId;
+
+  let appendedEntries = [];
+  const cursor = fileListNextCursor.value;
+  const namePrefix = activeNamePrefix();
+
+  try {
+    const page = await repoAPI.listTreePage(
+      props.repoType,
+      props.namespace,
+      props.name,
+      currentBranch.value,
+      props.currentPath ? `/${props.currentPath}` : "",
+      {
+        recursive: false,
+        limit: FILE_LIST_BATCH_SIZE,
+        cursor,
+        name_prefix: namePrefix || undefined,
+      },
+    );
+
+    if (requestId !== fileTreeRequestId.value) return;
+
+    // Sort across the union so the appended rows respect the same
+    // directories-first / alphabetical ordering as the initial load.
+    appendedEntries = page.entries || [];
+    fileTree.value = sortFileEntries([
+      ...fileTree.value,
+      ...appendedEntries,
+    ]);
+    fileListNextCursor.value = page.nextCursor || null;
+  } catch (err) {
+    console.error("Failed to load more file tree entries:", err);
+    // A failed Load More leaves the already-rendered listing alone —
+    // the user can retry by clicking again. We deliberately do NOT
+    // surface this through `treeErrorClassification`, which is a
+    // listing-wide failure indicator.
+  } finally {
+    if (requestId === fileTreeRequestId.value) {
+      fileListLoadingMore.value = false;
+    }
+  }
+
+  if (!appendedEntries.length || requestId !== fileTreeRequestId.value) {
+    return;
+  }
+
+  void probeMissingIndexedTarSiblings(appendedEntries, requestId);
+  await expandPathsInfoAndMerge(appendedEntries, requestId);
+}
+
+function resetIndexedTarProbeMemo() {
+  pendingIndexedTarProbeId += 1;
+  confirmedIndexedTars.value = new Set();
+  rejectedIndexedTars.value = new Set();
+}
+
+async function probeMissingIndexedTarSiblings(entries, requestId) {
+  // Probe just the supplied entries; the memoized confirmed/rejected
+  // sets are kept across Load More batches so previously-resolved
+  // siblings stay sticky. (They are reset by `loadFileTree` on a
+  // genuine listing reset — branch / path / name_prefix change.)
+  const probeId = pendingIndexedTarProbeId;
+
+  // Already-rendered files satisfy the sibling check too — Load More
+  // can introduce a `.tar` whose `.json` was loaded in a prior batch,
+  // and vice versa.
+  const loadedSiblings = new Set(
+    fileTree.value
+      .filter((entry) => entry && entry.type !== "directory")
+      .map((entry) => entry.path),
+  );
+
+  const pending = [];
+  for (const entry of entries) {
+    if (!entry || entry.type === "directory") continue;
+    const sidecar = tarSidecarPath(entry.path);
+    if (!sidecar) continue;
+    if (loadedSiblings.has(sidecar)) continue;
+    if (confirmedIndexedTars.value.has(entry.path)) continue;
+    if (rejectedIndexedTars.value.has(entry.path)) continue;
+    pending.push({ tarPath: entry.path, sidecar });
+  }
+  if (pending.length === 0) return;
+
+  await Promise.all(
+    pending.map(async ({ tarPath, sidecar }) => {
+      const exists = await repoAPI.fileExists(
+        props.repoType,
+        props.namespace,
+        props.name,
+        currentBranch.value,
+        sidecar,
+      );
+      if (
+        probeId !== pendingIndexedTarProbeId ||
+        requestId !== fileTreeRequestId.value
+      ) {
+        return;
+      }
+      if (exists) {
+        // Reassign the Set so reactivity picks the change up — Vue
+        // tracks the ref binding, not the in-place .add() mutation.
+        const next = new Set(confirmedIndexedTars.value);
+        next.add(tarPath);
+        confirmedIndexedTars.value = next;
+      } else {
+        const next = new Set(rejectedIndexedTars.value);
+        next.add(tarPath);
+        rejectedIndexedTars.value = next;
+      }
+    }),
+  );
 }
 
 async function loadReadme() {
   readmeLoading.value = true;
   readmeErrorClassification.value = null;
   try {
-    const readmeFile = fileTree.value.find(
+    let readmeFile = fileTree.value.find(
       (f) => f.type === "file" && f.path.toLowerCase().endsWith("readme.md"),
     );
+
+    // Paginated tree may not contain README.md on the current page —
+    // probe the common variants directly via paths-info so the Card
+    // tab does not silently render "No README" when one exists later
+    // in the listing.
+    if (!readmeFile) {
+      readmeFile = await findReadmeViaPathsInfo();
+    }
 
     if (!readmeFile) {
       readmeContent.value = "";
@@ -1445,6 +1755,27 @@ async function loadReadme() {
     readmeMetadata.value = {};
   } finally {
     readmeLoading.value = false;
+  }
+}
+
+async function findReadmeViaPathsInfo() {
+  // README.md / readme.md / Readme.md cover the case-insensitive
+  // variants seen in the wild. paths-info returns only the entries
+  // that exist, so a single call is enough.
+  if (props.currentPath) return null;
+  try {
+    const { data } = await repoAPI.getPathsInfo(
+      props.repoType,
+      props.namespace,
+      props.name,
+      currentBranch.value,
+      ["README.md", "readme.md", "Readme.md"],
+      false,
+    );
+    return (data || []).find((entry) => entry && entry.type === "file") || null;
+  } catch (err) {
+    console.debug("README paths-info probe failed:", err);
+    return null;
   }
 }
 
@@ -1653,6 +1984,28 @@ async function deleteFolder() {
 }
 
 // Watchers
+
+// `fileSearchQuery` drives the backend's `name_prefix` filter on the
+// /tree endpoint (issue #54). Debounce keystrokes so we don't hammer
+// LakeFS while the user is typing — and always force a full reset on
+// the cursor stack, since cursors discovered with one prefix do not
+// address the same slice under another. This watcher owns the reset;
+// the loadFileTree() call below picks up the new value via
+// `activeNamePrefix()`.
+const FILE_SEARCH_DEBOUNCE_MS = 300;
+let fileSearchDebounceHandle = null;
+watch(fileSearchQuery, () => {
+  if (fileSearchDebounceHandle) {
+    clearTimeout(fileSearchDebounceHandle);
+  }
+  fileSearchDebounceHandle = setTimeout(() => {
+    fileSearchDebounceHandle = null;
+    if (activeTab.value === "files" || activeTab.value === "card") {
+      loadFileTree({ resetPagination: true });
+    }
+  }, FILE_SEARCH_DEBOUNCE_MS);
+});
+
 watch(
   () => props.currentPath,
   () => {

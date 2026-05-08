@@ -30,6 +30,66 @@ describe("file-preview helpers", () => {
       expect(getPreviewKind("archive.tar.gz")).toBeNull();
     });
 
+    it("returns null for a .tar file with no listing siblings", () => {
+      // Bare .tar files are extremely common; the icon should stay
+      // dark unless the same listing carries a sibling .json that
+      // looks like an hfutils.index sidecar.
+      expect(getPreviewKind("archives/bundle.tar")).toBeNull();
+    });
+
+    it("returns 'indexed-tar' when the listing contains a sibling .json", () => {
+      const siblings = [
+        { type: "file", path: "archives/bundle.tar" },
+        { type: "file", path: "archives/bundle.json" },
+      ];
+      expect(getPreviewKind("archives/bundle.tar", siblings)).toBe(
+        "indexed-tar",
+      );
+    });
+
+    it("does not light up bare .tar even when an unrelated .json exists", () => {
+      const siblings = [
+        { type: "file", path: "archives/bundle.tar" },
+        { type: "file", path: "archives/something-else.json" },
+      ];
+      expect(getPreviewKind("archives/bundle.tar", siblings)).toBeNull();
+    });
+
+    it("returns 'indexed-tar' when confirmedTarPaths carries the path (sidecar fell off this page)", () => {
+      // Paginated file list path: the .json sibling lives on a different
+      // page so the loaded slice doesn't see it. RepoViewer probes the
+      // backend with HEAD and stores the confirmed tar path here.
+      const confirmed = new Set(["archives/bundle.tar"]);
+      expect(
+        getPreviewKind("archives/bundle.tar", [], confirmed),
+      ).toBe("indexed-tar");
+    });
+
+    it("loaded-listing hit wins even if confirmedTarPaths is missing", () => {
+      // The two arguments are ORed — the loaded listing is the cheap
+      // path; the confirmed set is the fallback that picks up where
+      // pagination drops the sidecar.
+      const siblings = [
+        { type: "file", path: "archives/bundle.tar" },
+        { type: "file", path: "archives/bundle.json" },
+      ];
+      expect(
+        getPreviewKind("archives/bundle.tar", siblings, new Set()),
+      ).toBe("indexed-tar");
+    });
+
+    it("ignores confirmedTarPaths for non-tar files", () => {
+      const confirmed = new Set(["archives/bundle.tar", "config.json"]);
+      expect(getPreviewKind("config.json", [], confirmed)).toBeNull();
+    });
+
+    it("tolerates a non-Set confirmedTarPaths argument without throwing", () => {
+      // Defensive: callers may forget to seed the prop in tests; the
+      // helper should treat anything without a `.has` method as empty.
+      expect(getPreviewKind("archives/bundle.tar", [], {})).toBeNull();
+      expect(getPreviewKind("archives/bundle.tar", [], null)).toBeNull();
+    });
+
     it("returns null for bad inputs", () => {
       expect(getPreviewKind("")).toBeNull();
       expect(getPreviewKind(null)).toBeNull();
@@ -59,6 +119,35 @@ describe("file-preview helpers", () => {
 
     it("rejects files with non-preview extensions", () => {
       expect(canPreviewFile({ type: "file", path: "README.md" })).toBe(false);
+    });
+
+    it("rejects bare .tar without a sibling .json", () => {
+      expect(canPreviewFile({ type: "file", path: "archive.tar" })).toBe(
+        false,
+      );
+    });
+
+    it("accepts .tar with a sibling .json passed via siblings", () => {
+      const siblings = [
+        { type: "file", path: "archive.tar" },
+        { type: "file", path: "archive.json" },
+      ];
+      expect(
+        canPreviewFile({ type: "file", path: "archive.tar" }, siblings),
+      ).toBe(true);
+    });
+
+    it("accepts .tar when only confirmedTarPaths backs the kind decision", () => {
+      // Mirrors the paginated-listing case where the .json sibling is
+      // on a different page and the icon was unlocked by a HEAD probe.
+      const confirmed = new Set(["archive.tar"]);
+      expect(
+        canPreviewFile(
+          { type: "file", path: "archive.tar" },
+          [],
+          confirmed,
+        ),
+      ).toBe(true);
     });
 
     it("rejects bad inputs defensively", () => {

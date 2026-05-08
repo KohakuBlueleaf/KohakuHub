@@ -73,6 +73,8 @@ Self-hosted HuggingFace alternative with Git-like versioning for AI models and d
 
 ### Deploy with Docker
 
+> **Prereq:** LakeFS ≥ v0.54.0 (2021-11-08). The bundled `treeverse/lakefs:latest` image is always compatible; only relevant if you self-pin an older LakeFS image.
+
 ```bash
 git clone https://github.com/KohakuBlueleaf/KohakuHub.git
 cd KohakuHub
@@ -85,11 +87,16 @@ python scripts/generate_docker_compose.py
 # Edit docker-compose.yml to change credentials and secrets
 
 # Build frontend and start services
-npm install --prefix ./src/kohaku-hub-ui
-npm install --prefix ./src/kohaku-hub-admin
-npm run build --prefix ./src/kohaku-hub-ui
-npm run build --prefix ./src/kohaku-hub-admin
+pnpm install
+pnpm run build
 docker-compose up -d --build
+```
+
+For local frontend development from the repository root:
+
+```bash
+pnpm run dev:ui
+pnpm run dev:admin
 ```
 
 **Access:**
@@ -187,13 +194,13 @@ See [docs/Git.md](./docs/Git.md) for complete Git clone documentation and implem
 
 **Stack:**
 - **FastAPI** - HuggingFace-compatible API
-- **LakeFS** - Git-like versioning (branches, commits, diffs) via REST API
+- **LakeFS** (≥ v0.54.0) - Git-like versioning (branches, commits, diffs) via REST API
 - **MinIO/S3** - Object storage with deduplication
 - **PostgreSQL/SQLite** - Metadata database (synchronous with db.atomic() transactions)
 - **Vue 3** - Modern web interface
 
 **Implementation Notes:**
-- **LakeFS:** Uses REST API directly (lakefs_rest_client.py), providing pure async operations
+- **LakeFS:** Uses REST API directly (lakefs_rest_client.py), providing pure async operations. Minimum supported version is **v0.54.0** (released 2021-11-08) — the file-list `expand=true` path uses `logCommits`'s `objects=` / `prefixes=` / `limit=` filters, introduced in that release. Pre-v0.54 servers silently ignore those parameters and would surface incorrect `lastCommit` values; the docker bundle pins `treeverse/lakefs:latest` so default deployments are always compatible.
 - **Database:** Synchronous operations with Peewee ORM and `db.atomic()` for transaction safety. Supports multi-worker deployment (4-8 workers) for horizontal scaling.
 
 **Data Flow:**
@@ -279,8 +286,17 @@ uvicorn kohakuhub.main:app --host 0.0.0.0 --port 48888 --workers 4
 
 **Frontend:**
 ```bash
-npm install --prefix ./src/kohaku-hub-ui
-npm run dev --prefix ./src/kohaku-hub-ui
+# Install deps for both apps once
+pnpm install
+
+# Recommended: run main UI + admin together on one origin.
+# Main UI on http://localhost:5173, admin mounted at http://localhost:5173/admin.
+# (Internally the admin Vite server runs on :5174 and is reverse-proxied by the main UI.)
+make ui
+
+# Alternatives:
+make ui-only   # Only the main UI on :5173 (no admin)
+make admin     # Only the admin UI on :5174
 ```
 
 **Testing:**

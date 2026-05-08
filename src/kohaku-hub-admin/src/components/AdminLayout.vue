@@ -43,6 +43,21 @@ const menuItems = [
     icon: "i-carbon-meter",
   },
   {
+    path: "/health",
+    label: "Health",
+    icon: "i-carbon-activity",
+  },
+  {
+    path: "/cache",
+    label: "Cache",
+    icon: "i-carbon-data-vis-1",
+  },
+  {
+    path: "/credentials",
+    label: "Credentials",
+    icon: "i-carbon-password",
+  },
+  {
     path: "/DatabaseViewer",
     label: "Database",
     icon: "i-carbon-data-table",

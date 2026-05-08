@@ -45,6 +45,122 @@ def test_hf_shortcuts_cover_repo_revision_entry_and_server_errors():
     assert server_error.headers["x-error-code"] == "CustomError"
 
 
+def test_hf_disabled_repo_emits_hf_canonical_message_with_no_x_error_code():
+    """``DisabledRepoError`` dispatch in ``hf_raise_for_status`` is keyed
+    off the **exact** ``X-Error-Message`` string ``"Access to this resource
+    is disabled."`` — no ``X-Error-Code`` is involved. Drift that string
+    or add an ``X-Error-Code`` and HF clients fall back to a generic
+    ``HfHubHTTPError`` (verified live against ``huggingface_hub`` 1.11.0:
+    ``utils/_http.py`` matches the message verbatim before any code-based
+    branching). This regression-guards the canonical wire shape so the
+    helper is safe to wire up when a future moderation feature lands.
+    """
+    response = hf_utils.hf_disabled_repo("acme-labs/private-dataset")
+
+    assert response.status_code == 403
+    assert response.body == b""
+    # Exact HF message string — DisabledRepoError dispatches on it.
+    assert (
+        response.headers["x-error-message"]
+        == "Access to this resource is disabled."
+    )
+    # No X-Error-Code — HF doesn't set one for DisabledRepo, and adding
+    # ours would either be ignored or risk colliding with HF's contract.
+    assert "x-error-code" not in response.headers
+    # Operator debug aid is fine in our own namespace.
+    assert response.headers["x-khub-repo"] == "acme-labs/private-dataset"
+
+
+def test_hf_disabled_repo_works_without_repo_id():
+    """Reserved-for-future-use helper must not require a repo id —
+    moderation flows may need to disable a request before any specific
+    repo is known."""
+    response = hf_utils.hf_disabled_repo()
+    assert response.status_code == 403
+    assert (
+        response.headers["x-error-message"]
+        == "Access to this resource is disabled."
+    )
+    assert "x-khub-repo" not in response.headers
+
+
+def test_hf_disabled_repo_dispatches_to_disabled_repo_error_in_huggingface_hub():
+    """End-to-end: a real ``hf_raise_for_status`` against our wire shape
+    must dispatch to ``DisabledRepoError``. This is what proves the
+    helper's contract — without this assertion, we're just guessing at
+    HF's parsing rules.
+
+    Two skip-worthy gaps in ``huggingface_hub``'s rollout history:
+
+    - ``DisabledRepoError`` itself wasn't exported until ~v0.21; v0.20.3
+      (still in the CI matrix) doesn't define the symbol at all.
+    - ``hf_raise_for_status`` didn't gain the
+      ``X-Error-Message == "Access to this resource is disabled."``
+      dispatch branch until ~v1.0; v0.30.x and v0.36.x export the
+      ``DisabledRepoError`` class but never raise it from
+      ``hf_raise_for_status`` — they fall through to httpx's generic
+      ``HTTPStatusError`` instead.
+
+    The combined skip condition is "the round-trip actually produces a
+    ``DisabledRepoError``". Probe once at the top of the test and skip
+    if the dispatch branch isn't wired in this hf_hub version. The
+    helper's on-the-wire shape (status, exact message string, no
+    X-Error-Code) is still pinned by the two unit tests above for every
+    version.
+    """
+    import httpx
+
+    try:
+        # ``huggingface_hub.errors`` landed around v0.22; older versions
+        # keep these exceptions under ``huggingface_hub.utils``. Try the
+        # version-portable path, fall back to skip if unavailable.
+        from huggingface_hub.utils import DisabledRepoError, HfHubHTTPError
+    except ImportError:
+        pytest.skip("DisabledRepoError not exported by this hf_hub version")
+
+    from huggingface_hub.utils._http import hf_raise_for_status
+
+    response = hf_utils.hf_disabled_repo("acme-labs/private-dataset")
+
+    def _build_fake() -> httpx.Response:
+        # Re-pack our FastAPI response into an httpx.Response so
+        # hf_raise_for_status can inspect it the way it would a real
+        # wire response from huggingface.co.
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            content=bytes(response.body),
+            request=httpx.Request(
+                "GET",
+                "https://huggingface.co/api/models/acme-labs/private-dataset",
+            ),
+        )
+
+    # Probe whether this hf_hub version actually wires the
+    # disabled-message dispatch. v0.30 / v0.36 export DisabledRepoError
+    # but the dispatch branch in hf_raise_for_status only landed ~v1.0;
+    # those older versions raise either ``httpx.HTTPStatusError`` (the
+    # raw httpx 4xx default) or a generic ``HfHubHTTPError``. Catch
+    # exactly those two families so a future hf_hub version that
+    # dispatches the same wire shape to a *different* specific
+    # exception (an unlikely but possible API drift) surfaces as a
+    # genuine pytest failure instead of being swallowed by an
+    # over-broad ``except Exception``.
+    try:
+        hf_raise_for_status(_build_fake())
+    except DisabledRepoError:
+        # Already proved the round-trip works; the assertion below would
+        # have raised on the next call if we let it.
+        return
+    except (httpx.HTTPStatusError, HfHubHTTPError):
+        pytest.skip(
+            "hf_raise_for_status in this version does not dispatch the "
+            "X-Error-Message=='Access to this resource is disabled.' "
+            "branch to DisabledRepoError"
+        )
+    pytest.fail("hf_raise_for_status returned cleanly on a 403 disabled response")
+
+
 def test_hf_error_response_sanitizes_header_values_for_http_transport():
     response = hf_utils.hf_error_response(
         500,

@@ -16,17 +16,22 @@ Admin web interface for managing KohakuHub users, organizations, and storage quo
 ## Development
 
 ```bash
-# Install dependencies
-npm install
+# Install dependencies from repository root
+pnpm install
 
 # Start development server (port 5174)
-npm run dev
+pnpm run dev:admin
 
 # Build for production
-npm run build
+pnpm run build:admin
+```
 
-# Preview production build
-npm run preview
+If you prefer to run commands inside this directory directly:
+
+```bash
+pnpm dev
+pnpm build
+pnpm preview
 ```
 
 Access the dev server at: **http://localhost:5174**
@@ -176,7 +181,7 @@ Admin Portal
 
 1. Build the admin portal:
    ```bash
-   npm run build
+   pnpm run build:admin
    ```
 
 2. Serve `dist/` directory via Nginx/Apache
