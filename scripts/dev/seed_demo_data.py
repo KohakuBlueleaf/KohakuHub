@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -4304,56 +4305,57 @@ FALLBACK_SOURCE_SEEDS: tuple[dict, ...] = (
 # run produces the same fingerprints, so local SSH-based smoke testing
 # can rely on a known good private half.
 
+def unpack(blob: str) -> str:
+    """Decompress a gzip+base64 packed string."""
+    return gzip.decompress(base64.b64decode(blob)).decode("utf-8")
+
+
 SEED_KEYPAIR_PRIMARY = SeedKeypair(
-    public_key=(
-        "ssh-ed25519 "
-        "AAAAC3NzaC1lZDI1NTE5AAAAICkTsun+Px+5LKYR5hM1PFHI07H0mEdBCkjnieQBa8La "
-        "seed-primary"
+    public_key=unpack(
+        "H4sIAAAAAAACAysuztBNTTEyNTW0VHAEAmdjv6pEZ8OcKBdPQ78QV1OQmKdzdkhxaZ52QIW2"
+        "qY93ZJBphq9hgJuHp4G5h0Gua4qTc3ZWXmZqoFOihU+iQnFqaopuQVFmbmJRJQDXd0MwXQAAAA=="
     ),
-    private_key=(
-        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
-        "OQAAACApE7Lp/j8fuSymEeYTNTxRyNOx9JhHQQpI54nkAWvC2gAAAIgSvm6wEr5usAAAAAtzc2gt\n"
-        "ZWQyNTUxOQAAACApE7Lp/j8fuSymEeYTNTxRyNOx9JhHQQpI54nkAWvC2gAAAEAR+JseVIp318U4\n"
-        "qACfo8LGhfSE0tgeEyg4ieaaxYZMdCkTsun+Px+5LKYR5hM1PFHI07H0mEdBCkjnieQBa8LaAAAA\n"
-        "AAECAwQF\n"
-        "-----END OPENSSH PRIVATE KEY-----\n"
+    private_key=unpack(
+        "H4sIAAAAAAACA52QS2+CQBSF9/Mr2BNSX1RcDtOroDgyPLSwg/JSCqUCAv56mSamq256Fic3"
+        "OSdfbo4kjVJho1PhYAK1bU0wLf2IHRB24PFQQuFc/QxLeg/I9Oq/5010AcylbuRbWLj8hLBY"
+        "tT7DT6nc9h335v4xSxv/xAbquD068BLBFSyN6uWiJK09FBB7DnV6a6CHfrXNNMYqXV6UOT7d"
+        "yCwd+3pq34rXDq5yW+NfKHpS/wUFbInbOj7q1XyquAv0jUnypRibLLFh0qQxDOniHAdB7/n7"
+        "iORO3Zai2YuysfMsOdtPzbWmT5bapIBIJfmlPMdMDRQj4P+hEU9wx9boZ0Kgb3/P+wCAdQR7"
+        "gwEAAA=="
     ),
     fingerprint="SHA256:iK3NzYswWRZyxvuXMcA5x7DscKDXBqdcJDHcnsAmSl0",
 )
 
 SEED_KEYPAIR_SECONDARY = SeedKeypair(
-    public_key=(
-        "ssh-ed25519 "
-        "AAAAC3NzaC1lZDI1NTE5AAAAIM9LPgCG2V6b6eusP4Ds32HSeT9XI5kEh8znwZJL8Kon "
-        "seed-secondary"
+    public_key=unpack(
+        "H4sIAAAAAAACAysuztBNTTEyNTW0VHAEAmdjv6pEZ8OcKBdPQ78QV1OQmKevpU9AurO7UZhZ"
+        "kllqaXGAiUuxsZFHcGqIZYSnabZrhkVVXnmUl4+Fd36eQnFqaopucWpyfl5KYlElAD6feK9f"
+        "AAAA"
     ),
-    private_key=(
-        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
-        "OQAAACDPSz4Ahtlem+nrrD+A7N9h0nk/VyOZBIfM58GSS/CqJwAAAIgdEjqnHRI6pwAAAAtzc2gt\n"
-        "ZWQyNTUxOQAAACDPSz4Ahtlem+nrrD+A7N9h0nk/VyOZBIfM58GSS/CqJwAAAEARKCxI67mFiA8F\n"
-        "KohS5CM4TZ3Yr1XmegpG6k39BVGyz89LPgCG2V6b6eusP4Ds32HSeT9XI5kEh8znwZJL8KonAAAA\n"
-        "AAECAwQF\n"
-        "-----END OPENSSH PRIVATE KEY-----\n"
+    private_key=unpack(
+        "H4sIAAAAAAACA52QTW+CQBRF9/wK9oZY+RKWwzDAiHwOUpxdqRQqMipiFX59nSYm3XTTs7h5"
+        "yXs5ebmS9MBCLg7FKEYhIZ4YpzgHGRJ9tOVLSSgV61CycHqDi54W7bDbI8CxXO2r7DZ8RGVn"
+        "XmkCnlg8ghvPYXqX64G+JmOYbe5CxI+gHZNJBc1wqLoZ63t7Bpah2bywdp6PEbXwR6AZLiFz"
+        "eF5xCa53aH9mXor10y+p8LT+S4pA6sM71ped8wkMR/CPDdFgoGZU2faLoqvqk6u3imnl7jgZ"
+        "5jquoSvneqlX10us2hdF9kiVmQXWWtQYE7vR1drwj4z/Jzz0ENwSR/ipEIX23/V+A7sS3aSD"
+        "AQAA"
     ),
     fingerprint="SHA256:V64HYiVM8qORIqyxawv2j9z+f001Zlb2Gfe6es+1yME",
 )
 
 SEED_KEYPAIR_TERTIARY = SeedKeypair(
-    public_key=(
-        "ssh-ed25519 "
-        "AAAAC3NzaC1lZDI1NTE5AAAAIEE6+Zx4EGmF78hvFxw7V99nO+2AMlMq4P3HwC2J1JLl "
-        "seed-tertiary"
+    public_key=unpack(
+        "H4sIAAAAAAACAysuztBNTTEyNTW0VHAEAmdjv6pEZ8OcKBdPQ78QV1OQmKerq5l2VIWJq3uu"
+        "m7lFRplbRbl5mKVlnr+2kaNvjm+hSYCxR7mzkZehl0+OQnFqaopuSWpRSWZiUSUABsr4RV4A"
+        "AAA="
     ),
-    private_key=(
-        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n"
-        "OQAAACBBOvmceBBphe/IbxccO1ffZzvtgDJTKuD9x8AtidSS5QAAAIjPifOsz4nzrAAAAAtzc2gt\n"
-        "ZWQyNTUxOQAAACBBOvmceBBphe/IbxccO1ffZzvtgDJTKuD9x8AtidSS5QAAAEABkNyXrWp46jN2\n"
-        "rlPPMjrdliTdytyHw4SrwcmwUFFwzkE6+Zx4EGmF78hvFxw7V99nO+2AMlMq4P3HwC2J1JLlAAAA\n"
-        "AAECAwQF\n"
-        "-----END OPENSSH PRIVATE KEY-----\n"
+    private_key=unpack(
+        "H4sIAAAAAAACA52Qy26DMBRE9/4K9hGqIOTB0gbzSrFJgSRlVyAkPJVSgsFf37hS1FU3ncXo"
+        "SjM6uhpZfghh2yUSDTAJQ0cK3twDjLC0w+8ilEG6RE3aEf5hKH1yqoe8wlAI2asxbWNx4rTV"
+        "78kePoWE+Uz4wDP1MiTH/UyieAJUlAyE6NhmZ4Ru1/OLm05ZRpWiSPg4XEwv2t1NfdrCoczD"
+        "cCX6bhWUBf3iWsd7+AsFT+q/oBiimsyn/njT1hVRQd8EgV/1eVNG+TzMDtPCnmUtiy2L8Rqv"
+        "F8mkYbu1NtvraE1sc9D1ji5U6Df+pxYsHWaonuK9NuI/8MAbkO0t8DMhJubf834D8S5d2IMB"
+        "AAA="
     ),
     fingerprint="SHA256:UHiMFHDl1bHuDziVnLOYlAHSDQlah+DAk6yVUe10ZWI",
 )
